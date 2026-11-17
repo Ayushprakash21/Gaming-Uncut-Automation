@@ -29,7 +29,8 @@ import {
   cancelYouTubeOAuth,
   testYouTubeConnection,
   disconnectYouTubeAccount,
-  testFacebookConnection
+  testFacebookConnection,
+  testInstagramConnection
 } from '../services/api'
 import { ConnectionsData, SystemLimits } from '../types'
 
@@ -60,6 +61,8 @@ export const ConnectionsPage: React.FC = () => {
   const [metaIgId, setMetaIgId] = useState('')
   const [testingFb, setTestingFb] = useState(false)
   const [fbTestResult, setFbTestResult] = useState<any | null>(null)
+  const [testingIg, setTestingIg] = useState(false)
+  const [igTestResult, setIgTestResult] = useState<any | null>(null)
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
 
@@ -256,6 +259,19 @@ export const ConnectionsPage: React.FC = () => {
       setFbTestResult({ authenticated: false, message: err.message })
     } finally {
       setTestingFb(false)
+    }
+  }
+
+  const handleTestInstagram = async () => {
+    setTestingIg(true)
+    setIgTestResult(null)
+    try {
+      const res = await testInstagramConnection()
+      setIgTestResult(res)
+    } catch (err: any) {
+      setIgTestResult({ authenticated: false, message: err.message })
+    } finally {
+      setTestingIg(false)
     }
   }
 
@@ -759,6 +775,16 @@ export const ConnectionsPage: React.FC = () => {
             <Share2 className="w-3.5 h-3.5" />
             <span>{testingFb ? 'Verifying Facebook API...' : 'Test Facebook Page & Permissions'}</span>
           </button>
+
+          <button
+            type="button"
+            onClick={handleTestInstagram}
+            disabled={testingIg}
+            className="border border-pink-500/40 bg-pink-500/10 hover:bg-pink-500/20 text-pink-300 font-bold text-xs px-4 py-2.5 rounded-xl transition flex items-center space-x-2"
+          >
+            <Instagram className="w-3.5 h-3.5" />
+            <span>{testingIg ? 'Verifying Instagram API...' : 'Test Instagram Account & Permissions'}</span>
+          </button>
         </div>
 
         {fbTestResult && (
@@ -767,11 +793,21 @@ export const ConnectionsPage: React.FC = () => {
               ? 'bg-emerald-950/30 border-emerald-500/30 text-emerald-200'
               : 'bg-rose-950/30 border-rose-500/30 text-rose-200'
           }`}>
-            <div className="font-bold flex items-center space-x-2">
-              <span>{fbTestResult.authenticated ? '✓ Facebook Token & Page Verified' : '✗ Facebook Verification Failed'}</span>
+            <div className="font-bold flex items-center flex-wrap gap-2">
+              <span>{fbTestResult.authenticated ? '✓ Facebook Page & Permissions Verified' : '✗ Facebook Verification Failed'}</span>
               {fbTestResult.error_code && (
                 <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-rose-900/50 text-rose-300 border border-rose-700/50">
                   Code: {fbTestResult.error_code} {fbTestResult.subcode ? `(Subcode: ${fbTestResult.subcode})` : ''}
+                </span>
+              )}
+              {fbTestResult.error_type && (
+                <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-rose-900/40 text-rose-300 border border-rose-700/40">
+                  Type: {fbTestResult.error_type}
+                </span>
+              )}
+              {fbTestResult.fbtrace_id && (
+                <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400">
+                  Trace: {fbTestResult.fbtrace_id}
                 </span>
               )}
             </div>
@@ -779,6 +815,8 @@ export const ConnectionsPage: React.FC = () => {
             {fbTestResult.page_name && (
               <div className="text-[11px] text-slate-300 font-mono">
                 Page: {fbTestResult.page_name} (ID: {fbTestResult.page_id})
+                {fbTestResult.category && <span className="text-slate-400"> • Category: {fbTestResult.category}</span>}
+                {fbTestResult.token_type && <span className="text-cyan-400"> • Token: {fbTestResult.token_type}</span>}
               </div>
             )}
             {fbTestResult.permissions?.length > 0 && (
@@ -789,6 +827,39 @@ export const ConnectionsPage: React.FC = () => {
             {fbTestResult.missing_permissions?.length > 0 && (
               <div className="text-[11px] text-amber-300 font-mono font-semibold">
                 Missing Required Scopes: {fbTestResult.missing_permissions.join(', ')}
+              </div>
+            )}
+          </div>
+        )}
+
+        {igTestResult && (
+          <div className={`p-4 rounded-xl text-xs space-y-1.5 border ${
+            igTestResult.authenticated && !igTestResult.missing_permissions?.length
+              ? 'bg-emerald-950/30 border-emerald-500/30 text-emerald-200'
+              : 'bg-rose-950/30 border-rose-500/30 text-rose-200'
+          }`}>
+            <div className="font-bold flex items-center space-x-2">
+              <span>{igTestResult.authenticated ? '✓ Instagram Professional Account Verified' : '✗ Instagram Verification Failed'}</span>
+              {igTestResult.error_code && (
+                <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-rose-900/50 text-rose-300 border border-rose-700/50">
+                  Code: {igTestResult.error_code} {igTestResult.subcode ? `(Subcode: ${igTestResult.subcode})` : ''}
+                </span>
+              )}
+            </div>
+            <p>{igTestResult.message}</p>
+            {igTestResult.account_username && (
+              <div className="text-[11px] text-slate-300 font-mono">
+                Account: @{igTestResult.account_username} {igTestResult.account_name ? `(${igTestResult.account_name})` : ''} (ID: {igTestResult.account_id})
+              </div>
+            )}
+            {igTestResult.permissions?.length > 0 && (
+              <div className="text-[11px] text-slate-400 font-mono">
+                Granted Scopes: {igTestResult.permissions.join(', ')}
+              </div>
+            )}
+            {igTestResult.missing_permissions?.length > 0 && (
+              <div className="text-[11px] text-amber-300 font-mono font-semibold">
+                Missing Required Scopes: {igTestResult.missing_permissions.join(', ')}
               </div>
             )}
           </div>

@@ -9,13 +9,17 @@ Uses Meta Graph API Video Reels session protocol with:
 """
 
 import time
+import json
 import logging
+import re
 import requests
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable, List
 
 from backend.app.security.vault import vault
 from backend.app.publishers.quota_tracker import FacebookRateLimitError as BaseFacebookRateLimitError
+from backend.app.database.session import SessionLocal
+from backend.app.models.schema import SystemLog
 
 logger = logging.getLogger("gaming_uncut.facebook")
 API_VERSION = "v21.0"
@@ -33,7 +37,9 @@ class FacebookAPIError(Exception):
         code: Optional[int] = None,
         subcode: Optional[int] = None,
         error_type: Optional[str] = None,
-        user_message: Optional[str] = None
+        user_message: Optional[str] = None,
+        fbtrace_id: Optional[str] = None,
+        http_status: Optional[int] = None
     ):
         super().__init__(message)
         self.message = message
@@ -41,6 +47,8 @@ class FacebookAPIError(Exception):
         self.subcode = subcode
         self.error_type = error_type
         self.user_message = user_message or message
+        self.fbtrace_id = fbtrace_id
+        self.http_status = http_status
 
 class FacebookTokenExpiredError(FacebookAPIError):
     """Raised when Meta Page Access Token has expired or is revoked (Code 190)."""
@@ -63,7 +71,37 @@ class FacebookUploadFailedError(FacebookAPIError):
     pass
 
 
-def parse_meta_error(res_data: Any, default_msg: str = "Facebook API operation failed") -> FacebookAPIError:
+def redact_meta_tokens(text: Any) -> str:
+    """Sanitizes sensitive Meta access tokens from messages and logs."""
+    if not text:
+        return ""
+    return re.sub(r'(EAAB[a-zA-Z0-9_-]+|EAAQ[a-zA-Z0-9_-]+|IGAA[a-zA-Z0-9_-]+|IGQV[a-zA-Z0-9_-]+)', '[REDACTED_TOKEN]', str(text))
+
+
+def log_facebook_audit(level: str, message: str, metadata: Optional[Dict[str, Any]] = None):
+    """Writes structured diagnostic log entry to SystemLog."""
+    try:
+        with SessionLocal() as db:
+            sanitized_meta = None
+            if metadata:
+                sanitized_meta = redact_meta_tokens(json.dumps(metadata))
+            log_entry = SystemLog(
+                module="facebook_publisher",
+                level=level,
+                message=redact_meta_tokens(message),
+                metadata_json=sanitized_meta
+            )
+            db.add(log_entry)
+            db.commit()
+    except Exception as e:
+        logger.debug(f"Failed to write Facebook audit log: {e}")
+
+
+def parse_meta_error(
+    res_data: Any,
+    default_msg: str = "Facebook API operation failed",
+    http_status: Optional[int] = None
+) -> FacebookAPIError:
     """Parses Meta Graph API error payload into a safe typed exception without exposing secrets."""
     if isinstance(res_data, dict) and "error" in res_data:
         err = res_data["error"]
@@ -71,11 +109,9 @@ def parse_meta_error(res_data: Any, default_msg: str = "Facebook API operation f
         code = err.get("code")
         subcode = err.get("error_subcode")
         err_type = err.get("type", "OAuthException")
+        fbtrace_id = err.get("fbtrace_id")
 
-        # Sanitize message if any accidental tokens exist
-        safe_msg = str(msg)
-        if "EAAB" in safe_msg:
-            safe_msg = safe_msg.split("EAAB")[0] + "[REDACTED_TOKEN]..."
+        safe_msg = redact_meta_tokens(msg)
 
         # Code 190: Token expired, invalidated, or session died
         if code == 190 or subcode in (463, 467, 458):
@@ -83,29 +119,60 @@ def parse_meta_error(res_data: Any, default_msg: str = "Facebook API operation f
                 f"Meta Page Access Token has expired or was revoked (Code 190, Subcode {subcode}). "
                 "Please generate a fresh Page Access Token and save it in Settings."
             )
-            return FacebookTokenExpiredError(safe_msg, code=code, subcode=subcode, error_type=err_type, user_message=user_msg)
+            return FacebookTokenExpiredError(
+                safe_msg, code=code, subcode=subcode, error_type=err_type,
+                user_message=user_msg, fbtrace_id=fbtrace_id, http_status=http_status
+            )
 
         # Code 613, 32, 4, 17: Rate limits
         if code in (613, 32, 4, 17) or "rate limit" in safe_msg.lower():
             user_msg = f"Facebook Graph API rate limit reached (Code #{code}). Publishing paused until next window."
-            return FacebookRateLimitError(safe_msg, code=code, subcode=subcode, error_type=err_type, user_message=user_msg)
+            return FacebookRateLimitError(
+                safe_msg, code=code, subcode=subcode, error_type=err_type,
+                user_message=user_msg, fbtrace_id=fbtrace_id, http_status=http_status
+            )
 
-        # Code 100 / Unsupported request / Invalid Object ID
-        if code == 100 or "object with id" in safe_msg.lower() or "'me'" in safe_msg:
-            user_msg = "Invalid Facebook Page ID. Meta Video Reels endpoint requires a valid numeric Facebook Page ID."
-            return FacebookConfigError(safe_msg, code=code, subcode=subcode, error_type=err_type, user_message=user_msg)
+        # Specific Object ID errors (Object with ID does not exist, or 'me' on page endpoint)
+        if (
+            ("object with id" in safe_msg.lower() and ("does not exist" in safe_msg.lower() or "cannot be loaded" in safe_msg.lower()))
+            or "cannot be loaded due to missing permissions" in safe_msg.lower()
+            or "'me' does not exist" in safe_msg.lower()
+        ):
+            user_msg = f"Invalid or inaccessible Facebook Page ID. Meta returned: {safe_msg}"
+            return FacebookConfigError(
+                safe_msg, code=code, subcode=subcode, error_type=err_type,
+                user_message=user_msg, fbtrace_id=fbtrace_id, http_status=http_status
+            )
 
         # Code 200, 10, 283: Missing permissions
         if code in (200, 10, 283) or "permission" in safe_msg.lower():
             user_msg = (
                 f"Facebook Page permission denied (Code #{code}): {safe_msg}. "
-                "Ensure your Page Access Token has 'pages_manage_posts' and 'pages_read_engagement' permissions."
+                "Ensure your Page Access Token has 'pages_manage_posts', 'pages_read_engagement', and 'pages_show_list' permissions."
             )
-            return FacebookPermissionError(safe_msg, code=code, subcode=subcode, error_type=err_type, user_message=user_msg)
+            return FacebookPermissionError(
+                safe_msg, code=code, subcode=subcode, error_type=err_type,
+                user_message=user_msg, fbtrace_id=fbtrace_id, http_status=http_status
+            )
 
-        return FacebookAPIError(safe_msg, code=code, subcode=subcode, error_type=err_type, user_message=safe_msg)
+        # Code 100 with nonexisting field or invalid parameter - DO NOT classify as invalid Page ID!
+        if code == 100:
+            if "nonexisting field" in safe_msg.lower():
+                user_msg = f"Meta Graph API parameter error: Tried accessing nonexisting field ({safe_msg})"
+            else:
+                user_msg = f"Meta Graph API query error (Code #100): {safe_msg}"
+            return FacebookAPIError(
+                safe_msg, code=code, subcode=subcode, error_type=err_type,
+                user_message=user_msg, fbtrace_id=fbtrace_id, http_status=http_status
+            )
 
-    return FacebookAPIError(str(res_data), user_message=default_msg)
+        return FacebookAPIError(
+            safe_msg, code=code, subcode=subcode, error_type=err_type,
+            user_message=safe_msg, fbtrace_id=fbtrace_id, http_status=http_status
+        )
+
+    safe_fallback = redact_meta_tokens(str(res_data))
+    return FacebookAPIError(safe_fallback, user_message=default_msg, http_status=http_status)
 
 
 class ProgressReader:
@@ -174,16 +241,9 @@ class FacebookPublishClient:
         return {"token": token, "page_id": page_id.strip()}
 
     def _auto_discover_page_id(self, token: str) -> Optional[str]:
-        """Attempts to discover Page ID from the Page Access Token."""
+        """Attempts to discover Page ID from /me/accounts or Page token."""
         try:
-            res = requests.get(
-                f"{GRAPH_URL}/me",
-                params={"fields": "id,name", "access_token": token},
-                timeout=10
-            ).json()
-            if "id" in res:
-                return str(res["id"])
-            # If token is a user token, check /me/accounts
+            # 1. First check /me/accounts (if token is a User token that manages pages)
             accounts_res = requests.get(
                 f"{GRAPH_URL}/me/accounts",
                 params={"fields": "id,name,access_token", "access_token": token},
@@ -192,9 +252,64 @@ class FacebookPublishClient:
             data = accounts_res.get("data", [])
             if data and "id" in data[0]:
                 return str(data[0]["id"])
+
+            # 2. Check /me with fields id,name,category (only Page tokens return category on /me)
+            res = requests.get(
+                f"{GRAPH_URL}/me",
+                params={"fields": "id,name,category", "access_token": token},
+                timeout=10
+            ).json()
+            if "category" in res and "id" in res:
+                return str(res["id"])
         except Exception as e:
             logger.debug(f"Auto-discovery of Page ID failed: {e}")
         return None
+
+    def verify_page(self, page_id: str, token: str) -> Dict[str, Any]:
+        """
+        Verifies the Facebook Page using GET /{page_id}?fields=id,name,category,access_token.
+        Confirms the Page ID is valid, resolves the Page name, and obtains the compatible
+        Page Access Token if a User token was supplied.
+        """
+        if not page_id or not str(page_id).strip() or str(page_id).strip().lower() == "me":
+            raise FacebookConfigError(
+                "A numeric Facebook Page ID is required (received 'me' or empty).",
+                code=100,
+                user_message="Invalid Facebook Page ID: Must be a numeric Page ID, not 'me'."
+            )
+
+        page_id = str(page_id).strip()
+        url = f"{GRAPH_URL}/{page_id}"
+        logger.info(f"Verifying Facebook Page ID '{page_id}' via GET {url}")
+
+        try:
+            res = requests.get(
+                url,
+                params={"fields": "id,name,category,access_token", "access_token": token},
+                timeout=10
+            )
+            data = res.json()
+        except requests.RequestException as e:
+            raise FacebookUploadFailedError(f"Network error verifying Facebook Page ID '{page_id}': {e}")
+
+        if "error" in data:
+            raise parse_meta_error(data, f"Verification failed for Facebook Page ID '{page_id}'", http_status=res.status_code)
+
+        if "id" not in data:
+            raise FacebookConfigError(
+                f"Page verification response missing ID for Page '{page_id}'",
+                code=100,
+                user_message=f"Facebook Page ID '{page_id}' could not be verified."
+            )
+
+        page_token = data.get("access_token")
+        return {
+            "page_id": str(data["id"]),
+            "page_name": data.get("name", "Unknown Page"),
+            "category": data.get("category"),
+            "page_access_token": page_token or token,
+            "has_page_token": bool(page_token)
+        }
 
     # ==========================================
     # Phase 1: START Session
@@ -395,50 +510,60 @@ class FacebookPublishClient:
     ) -> Dict[str, Any]:
         """
         Executes the full Facebook Reels upload lifecycle:
-        START -> TRANSFER -> FINISH -> STATUS VERIFICATION
+        PAGE VERIFICATION -> START -> TRANSFER -> FINISH -> STATUS VERIFICATION
         Notifies stage_callback at each step.
         """
         if not video_path.exists():
             raise FileNotFoundError(f"Video file missing: {video_path}")
 
         auth = self._get_auth()
-        token = auth["token"]
+        configured_token = auth["token"]
         page_id = auth["page_id"]
+
+        # Step 0: Verify Page and obtain compatible Page Access Token
+        page_info = self.verify_page(page_id, configured_token)
+        page_token = page_info["page_access_token"]
+        page_name = page_info["page_name"]
 
         # Phase 1: START
         if stage_callback:
             stage_callback("upload_initialized")
-        session = self.start_upload_session(page_id, token)
+        session = self.start_upload_session(page_id, page_token)
         video_id = session["video_id"]
         upload_url = session["upload_url"]
 
         # Phase 2: TRANSFER
         if stage_callback:
             stage_callback("video_transferring")
-        self.transfer_binary(upload_url, video_path, token)
+        self.transfer_binary(upload_url, video_path, page_token)
         if stage_callback:
             stage_callback("transfer_completed")
 
         # Phase 3: FINISH
         if stage_callback:
             stage_callback("publishing")
-        self.finish_upload(page_id, video_id, description, token)
+        self.finish_upload(page_id, video_id, description, page_token)
 
         # Phase 4: STATUS VERIFICATION
         if stage_callback:
             stage_callback("facebook_processing")
-        self.poll_processing_status(video_id, token, max_wait_sec=30)
+        self.poll_processing_status(video_id, page_token, max_wait_sec=30)
 
         if stage_callback:
             stage_callback("published")
 
         post_url = f"https://www.facebook.com/reel/{video_id}"
-        logger.info(f"Successfully published Facebook Reel: {post_url}")
+        logger.info(f"Successfully published Facebook Reel on '{page_name}': {post_url}")
+        log_facebook_audit("INFO", f"Facebook Reel published successfully on '{page_name}': {post_url}", {
+            "page_id": page_id, "video_id": video_id, "url": post_url
+        })
 
         return {
             "platform": "facebook",
             "post_id": video_id,
             "url": post_url,
+            "page_id": page_id,
+            "page_name": page_name,
             "status": "published"
         }
 
@@ -448,6 +573,10 @@ class FacebookPublishClient:
     def test_connection(self) -> Dict[str, Any]:
         """
         Runs non-destructive live verification of Facebook Page credentials and permissions.
+        1. Checks token existence.
+        2. Resolves Page ID if missing or 'me'.
+        3. Verifies Page existence, name, category, and Page token via GET /{page_id}.
+        4. Inspects granted permissions via GET /me/permissions.
         """
         token = vault.get_secret("meta", "page_access_token")
         page_id = vault.get_secret("meta", "page_id")
@@ -467,43 +596,61 @@ class FacebookPublishClient:
             "app_id": app_id or "Not configured",
             "page_id": page_id or "Not configured",
             "page_name": None,
+            "category": None,
             "is_valid": False,
+            "token_type": "unknown",
             "permissions": [],
             "missing_permissions": [],
             "error_code": None,
+            "subcode": None,
+            "error_type": None,
+            "fbtrace_id": None,
+            "http_status": None,
             "message": ""
         }
 
-        # 1. Test token against /me
-        try:
-            me_res = requests.get(
-                f"{GRAPH_URL}/me",
-                params={"fields": "id,name,category,link", "access_token": token},
-                timeout=10
-            )
-            me_data = me_res.json()
-        except requests.RequestException as e:
-            result["error_code"] = "NETWORK_ERROR"
-            result["message"] = f"Unable to reach Meta Graph API: {e}"
-            return result
+        # Auto-discover page_id if missing or 'me'
+        if not page_id or not str(page_id).strip() or str(page_id).strip().lower() == "me":
+            discovered_id = self._auto_discover_page_id(token)
+            if discovered_id:
+                page_id = discovered_id
+                vault.set_secret("meta", "page_id", page_id)
+                result["page_id"] = page_id
+            else:
+                result["error_code"] = "MISSING_PAGE_ID"
+                result["message"] = "Facebook Page ID is not configured. Please enter the numeric Page ID in Settings."
+                return result
 
-        if "error" in me_data:
-            err = parse_meta_error(me_data)
+        page_id = str(page_id).strip()
+
+        # Step 1: Verify the Page using GET /{page_id}?fields=id,name,category,access_token
+        try:
+            page_info = self.verify_page(page_id, token)
+            result["is_valid"] = True
+            result["page_name"] = page_info["page_name"]
+            result["page_id"] = page_info["page_id"]
+            result["category"] = page_info.get("category")
+            result["token_type"] = "page_access_token" if page_info.get("has_page_token") else "user_access_token"
+        except FacebookAPIError as err:
             result["error_code"] = err.code or "API_ERROR"
             result["subcode"] = err.subcode
+            result["error_type"] = getattr(err, "error_type", None)
+            result["fbtrace_id"] = getattr(err, "fbtrace_id", None)
+            result["http_status"] = getattr(err, "http_status", 400)
             result["message"] = err.user_message
+            log_facebook_audit("ERROR", f"Facebook Page ID verification failed: {err.user_message}", {
+                "page_id": page_id,
+                "error_code": err.code,
+                "subcode": err.subcode,
+                "fbtrace_id": getattr(err, "fbtrace_id", None)
+            })
+            return result
+        except Exception as e:
+            result["error_code"] = "VERIFICATION_ERROR"
+            result["message"] = f"Failed to verify Facebook Page: {e}"
             return result
 
-        result["is_valid"] = True
-        result["page_name"] = me_data.get("name")
-        resolved_id = str(me_data.get("id", ""))
-        if not page_id and resolved_id:
-            vault.set_secret("meta", "page_id", resolved_id)
-            result["page_id"] = resolved_id
-        else:
-            result["page_id"] = page_id or resolved_id
-
-        # 2. Check permissions via /me/permissions
+        # Step 2: Check granted permissions via /me/permissions
         try:
             perm_res = requests.get(
                 f"{GRAPH_URL}/me/permissions",
@@ -514,20 +661,22 @@ class FacebookPublishClient:
             granted = [p["permission"] for p in data if p.get("status") == "granted"]
             result["permissions"] = granted
 
-            required = ["pages_manage_posts", "pages_read_engagement"]
+            required = ["pages_manage_posts", "pages_read_engagement", "pages_show_list"]
             missing = [r for r in required if r not in granted]
             result["missing_permissions"] = missing
         except Exception as e:
             logger.warning(f"Permission inspection warning: {e}")
 
-        result["authenticated"] = True
+        result["authenticated"] = len(result["missing_permissions"]) == 0
         if result["missing_permissions"]:
             result["message"] = (
-                f"Page '{result['page_name']}' is authorized, but missing required permissions: "
+                f"Facebook Page '{result['page_name']}' is verified, but missing required permissions: "
                 f"{', '.join(result['missing_permissions'])}. Video Reels publishing may fail."
             )
+            log_facebook_audit("WARNING", result["message"], {"page_id": page_id, "missing": result["missing_permissions"]})
         else:
-            result["message"] = f"Facebook Page '{result['page_name']}' is fully authorized and ready for Reels publishing."
+            result["message"] = f"Facebook Page '{result['page_name']}' (ID: {page_id}) is fully authorized and verified for Reels publishing."
+            log_facebook_audit("INFO", result["message"], {"page_id": page_id, "page_name": result["page_name"]})
 
         return result
 

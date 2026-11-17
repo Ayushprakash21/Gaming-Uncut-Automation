@@ -194,7 +194,17 @@ def test_start_response_never_treated_as_upload_success(dummy_video):
         mock_res.status_code = 400
         return mock_res
 
-    with patch("requests.post", side_effect=mock_post):
+    def mock_get(url, *args, **kwargs):
+        mock_res = MagicMock()
+        mock_res.status_code = 200
+        mock_res.json.return_value = {
+            "id": "123456789",
+            "name": "Gaming Uncut",
+            "access_token": "VALID_PAGE_TOKEN"
+        }
+        return mock_res
+
+    with patch("requests.post", side_effect=mock_post), patch("requests.get", side_effect=mock_get):
         with pytest.raises(FacebookUploadFailedError):
             fb.publish_reel(dummy_video, "Test description")
 
@@ -220,13 +230,20 @@ def test_processing_phase_error_raises_exception(dummy_video):
     def mock_get(url, *args, **kwargs):
         mock_res = MagicMock()
         mock_res.status_code = 200
-        mock_res.json.return_value = {
-            "id": "fb_vid_corrupt",
-            "status": {
-                "video_status": "error",
-                "error_description": "Unsupported audio codec in container."
+        if "123456789" in url:
+            mock_res.json.return_value = {
+                "id": "123456789",
+                "name": "Gaming Uncut",
+                "access_token": "VALID_PAGE_TOKEN"
             }
-        }
+        else:
+            mock_res.json.return_value = {
+                "id": "fb_vid_corrupt",
+                "status": {
+                    "video_status": "error",
+                    "error_description": "Unsupported audio codec in container."
+                }
+            }
         return mock_res
 
     with patch("requests.post", side_effect=mock_post), patch("requests.get", side_effect=mock_get):
@@ -290,7 +307,13 @@ def test_publishing_manager_facebook_expired_token_handling(dummy_video, monkeyp
             }
             return mock_res
 
-        with patch("requests.post", side_effect=mock_post):
+        def mock_get(url, *args, **kwargs):
+            mock_res = MagicMock()
+            mock_res.status_code = 200
+            mock_res.json.return_value = {"id": "123456789", "name": "FB Test Page", "access_token": "VALID_TOKEN"}
+            return mock_res
+
+        with patch("requests.post", side_effect=mock_post), patch("requests.get", side_effect=mock_get):
             publishing_manager.execute_job(pj.id)
 
         db.refresh(upload)
@@ -355,7 +378,13 @@ def test_publishing_manager_facebook_rate_limit_handling(dummy_video, monkeypatc
             }
             return mock_res
 
-        with patch("requests.post", side_effect=mock_post):
+        def mock_get(url, *args, **kwargs):
+            mock_res = MagicMock()
+            mock_res.status_code = 200
+            mock_res.json.return_value = {"id": "123456789", "name": "FB Test Page", "access_token": "VALID_TOKEN"}
+            return mock_res
+
+        with patch("requests.post", side_effect=mock_post), patch("requests.get", side_effect=mock_get):
             publishing_manager.execute_job(pj.id)
 
         db.refresh(upload)
@@ -393,11 +422,12 @@ def test_facebook_diagnostic_endpoint_success():
                     {"permission": "pages_show_list", "status": "granted"}
                 ]
             }
-        elif "/me" in url:
+        elif "987654321" in url or "/me" in url:
             mock_res.json.return_value = {
                 "id": "987654321",
                 "name": "Gaming Uncut Official Page",
-                "category": "Gaming Video Creator"
+                "category": "Gaming Video Creator",
+                "access_token": "MOCK_PAGE_TOKEN"
             }
         return mock_res
 
@@ -457,7 +487,13 @@ def test_facebook_client_permission_denied(dummy_video):
         }
         return mock_res
 
-    with patch("requests.post", side_effect=mock_post):
+    def mock_get(url, *args, **kwargs):
+        mock_res = MagicMock()
+        mock_res.status_code = 200
+        mock_res.json.return_value = {"id": "123456789", "name": "FB Test Page", "access_token": "MOCK_TOKEN_NO_PERMS"}
+        return mock_res
+
+    with patch("requests.post", side_effect=mock_post), patch("requests.get", side_effect=mock_get):
         with pytest.raises(FacebookPermissionError) as exc_info:
             fb.publish_reel(dummy_video, "Test description")
         assert exc_info.value.code == 200
@@ -519,7 +555,13 @@ def test_publishing_manager_facebook_permission_denied_handling(dummy_video, mon
             }
             return mock_res
 
-        with patch("requests.post", side_effect=mock_post):
+        def mock_get(url, *args, **kwargs):
+            mock_res = MagicMock()
+            mock_res.status_code = 200
+            mock_res.json.return_value = {"id": "123456789", "name": "FB Test Page", "access_token": "VALID_TOKEN"}
+            return mock_res
+
+        with patch("requests.post", side_effect=mock_post), patch("requests.get", side_effect=mock_get):
             publishing_manager.execute_job(pj.id)
 
         db.refresh(upload)
@@ -590,16 +632,23 @@ def test_publishing_manager_facebook_successful_publication(dummy_video, monkeyp
         def mock_get(url, *args, **kwargs):
             mock_res = MagicMock()
             mock_res.status_code = 200
-            mock_res.json.return_value = {
-                "id": "fb_reel_112233",
-                "status": {
-                    "video_status": "ready",
-                    "uploading_phase": {"status": "complete"},
-                    "processing_phase": {"status": "complete"},
-                    "publishing_phase": {"status": "complete"}
-                },
-                "published": True
-            }
+            if "987654321" in url:
+                mock_res.json.return_value = {
+                    "id": "987654321",
+                    "name": "Gaming Uncut",
+                    "access_token": "MOCK_VALID_PAGE_TOKEN"
+                }
+            else:
+                mock_res.json.return_value = {
+                    "id": "fb_reel_112233",
+                    "status": {
+                        "video_status": "ready",
+                        "uploading_phase": {"status": "complete"},
+                        "processing_phase": {"status": "complete"},
+                        "publishing_phase": {"status": "complete"}
+                    },
+                    "published": True
+                }
             return mock_res
 
         with patch("requests.post", side_effect=mock_post), patch("requests.get", side_effect=mock_get):
@@ -617,6 +666,213 @@ def test_publishing_manager_facebook_successful_publication(dummy_video, monkeyp
 
         db.refresh(pj)
         assert pj.status == "published"
+
+
+# ============================================================
+# 5. Page Verification & Token Compatibility Tests
+# ============================================================
+
+def test_code_100_nonexisting_field_not_classified_as_invalid_page_id():
+    """
+    Critical Regression Test:
+    Meta error Code 100 for nonexisting field (e.g. category on user node)
+    MUST NOT be classified as 'Invalid Facebook Page ID' (FacebookConfigError).
+    """
+    payload = {
+        "error": {
+            "message": "(#100) Tried accessing nonexisting field (category)",
+            "type": "OAuthException",
+            "code": 100,
+            "fbtrace_id": "AEvWTn5Sk24dGciEK-FrG7l"
+        }
+    }
+    err = parse_meta_error(payload, http_status=400)
+    assert not isinstance(err, FacebookConfigError), "Code 100 nonexisting field must NOT be classified as FacebookConfigError!"
+    assert isinstance(err, FacebookAPIError)
+    assert err.code == 100
+    assert err.fbtrace_id == "AEvWTn5Sk24dGciEK-FrG7l"
+    assert "nonexisting field" in err.user_message.lower()
+
+
+def test_verify_page_valid_page_id_resolves_page_access_token():
+    """Verify verify_page queries GET /{page_id}?fields=id,name,category,access_token and returns Page Access Token."""
+    fb = FacebookPublishClient()
+    user_token = "MOCK_USER_TOKEN_AYUSH"
+    page_id = "1507158329141344"
+
+    def mock_get(url, *args, **kwargs):
+        mock_res = MagicMock()
+        mock_res.status_code = 200
+        if page_id in url:
+            mock_res.json.return_value = {
+                "id": page_id,
+                "name": "Gaming Uncut",
+                "category": "Gaming video creator",
+                "access_token": "COMPATIBLE_PAGE_ACCESS_TOKEN_FOR_REELS"
+            }
+        return mock_res
+
+    with patch("requests.get", side_effect=mock_get):
+        page_info = fb.verify_page(page_id, user_token)
+
+    assert page_info["page_id"] == page_id
+    assert page_info["page_name"] == "Gaming Uncut"
+    assert page_info["category"] == "Gaming video creator"
+    assert page_info["has_page_token"] is True
+    assert page_info["page_access_token"] == "COMPATIBLE_PAGE_ACCESS_TOKEN_FOR_REELS"
+
+
+def test_verify_page_invalid_page_id_raises_config_error():
+    """Verify verify_page raises FacebookConfigError when Meta reports object does not exist."""
+    fb = FacebookPublishClient()
+    invalid_page_id = "999999999999999"
+
+    def mock_get(url, *args, **kwargs):
+        mock_res = MagicMock()
+        mock_res.status_code = 404
+        mock_res.json.return_value = {
+            "error": {
+                "message": f"Unsupported get request. Object with ID '{invalid_page_id}' does not exist, cannot be loaded due to missing permissions, or does not support this operation.",
+                "type": "GraphMethodException",
+                "code": 100,
+                "fbtrace_id": "ATestTraceId123"
+            }
+        }
+        return mock_res
+
+    with patch("requests.get", side_effect=mock_get):
+        with pytest.raises(FacebookConfigError) as exc_info:
+            fb.verify_page(invalid_page_id, "SOME_TOKEN")
+
+    assert exc_info.value.code == 100
+    assert exc_info.value.fbtrace_id == "ATestTraceId123"
+    assert "Invalid or inaccessible Facebook Page ID" in exc_info.value.user_message
+
+
+def test_reels_publisher_uses_compatible_page_token(dummy_video):
+    """
+    Verifies that publish_reel uses the resolved Page Access Token (not the raw user token)
+    when calling Meta video_reels upload endpoints.
+    """
+    fb = FacebookPublishClient()
+    vault.set_secret("meta", "page_access_token", "MOCK_USER_TOKEN")
+    vault.set_secret("meta", "page_id", "1507158329141344")
+
+    post_tokens_used = []
+
+    def mock_get(url, *args, **kwargs):
+        mock_res = MagicMock()
+        mock_res.status_code = 200
+        if "1507158329141344" in url:
+            mock_res.json.return_value = {
+                "id": "1507158329141344",
+                "name": "Gaming Uncut",
+                "category": "Gaming video creator",
+                "access_token": "RESOLVED_PAGE_TOKEN_777"
+            }
+        else:
+            mock_res.json.return_value = {
+                "id": "fb_reel_999",
+                "status": {"video_status": "ready"},
+                "published": True
+            }
+        return mock_res
+
+    def mock_post(url, *args, **kwargs):
+        mock_res = MagicMock()
+        mock_res.status_code = 200
+        data = kwargs.get("data")
+        headers = kwargs.get("headers", {})
+
+        # Track access token supplied in data or header
+        if isinstance(data, dict) and "access_token" in data:
+            post_tokens_used.append(data["access_token"])
+        elif "Authorization" in headers:
+            post_tokens_used.append(headers["Authorization"].replace("OAuth ", ""))
+
+        if "video_reels" in url and isinstance(data, dict) and data.get("upload_phase") == "start":
+            mock_res.json.return_value = {"video_id": "fb_reel_999", "upload_url": "https://rupload.facebook.com/x"}
+        else:
+            mock_res.json.return_value = {"success": True}
+        return mock_res
+
+    with patch("requests.get", side_effect=mock_get), patch("requests.post", side_effect=mock_post):
+        res = fb.publish_reel(dummy_video, "Test description")
+
+    assert res["page_name"] == "Gaming Uncut"
+    assert res["page_id"] == "1507158329141344"
+    assert len(post_tokens_used) >= 2
+    # Verify that all POST operations used the resolved Page Access Token, NOT the user token
+    for tok in post_tokens_used:
+        assert tok == "RESOLVED_PAGE_TOKEN_777", f"Expected RESOLVED_PAGE_TOKEN_777, got {tok}"
+
+
+def test_diagnostic_endpoint_reports_exact_meta_error_details():
+    """Verify POST /api/settings/facebook/test captures error_code, subcode, error_type, and fbtrace_id."""
+    vault.set_secret("meta", "page_access_token", "MOCK_TOKEN")
+    vault.set_secret("meta", "page_id", "1507158329141344")
+
+    def mock_get(url, *args, **kwargs):
+        mock_res = MagicMock()
+        mock_res.status_code = 400
+        mock_res.json.return_value = {
+            "error": {
+                "message": "Some custom Meta API error occurred",
+                "type": "CustomMetaException",
+                "code": 4040,
+                "error_subcode": 99,
+                "fbtrace_id": "Trace123XYZ"
+            }
+        }
+        return mock_res
+
+    with patch("requests.get", side_effect=mock_get):
+        res = client.post("/api/settings/facebook/test")
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data["authenticated"] is False
+    assert data["error_code"] == 4040
+    assert data["subcode"] == 99
+    assert data["error_type"] == "CustomMetaException"
+    assert data["fbtrace_id"] == "Trace123XYZ"
+
+
+def test_diagnostic_endpoint_missing_permissions_reports_action_required():
+    """Verify diagnostic endpoint detects missing required scopes and warns without failing Page ID."""
+    vault.set_secret("meta", "page_access_token", "MOCK_TOKEN_PARTIAL_PERMS")
+    vault.set_secret("meta", "page_id", "1507158329141344")
+
+    def mock_get(url, *args, **kwargs):
+        mock_res = MagicMock()
+        mock_res.status_code = 200
+        if "1507158329141344" in url:
+            mock_res.json.return_value = {
+                "id": "1507158329141344",
+                "name": "Gaming Uncut",
+                "category": "Gaming video creator",
+                "access_token": "PAGE_TOKEN"
+            }
+        elif "/me/permissions" in url:
+            mock_res.json.return_value = {
+                "data": [
+                    {"permission": "pages_show_list", "status": "granted"}
+                    # Missing: pages_manage_posts, pages_read_engagement
+                ]
+            }
+        return mock_res
+
+    with patch("requests.get", side_effect=mock_get):
+        res = client.get("/api/settings/facebook/status")
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data["authenticated"] is False
+    assert data["is_valid"] is True
+    assert data["page_name"] == "Gaming Uncut"
+    assert "pages_manage_posts" in data["missing_permissions"]
+    assert "pages_read_engagement" in data["missing_permissions"]
+    assert "missing required permissions" in data["message"].lower()
 
 
 from datetime import datetime

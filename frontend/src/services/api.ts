@@ -241,6 +241,13 @@ export async function testFacebookConnection(): Promise<any> {
   return res.json()
 }
 
+export async function testInstagramConnection(): Promise<any> {
+  const res = await fetch(`${API_BASE}/settings/instagram/test`, {
+    method: 'POST'
+  })
+  return res.json()
+}
+
 export async function retryJob(jobId: number): Promise<any> {
   const res = await fetch(`${API_BASE}/jobs/${jobId}/retry`, {
     method: 'POST',

@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT_DIR))
 
 import uvicorn
 from backend.app.core.config import settings
-from backend.app.database.session import engine, Base
+from backend.app.database.session import engine, Base, ensure_schema_compatibility
 from backend.app.security.vault import vault
 
 logging.basicConfig(
@@ -61,8 +61,9 @@ def main():
     logger.info("Initializing Gaming Uncut Automation...")
     logger.info("Tagline: NO FILTER. JUST GAMEPLAY.")
     
-    # 1. Initialize DB tables
+    # 1. Initialize DB tables & guarantee schema compatibility
     Base.metadata.create_all(bind=engine)
+    ensure_schema_compatibility(engine)
     
     # 2. Ingest credentials if available
     auto_detect_google_credentials()
@@ -87,14 +88,32 @@ def main():
         logger.info("   (Set ENABLE_LAN_ACCESS=1 to allow connections from other devices)")
     logger.info("==================================================================")
     
-    # 3. Auto open browser to dashboard
-    try:
-        webbrowser.open(local_url)
-    except Exception:
-        pass
+    # 3. Asynchronously open browser once the server is verified ready and accepting requests
+    def _open_browser_when_ready(target_url: str):
+        import time
+        import urllib.request
+        health_endpoint = f"http://127.0.0.1:{settings.PORT}/api/health"
+        for _ in range(30):
+            time.sleep(0.5)
+            try:
+                with urllib.request.urlopen(health_endpoint, timeout=1.0) as resp:
+                    if resp.status == 200:
+                        break
+            except Exception:
+                continue
+        try:
+            webbrowser.open(target_url)
+        except Exception:
+            pass
 
-    # 4. Run FastAPI app binding to configured host (defaults to 127.0.0.1)
-    uvicorn.run("backend.app.main:app", host=settings.HOST, port=settings.PORT, reload=False, log_level="info")
+    import threading
+    threading.Thread(target=_open_browser_when_ready, args=(local_url,), daemon=True).start()
+
+    # 4. Run FastAPI app binding to configured host
+    try:
+        uvicorn.run("backend.app.main:app", host=settings.HOST, port=settings.PORT, reload=False, log_level="info")
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Gaming Uncut Automation server shut down cleanly.")
 
 if __name__ == "__main__":
     main()

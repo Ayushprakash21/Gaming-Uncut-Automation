@@ -12,7 +12,12 @@ from typing import Dict, Any, List
 from backend.app.database.session import SessionLocal
 from backend.app.models.schema import PublishingJob, PlatformUpload, GeneratedClip, ClipMetadata, SystemLog
 from backend.app.publishers.youtube.youtube_client import youtube_client, YouTubeShortsValidationError
-from backend.app.publishers.instagram.instagram_client import instagram_client
+from backend.app.publishers.instagram.instagram_client import (
+    instagram_client, InstagramAPIError, InstagramTokenExpiredError,
+    InstagramPermissionError, InstagramConfigError, InstagramVideoUrlError,
+    InstagramProcessingFailedError, InstagramProcessingTimeoutError,
+    InstagramUploadFailedError, InstagramRateLimitError as ClientIGRateLimitError
+)
 from backend.app.publishers.facebook.facebook_client import (
     facebook_client, FacebookAPIError, FacebookTokenExpiredError,
     FacebookPermissionError, FacebookConfigError, FacebookRateLimitError as ClientFBRateLimitError
@@ -121,24 +126,65 @@ class PublishingManager:
                     logger.info(f"Safely skipping Instagram for Job #{job.id}: {pause_reason}")
                 else:
                     try:
-                        ig_upload.status = "uploading"
+                        ig_upload.status = "upload_initialized"
                         ig_upload.attempts += 1
+                        ig_upload.error_code = None
+                        ig_upload.error_message = None
                         db.commit()
-                        res = instagram_client.publish_reel(video_path, ig_caption)
+
+                        def ig_stage_callback(stage: str):
+                            ig_upload.status = stage
+                            db.commit()
+
+                        res = instagram_client.publish_reel(
+                            video_path,
+                            ig_caption,
+                            stage_callback=ig_stage_callback
+                        )
                         ig_upload.status = "published"
+                        ig_upload.error_code = None
+                        ig_upload.error_message = None
                         ig_upload.external_post_id = res["post_id"]
                         ig_upload.external_url = res["url"]
                         ig_upload.uploaded_at = datetime.utcnow()
                         record_upload_success(db, "instagram", quota_units=0)
                         results["instagram"] = res
-                    except InstagramRateLimitError as e:
+                    except (InstagramRateLimitError, ClientIGRateLimitError) as e:
+                        code = str(getattr(e, "code", "613"))
                         next_win = record_platform_restriction(db, "instagram", "rate_limited", str(e))
                         ig_upload.status = "paused_quota"
-                        ig_upload.error_message = f"Paused: Instagram publishing rate limit. Rescheduled for next window."
+                        ig_upload.error_code = code
+                        ig_upload.error_message = getattr(e, "user_message", f"Paused: Instagram publishing rate limit ({code}). Rescheduled for next window.")
                         rescheduled_windows.append(next_win)
+                    except InstagramTokenExpiredError as e:
+                        ig_upload.status = "failed"
+                        ig_upload.error_code = str(e.code or "190")
+                        ig_upload.error_message = e.user_message
+                        logger.error(f"Instagram upload failed due to expired token: {e.user_message}")
+                    except InstagramPermissionError as e:
+                        ig_upload.status = "failed"
+                        ig_upload.error_code = str(e.code or "200")
+                        ig_upload.error_message = e.user_message
+                        logger.error(f"Instagram upload failed due to missing permissions: {e.user_message}")
+                    except InstagramConfigError as e:
+                        ig_upload.status = "failed"
+                        ig_upload.error_code = str(e.code or "CONFIG_ERROR")
+                        ig_upload.error_message = e.user_message
+                        logger.error(f"Instagram upload failed due to configuration: {e.user_message}")
+                    except InstagramVideoUrlError as e:
+                        ig_upload.status = "failed"
+                        ig_upload.error_code = "INACCESSIBLE_URL"
+                        ig_upload.error_message = e.user_message
+                        logger.error(f"Instagram upload failed due to inaccessible video URL: {e.user_message}")
+                    except (InstagramProcessingFailedError, InstagramProcessingTimeoutError) as e:
+                        ig_upload.status = "failed"
+                        ig_upload.error_code = "PROCESSING_FAILED"
+                        ig_upload.error_message = e.user_message
+                        logger.error(f"Instagram container processing failed: {e.user_message}")
                     except Exception as e:
                         ig_upload.status = "failed"
-                        ig_upload.error_message = str(e)
+                        ig_upload.error_code = str(getattr(e, "code", "UPLOAD_FAILED"))
+                        ig_upload.error_message = getattr(e, "user_message", str(e))
                         logger.error(f"Instagram upload failed: {e}")
                 db.commit()
 

@@ -839,6 +839,13 @@ def test_facebook_connection():
     from backend.app.publishers.facebook.facebook_client import facebook_client
     return facebook_client.test_connection()
 
+@router.get("/settings/instagram/status")
+@router.post("/settings/instagram/test")
+def test_instagram_connection():
+    """Live diagnostic verification of Instagram Professional Account credentials and publishing permissions."""
+    from backend.app.publishers.instagram.instagram_client import instagram_client
+    return instagram_client.test_connection()
+
 # Dedicated YouTube OAuth Endpoints
 @router.post("/settings/youtube/connect/start")
 def start_youtube_oauth(open_browser: bool = True):
