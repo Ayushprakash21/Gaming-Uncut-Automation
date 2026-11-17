@@ -41,7 +41,9 @@ class InstagramAPIError(Exception):
         code: Optional[int] = None,
         subcode: Optional[int] = None,
         error_type: Optional[str] = None,
-        user_message: Optional[str] = None
+        user_message: Optional[str] = None,
+        fbtrace_id: Optional[str] = None,
+        http_status: Optional[int] = None
     ):
         super().__init__(message)
         self.message = message
@@ -49,6 +51,8 @@ class InstagramAPIError(Exception):
         self.subcode = subcode
         self.error_type = error_type
         self.user_message = user_message or message
+        self.fbtrace_id = fbtrace_id
+        self.http_status = http_status
 
 class InstagramTokenExpiredError(InstagramAPIError):
     """Raised when Meta token has expired or is revoked (Code 190)."""
@@ -86,7 +90,8 @@ class InstagramUploadFailedError(InstagramAPIError):
 def parse_instagram_error(
     res_data: Any,
     default_msg: str = "Instagram API operation failed",
-    raw_text: Optional[str] = None
+    raw_text: Optional[str] = None,
+    http_status: Optional[int] = None
 ) -> InstagramAPIError:
     """Parses Meta Graph API error payload into a safe typed exception without exposing secrets."""
     import re
@@ -101,6 +106,7 @@ def parse_instagram_error(
         code = err.get("code")
         subcode = err.get("error_subcode")
         err_type = err.get("type", "OAuthException")
+        fbtrace_id = err.get("fbtrace_id")
 
         safe_msg = redact(msg)
 
@@ -110,12 +116,18 @@ def parse_instagram_error(
                 f"Meta Access Token has expired or was revoked (Code 190, Subcode {subcode}). "
                 "Please generate a fresh Page Access Token with Instagram permissions and save it in Settings."
             )
-            return InstagramTokenExpiredError(safe_msg, code=code, subcode=subcode, error_type=err_type, user_message=user_msg)
+            return InstagramTokenExpiredError(
+                safe_msg, code=code, subcode=subcode, error_type=err_type,
+                user_message=user_msg, fbtrace_id=fbtrace_id, http_status=http_status
+            )
 
         # Code 32, 4, 9, 17, 613: Rate limits
         if code in (32, 4, 9, 17, 613) or "rate limit" in safe_msg.lower() or "calls to this api" in safe_msg.lower():
             user_msg = f"Instagram Graph API rate limit reached (Code #{code}). Publishing paused until next window."
-            return InstagramRateLimitError(safe_msg, code=code, subcode=subcode, error_type=err_type, user_message=user_msg)
+            return InstagramRateLimitError(
+                safe_msg, code=code, subcode=subcode, error_type=err_type,
+                user_message=user_msg, fbtrace_id=fbtrace_id, http_status=http_status
+            )
 
         # Code 200, 10, 283: Missing permissions
         if code in (200, 10, 283) or "permission" in safe_msg.lower():
@@ -123,27 +135,42 @@ def parse_instagram_error(
                 f"Instagram permission denied (Code #{code}): {safe_msg}. "
                 "Ensure your token has 'instagram_content_publish', 'pages_show_list', and 'pages_read_engagement' permissions."
             )
-            return InstagramPermissionError(safe_msg, code=code, subcode=subcode, error_type=err_type, user_message=user_msg)
+            return InstagramPermissionError(
+                safe_msg, code=code, subcode=subcode, error_type=err_type,
+                user_message=user_msg, fbtrace_id=fbtrace_id, http_status=http_status
+            )
 
         # Code 9007 / Subcode 2207027: Media not ready for publishing
         if code == 9007 or subcode == 2207027 or "media is not ready" in safe_msg.lower():
             user_msg = f"Instagram media container is not ready for publishing (Code #{code}, Subcode #{subcode}): {safe_msg}"
-            return InstagramProcessingFailedError(safe_msg, code=code, subcode=subcode, error_type=err_type, user_message=user_msg)
+            return InstagramProcessingFailedError(
+                safe_msg, code=code, subcode=subcode, error_type=err_type,
+                user_message=user_msg, fbtrace_id=fbtrace_id, http_status=http_status
+            )
 
         # Code 100 / Unsupported request / Invalid Object ID
         if code == 100 and ("object with id" in safe_msg.lower() or "unsupported post request" in safe_msg.lower()):
             user_msg = "Invalid Instagram Account ID. Ensure you have configured the Instagram Professional (Creator/Business) Account ID."
-            return InstagramConfigError(safe_msg, code=code, subcode=subcode, error_type=err_type, user_message=user_msg)
+            return InstagramConfigError(
+                safe_msg, code=code, subcode=subcode, error_type=err_type,
+                user_message=user_msg, fbtrace_id=fbtrace_id, http_status=http_status
+            )
 
         # Video URL accessibility error
         if "url could not be reached" in safe_msg.lower() or "failed to download" in safe_msg.lower() or "url is not accessible" in safe_msg.lower():
             user_msg = f"Instagram rejected video URL as inaccessible to Meta servers: {safe_msg}"
-            return InstagramVideoUrlError(safe_msg, code=code, subcode=subcode, error_type=err_type, user_message=user_msg)
+            return InstagramVideoUrlError(
+                safe_msg, code=code, subcode=subcode, error_type=err_type,
+                user_message=user_msg, fbtrace_id=fbtrace_id, http_status=http_status
+            )
 
-        return InstagramAPIError(safe_msg, code=code, subcode=subcode, error_type=err_type, user_message=safe_msg)
+        return InstagramAPIError(
+            safe_msg, code=code, subcode=subcode, error_type=err_type,
+            user_message=safe_msg, fbtrace_id=fbtrace_id, http_status=http_status
+        )
 
     fallback_text = redact(raw_text if raw_text is not None else str(res_data))
-    return InstagramAPIError(fallback_text, user_message=default_msg)
+    return InstagramAPIError(fallback_text, user_message=default_msg, http_status=http_status)
 
 
 def is_public_url(url: str) -> bool:

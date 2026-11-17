@@ -129,6 +129,7 @@ export interface SystemLogItem {
   module: string;
   level: string;
   message: string;
+  metadata_json?: string | null;
   created_at: string;
 }
 

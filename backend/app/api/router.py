@@ -1094,14 +1094,25 @@ async def import_google_secrets(request: Request, db: Session = Depends(get_db))
 
 # 9. Audit Logs
 @router.get("/logs")
-def get_system_logs(limit: int = 50, db: Session = Depends(get_db)):
-    logs = db.query(SystemLog).order_by(SystemLog.id.desc()).limit(limit).all()
+def get_system_logs(
+    limit: int = 100,
+    level: Optional[str] = None,
+    module: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(SystemLog)
+    if level and level.strip():
+        query = query.filter(SystemLog.level == level.strip().upper())
+    if module and module.strip():
+        query = query.filter(SystemLog.module.ilike(f"%{module.strip()}%"))
+    logs = query.order_by(SystemLog.id.desc()).limit(limit).all()
     return [{
         "id": l.id,
         "module": l.module,
         "level": l.level,
         "message": l.message,
-        "created_at": l.created_at
+        "metadata_json": l.metadata_json,
+        "created_at": l.created_at.isoformat() if l.created_at else None
     } for l in logs]
 
 # 10. Daily Limits & System Settings

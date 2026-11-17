@@ -215,8 +215,15 @@ export async function fetchYouTubeChannel(): Promise<any> {
   return res.json()
 }
 
-export async function fetchLogs(): Promise<SystemLogItem[]> {
-  const res = await fetch(`${API_BASE}/logs`)
+export async function fetchLogs(level?: string, module?: string): Promise<SystemLogItem[]> {
+  const params = new URLSearchParams()
+  if (level && level !== 'ALL') params.append('level', level)
+  if (module && module.trim()) params.append('module', module.trim())
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  const res = await fetch(`${API_BASE}/logs${qs}`)
+  if (!res.ok) {
+    throw new Error(`Failed to fetch audit logs: HTTP ${res.status} ${res.statusText}`)
+  }
   return res.json()
 }
 
