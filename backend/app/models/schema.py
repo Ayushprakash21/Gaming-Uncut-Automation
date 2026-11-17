@@ -56,6 +56,9 @@ class ProcessingJob(Base):
     error_message = Column(Text, nullable=True)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
+    last_heartbeat = Column(DateTime, nullable=True)
+    worker_pid = Column(Integer, nullable=True)
+    cancellation_requested = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     source_video = relationship("SourceVideo", back_populates="processing_jobs")
@@ -113,6 +116,16 @@ class ClipMetadata(Base):
     youtube_desc = Column(Text, nullable=True)
     instagram_caption = Column(Text, nullable=True)
     facebook_caption = Column(Text, nullable=True)
+    detected_game = Column(String(100), default="Unknown Game")
+    game_confidence = Column(Float, default=0.0)
+    game_franchise = Column(String(100), nullable=True)
+    game_genre = Column(String(100), nullable=True)
+    gameplay_summary = Column(Text, nullable=True)
+    detected_events_json = Column(Text, nullable=True)
+    candidate_titles_json = Column(Text, nullable=True)
+    analysis_provider = Column(String(50), default="heuristic")
+    analysis_status = Column(String(50), default="complete")
+    analysis_fingerprint = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     clip = relationship("GeneratedClip", back_populates="metadata_rel")
@@ -150,6 +163,7 @@ class PlatformUpload(Base):
     external_url = Column(Text, nullable=True)
     status = Column(String(50), default="pending")  # pending, uploading, processing, published, failed
     error_message = Column(Text, nullable=True)
+    error_code = Column(String(50), nullable=True)
     attempts = Column(Integer, default=0)
     uploaded_at = Column(DateTime, nullable=True)
 

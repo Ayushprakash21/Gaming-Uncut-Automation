@@ -132,12 +132,14 @@ class SecureVault:
             "client_id": info.get("client_id", "")[:12] + "..."
         }
 
-    def import_meta_credentials(self, app_id: str, app_secret: str, page_token: str, ig_id: str = ""):
+    def import_meta_credentials(self, app_id: str, app_secret: str, page_token: str, ig_id: str = "", page_id: str = ""):
         self.set_secret("meta", "app_id", app_id.strip())
         self.set_secret("meta", "app_secret", app_secret.strip())
         self.set_secret("meta", "page_access_token", page_token.strip())
         if ig_id:
             self.set_secret("meta", "instagram_account_id", ig_id.strip())
+        if page_id:
+            self.set_secret("meta", "page_id", page_id.strip())
 
     def set_gemini_api_key(self, api_key: str):
         self.set_secret("gemini", "api_key", api_key.strip())

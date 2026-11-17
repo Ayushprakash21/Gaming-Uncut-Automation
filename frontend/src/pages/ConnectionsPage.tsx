@@ -28,7 +28,8 @@ import {
   getYouTubeOAuthStatus,
   cancelYouTubeOAuth,
   testYouTubeConnection,
-  disconnectYouTubeAccount
+  disconnectYouTubeAccount,
+  testFacebookConnection
 } from '../services/api'
 import { ConnectionsData, SystemLimits } from '../types'
 
@@ -55,7 +56,10 @@ export const ConnectionsPage: React.FC = () => {
   const [metaAppId, setMetaAppId] = useState('')
   const [metaAppSecret, setMetaAppSecret] = useState('')
   const [metaPageToken, setMetaPageToken] = useState('')
+  const [metaPageId, setMetaPageId] = useState('')
   const [metaIgId, setMetaIgId] = useState('')
+  const [testingFb, setTestingFb] = useState(false)
+  const [fbTestResult, setFbTestResult] = useState<any | null>(null)
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
 
@@ -74,6 +78,9 @@ export const ConnectionsPage: React.FC = () => {
     try {
       const data = await fetchConnections()
       setConnections(data)
+      if (data.facebook?.page_id || data.meta?.page_id) {
+        setMetaPageId(data.facebook?.page_id || data.meta?.page_id || '')
+      }
       const limitsData = await fetchSystemLimits()
       if (limitsData) setLimits(limitsData)
     } catch (e) {
@@ -224,6 +231,7 @@ export const ConnectionsPage: React.FC = () => {
         meta_app_id: metaAppId || undefined,
         meta_app_secret: metaAppSecret || undefined,
         meta_page_token: metaPageToken || undefined,
+        meta_page_id: metaPageId || undefined,
         meta_ig_id: metaIgId || undefined
       })
       setMsg('Credentials encrypted and securely stored in Windows Credential Manager / Vault.')
@@ -235,6 +243,19 @@ export const ConnectionsPage: React.FC = () => {
       alert('Error saving credentials: ' + err.message)
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleTestFacebook = async () => {
+    setTestingFb(true)
+    setFbTestResult(null)
+    try {
+      const res = await testFacebookConnection()
+      setFbTestResult(res)
+    } catch (err: any) {
+      setFbTestResult({ authenticated: false, message: err.message })
+    } finally {
+      setTestingFb(false)
     }
   }
 
@@ -326,10 +347,17 @@ export const ConnectionsPage: React.FC = () => {
             <span className="font-bold text-xs text-slate-200">Instagram & Facebook</span>
           </div>
           <p className="text-[11px] text-slate-400">
-            {connections?.meta.token_configured ? 'Page Access Token Active' : 'Access Token Pending'}
+            {connections?.facebook.connected
+              ? 'Facebook Page & IG Connected'
+              : connections?.meta.token_configured
+              ? 'Page Access Token Active (Page ID required)'
+              : 'Access Token Pending'}
           </p>
           <div className="text-[10px] text-slate-400 font-mono">
-            IG Account: {connections?.meta.instagram_account_id || 'Configured in Vault'}
+            Page ID: {connections?.facebook?.page_id || connections?.meta?.page_id || 'Pending'}
+          </div>
+          <div className="text-[10px] text-slate-400 font-mono">
+            IG Account: {connections?.meta.instagram_account_id || 'Pending'}
           </div>
         </div>
 
@@ -678,7 +706,7 @@ export const ConnectionsPage: React.FC = () => {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-2">
             <label className="block text-xs font-semibold text-slate-300">Meta Page Access Token</label>
             <input
@@ -686,6 +714,17 @@ export const ConnectionsPage: React.FC = () => {
               value={metaPageToken}
               onChange={(e) => setMetaPageToken(e.target.value)}
               placeholder="EAAB... (Long-lived token)"
+              className="w-full bg-[#0a0d14] border border-gaming-border rounded-xl px-3.5 py-2.5 text-xs text-slate-200 placeholder-slate-600 font-mono"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="block text-xs font-semibold text-slate-300">Facebook Page ID</label>
+            <input
+              type="text"
+              value={metaPageId}
+              onChange={(e) => setMetaPageId(e.target.value)}
+              placeholder="e.g. 109283746501928"
               className="w-full bg-[#0a0d14] border border-gaming-border rounded-xl px-3.5 py-2.5 text-xs text-slate-200 placeholder-slate-600 font-mono"
             />
           </div>
@@ -702,13 +741,58 @@ export const ConnectionsPage: React.FC = () => {
           </div>
         </div>
 
-        <button
-          type="submit"
-          disabled={saving}
-          className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-6 py-2.5 rounded-xl transition"
-        >
-          {saving ? 'Encrypting & Storing...' : 'Save Secrets to Secure Vault'}
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="submit"
+            disabled={saving}
+            className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-6 py-2.5 rounded-xl transition"
+          >
+            {saving ? 'Encrypting & Storing...' : 'Save Secrets to Secure Vault'}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleTestFacebook}
+            disabled={testingFb}
+            className="border border-blue-500/40 bg-blue-500/10 hover:bg-blue-500/20 text-blue-300 font-bold text-xs px-4 py-2.5 rounded-xl transition flex items-center space-x-2"
+          >
+            <Share2 className="w-3.5 h-3.5" />
+            <span>{testingFb ? 'Verifying Facebook API...' : 'Test Facebook Page & Permissions'}</span>
+          </button>
+        </div>
+
+        {fbTestResult && (
+          <div className={`p-4 rounded-xl text-xs space-y-1.5 border ${
+            fbTestResult.authenticated && !fbTestResult.missing_permissions?.length
+              ? 'bg-emerald-950/30 border-emerald-500/30 text-emerald-200'
+              : 'bg-rose-950/30 border-rose-500/30 text-rose-200'
+          }`}>
+            <div className="font-bold flex items-center space-x-2">
+              <span>{fbTestResult.authenticated ? '✓ Facebook Token & Page Verified' : '✗ Facebook Verification Failed'}</span>
+              {fbTestResult.error_code && (
+                <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-rose-900/50 text-rose-300 border border-rose-700/50">
+                  Code: {fbTestResult.error_code} {fbTestResult.subcode ? `(Subcode: ${fbTestResult.subcode})` : ''}
+                </span>
+              )}
+            </div>
+            <p>{fbTestResult.message}</p>
+            {fbTestResult.page_name && (
+              <div className="text-[11px] text-slate-300 font-mono">
+                Page: {fbTestResult.page_name} (ID: {fbTestResult.page_id})
+              </div>
+            )}
+            {fbTestResult.permissions?.length > 0 && (
+              <div className="text-[11px] text-slate-400 font-mono">
+                Granted Scopes: {fbTestResult.permissions.join(', ')}
+              </div>
+            )}
+            {fbTestResult.missing_permissions?.length > 0 && (
+              <div className="text-[11px] text-amber-300 font-mono font-semibold">
+                Missing Required Scopes: {fbTestResult.missing_permissions.join(', ')}
+              </div>
+            )}
+          </div>
+        )}
       </form>
 
       {/* Daily Limits & Production Targets Form */}

@@ -11,12 +11,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 
 from backend.app.core.config import settings
-from backend.app.database.session import engine, Base
+from backend.app.database.session import engine, Base, ensure_schema_compatibility
 from backend.app.api.router import router as api_router
 from backend.app.scheduler.manager import task_scheduler
+from backend.app.services.pipeline_service import pipeline_service
 
-# Create tables
+# Create tables and guarantee column compatibility
 Base.metadata.create_all(bind=engine)
+ensure_schema_compatibility(engine)
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -107,6 +109,11 @@ else:
 @app.on_event("startup")
 def on_startup():
     task_scheduler.start()
+    try:
+        pipeline_service.detect_and_recover_stalled_jobs()
+    except Exception as e:
+        import logging
+        logging.getLogger("gaming_uncut").warning(f"Startup stalled job recovery notice: {e}")
 
 @app.on_event("shutdown")
 def on_shutdown():

@@ -103,9 +103,9 @@ class ClipPipeline:
                 self.compositor.generate_thumbnail(output_clip_path, thumb_path)
 
                 # 4. Generate Smart Title & Hashtags
-                title = f"Insane Gaming Clutch Moment #{moment_id}"
-                description = "Watch this epic play! Like and Subscribe for more high-intensity gaming moments."
-                hashtags = "#GamingUncut #Shorts #Gaming #Gameplay #Clutch #Gamer"
+                title = f"Gameplay Sequence #{moment_id} | Gaming Uncut"
+                description = "Raw uncut gameplay sequence. Daily gaming highlights from Gaming Uncut."
+                hashtags = "#GamingUncut #Shorts #GameplayMoments #GamingClip"
 
                 approval_status = "approved" if (settings.WORKFLOW_MODE == "auto" and score >= settings.MIN_QUALITY_SCORE) else "pending"
 

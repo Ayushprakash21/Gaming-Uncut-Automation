@@ -4,11 +4,11 @@ import struct
 import subprocess
 import logging
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger("gaming_uncut.audio_analyzer")
 
-def extract_pcm_wav(video_path: Path, output_wav: Path) -> Path:
+def extract_pcm_wav(video_path: Path, output_wav: Path, job_id: Optional[int] = None) -> Path:
     """Extracts 16kHz mono 16-bit PCM WAV for signal processing."""
     raw_str = str(video_path).strip().strip('\"\'')
     clean = raw_str.replace("\\", "/").lower()
@@ -36,11 +36,16 @@ def extract_pcm_wav(video_path: Path, output_wav: Path) -> Path:
         "-f", "wav",
         str(output_wav)
     ]
-    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if res.returncode != 0:
-        err_msg = res.stderr.strip() if res.stderr else f"FFmpeg exited with code {res.returncode}"
-        logger.error(f"FFmpeg audio extraction error (code {res.returncode}): {err_msg}")
-        raise RuntimeError(f"FFmpeg audio extraction failed (exit code {res.returncode}): {err_msg}")
+
+    if job_id:
+        from backend.app.services.pipeline_service import pipeline_service
+        pipeline_service.run_cancellable_subprocess(cmd=cmd, job_id=job_id, check=True)
+    else:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if res.returncode != 0:
+            err_msg = res.stderr.strip() if res.stderr else f"FFmpeg exited with code {res.returncode}"
+            logger.error(f"FFmpeg audio extraction error (code {res.returncode}): {err_msg}")
+            raise RuntimeError(f"FFmpeg audio extraction failed (exit code {res.returncode}): {err_msg}")
 
     if not output_wav.exists() or output_wav.stat().st_size == 0:
         raise FileNotFoundError(f"FFmpeg audio extraction completed but output WAV is empty or missing: '{output_wav}'")

@@ -6,7 +6,8 @@ import {
 } from 'lucide-react'
 import {
   validateSource, generateReel, fetchJobProgress,
-  updateClipMetadata, addClipToQueue, fetchConnections
+  updateClipMetadata, addClipToQueue, fetchConnections,
+  reanalyzeClip
 } from '../services/api'
 
 interface CreateReelPageProps {
@@ -54,6 +55,8 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
   const [editTopic, setEditTopic] = useState('')
   const [editHashtags, setEditHashtags] = useState('')
   const [editDesc, setEditDesc] = useState('')
+  const [candidateTitles, setCandidateTitles] = useState<string[]>([])
+  const [reanalyzing, setReanalyzing] = useState(false)
   const [saveSuccessMsg, setSaveSuccessMsg] = useState('')
   const [queueSuccessMsg, setQueueSuccessMsg] = useState('')
 
@@ -177,6 +180,7 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
           setEditTopic(job.clip.topic || 'Gaming')
           setEditHashtags(job.clip.hashtags || '')
           setEditDesc(job.clip.description || '')
+          setCandidateTitles(job.clip.candidate_titles || (job.clip.title ? [job.clip.title] : []))
         }
       } else if (job.status === 'failed') {
         clearInterval(pollTimerRef.current)
@@ -184,6 +188,33 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
       }
     } catch (err) {
       console.error('Error polling job:', err)
+    }
+  }
+
+  const handleReanalyze = async () => {
+    if (!completedClip?.id) return
+    setReanalyzing(true)
+    try {
+      const res = await reanalyzeClip(completedClip.id)
+      if (res.metadata) {
+        setEditTitle(res.metadata.title)
+        setEditTopic(res.metadata.topic)
+        setEditDesc(res.metadata.description)
+        setEditHashtags(res.metadata.hashtags)
+        setCandidateTitles(res.metadata.candidate_titles || [res.metadata.title])
+        setCompletedClip((prev: any) => ({
+          ...prev,
+          ...res.metadata,
+          detected_events: res.analysis?.gameplay?.events || prev?.detected_events,
+          gameplay_summary: res.analysis?.gameplay?.summary || prev?.gameplay_summary
+        }))
+        setSaveSuccessMsg('Multimodal video analysis complete! Fresh titles and metadata generated.')
+        setTimeout(() => setSaveSuccessMsg(''), 4000)
+      }
+    } catch (err: any) {
+      alert('Re-analysis failed: ' + err.message)
+    } finally {
+      setReanalyzing(false)
     }
   }
 
@@ -357,8 +388,32 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
                 <span>Processing & Vertical Template</span>
               </span>
               <span className="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded font-mono">
-                1080×1920 • 9:16 • 60s
+                1080×1920 • 9:16 Portrait • {targetDuration}s
               </span>
+            </div>
+
+            {/* Shorts Duration Selector */}
+            <div className="flex items-center justify-between bg-[#0a0d14] p-2.5 rounded-xl border border-gaming-border">
+              <span className="text-xs text-slate-300 font-semibold flex items-center space-x-1.5">
+                <Clock className="w-3.5 h-3.5 text-purple-400" />
+                <span>Target Shorts Duration:</span>
+              </span>
+              <div className="flex items-center space-x-1.5">
+                {[30, 60, 90, 120, 180].map((dur) => (
+                  <button
+                    key={dur}
+                    type="button"
+                    onClick={() => setTargetDuration(dur)}
+                    className={`px-2.5 py-1 text-xs rounded-lg font-mono font-bold transition ${
+                      targetDuration === dur
+                        ? 'bg-purple-600 text-white shadow'
+                        : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {dur}s{dur === 60 ? ' (Default)' : dur === 180 ? ' (Max)' : ''}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Template Selector */}
@@ -633,28 +688,128 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
 
             {/* AI Metadata & Editor */}
             <div className="md:col-span-7 space-y-4 bg-[#0a0d14] border border-gaming-border rounded-2xl p-5">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                <h4 className="text-xs font-bold uppercase tracking-wider text-purple-400 flex items-center space-x-1.5">
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>AI Generated Publishing Metadata</span>
-                </h4>
-                <button
-                  type="button"
-                  onClick={() => setIsEditingMeta(!isEditingMeta)}
-                  className="text-xs text-slate-400 hover:text-purple-400 flex items-center space-x-1 transition"
-                >
-                  <Edit3 className="w-3.5 h-3.5" />
-                  <span>{isEditingMeta ? 'Cancel' : 'Edit Metadata'}</span>
-                </button>
+              <div className="flex flex-wrap items-center justify-between border-b border-slate-800 pb-3 gap-2">
+                <div className="flex items-center space-x-2">
+                  <Sparkles className="w-4 h-4 text-purple-400" />
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-purple-400">
+                    Content Intelligence & Metadata
+                  </h4>
+                  <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border ${
+                    completedClip?.analysis_provider === 'gemini'
+                      ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                      : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                  }`}>
+                    {completedClip?.analysis_provider === 'gemini' ? 'Gemini Vision AI' : 'Signal-Fusion Engine (Heuristic)'}
+                  </span>
+                </div>
+
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={handleReanalyze}
+                    disabled={reanalyzing}
+                    className="text-xs px-2.5 py-1 bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 rounded-lg flex items-center space-x-1.5 transition disabled:opacity-50"
+                  >
+                    <RotateCcw className={`w-3 h-3 ${reanalyzing ? 'animate-spin' : ''}`} />
+                    <span>{reanalyzing ? 'Analyzing Frames...' : 'Re-analyse Video'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingMeta(!isEditingMeta)}
+                    className="text-xs text-slate-400 hover:text-purple-400 flex items-center space-x-1 transition"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>{isEditingMeta ? 'Cancel' : 'Edit'}</span>
+                  </button>
+                </div>
               </div>
 
               {saveSuccessMsg && (
-                <div className="text-xs text-emerald-400 font-semibold">{saveSuccessMsg}</div>
+                <div className="text-xs text-emerald-400 font-semibold bg-emerald-950/30 border border-emerald-500/30 px-3 py-2 rounded-xl">
+                  {saveSuccessMsg}
+                </div>
               )}
 
-              <div className="space-y-3">
+              {/* Game Intelligence Banner */}
+              <div className="bg-[#111827] border border-gaming-border rounded-xl p-3.5 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-xs font-bold text-slate-200">
+                      Game: <span className="text-purple-300">{completedClip?.detected_game || 'Unknown Game'}</span>
+                    </span>
+                    {(completedClip?.game_confidence || 0) > 0 ? (
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-900/40 text-purple-200 border border-purple-700/40 font-bold">
+                        {Math.round((completedClip.game_confidence || 0) * 100)}% Confidence
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                        Neutral Terminology
+                      </span>
+                    )}
+                  </div>
+                  {completedClip?.game_genre && (
+                    <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950/40 px-2 py-0.5 rounded border border-cyan-800/40">
+                      {completedClip.game_genre}
+                    </span>
+                  )}
+                </div>
+
+                {completedClip?.gameplay_summary && (
+                  <p className="text-[11px] text-slate-400 line-clamp-2">
+                    {completedClip.gameplay_summary}
+                  </p>
+                )}
+
+                {/* Detected Events Pills */}
+                {completedClip?.detected_events && completedClip.detected_events.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {completedClip.detected_events.map((ev: any, idx: number) => (
+                      <span
+                        key={idx}
+                        className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 flex items-center space-x-1"
+                        title={ev.visual_evidence || ev.name}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                        <span>{ev.name} ({ev.start?.toFixed ? `${ev.start.toFixed(1)}s` : ev.start})</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* 5 Selectable Title Candidates */}
+              {candidateTitles && candidateTitles.length > 0 && (
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wide">
+                    AI Title Options (Click to select candidate)
+                  </label>
+                  <div className="grid grid-cols-1 gap-1.5">
+                    {candidateTitles.map((candTitle, idx) => {
+                      const isSelected = editTitle === candTitle
+                      return (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => setEditTitle(candTitle)}
+                          className={`text-left text-xs p-2.5 rounded-xl border transition flex items-center justify-between ${
+                            isSelected
+                              ? 'bg-purple-600/20 border-purple-500 text-purple-200 font-bold ring-1 ring-purple-500/50'
+                              : 'bg-[#111827] border-slate-800 text-slate-300 hover:border-slate-700 hover:bg-slate-900'
+                          }`}
+                        >
+                          <span className="line-clamp-1">{candTitle}</span>
+                          {isSelected && <Check className="w-3.5 h-3.5 text-purple-400 flex-shrink-0 ml-2" />}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-3 pt-1">
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-1">Title</label>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-1">Active Title</label>
                   <input
                     type="text"
                     disabled={!isEditingMeta}
@@ -666,7 +821,7 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-1">Topic</label>
+                    <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-1">Topic / Genre</label>
                     <input
                       type="text"
                       disabled={!isEditingMeta}

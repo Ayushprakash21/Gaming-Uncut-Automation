@@ -178,8 +178,11 @@ def is_platform_authorized(platform: str) -> Tuple[bool, Optional[str]]:
         return True, None
     elif platform == "facebook":
         token = vault.get_secret("meta", "page_access_token")
+        page_id = vault.get_secret("meta", "page_id")
         if not token:
             return False, "Facebook Page not authorized. Configure Meta Page access token in Settings."
+        if not page_id:
+            return False, "Facebook Page ID not configured. Configure Facebook Page ID in Settings."
         return True, None
     return False, f"Unknown platform: '{platform}'"
 

@@ -67,6 +67,11 @@ class UpdateClipMetadataRequest(BaseModel):
     topic: Optional[str] = None
     description: Optional[str] = None
     hashtags: Optional[str] = None
+    detected_game: Optional[str] = None
+    youtube_title: Optional[str] = None
+    youtube_desc: Optional[str] = None
+    instagram_caption: Optional[str] = None
+    facebook_caption: Optional[str] = None
 
 class AddToQueueRequest(BaseModel):
     platforms: Optional[List[str]] = ["youtube", "instagram", "facebook"]
@@ -78,6 +83,10 @@ class ConnectionUpdateRequest(BaseModel):
     meta_app_secret: Optional[str] = None
     meta_page_token: Optional[str] = None
     meta_ig_id: Optional[str] = None
+
+class BatchRegenerateMetadataRequest(BaseModel):
+    clip_ids: Optional[List[int]] = None
+    force_all: Optional[bool] = False
 
 # 1. Health & System Info
 @router.get("/health")
@@ -449,13 +458,14 @@ def get_job_progress(job_id: int, db: Session = Depends(get_db)):
         "stages": stages_list,
         "clip": clip_data,
         "started_at": job.started_at,
-        "completed_at": job.completed_at
+        "completed_at": job.completed_at,
+        "cancelled_at": job.completed_at if job.status == "cancelled" else None
     }
 
-# 6. Processing Queue List
+# 6. Processing Queue List & Individual Job Actions
 @router.get("/jobs")
 def list_jobs(db: Session = Depends(get_db)):
-    jobs = db.query(ProcessingJob).order_by(ProcessingJob.id.desc()).limit(50).all()
+    jobs = db.query(ProcessingJob).filter(ProcessingJob.status != "dismissed").order_by(ProcessingJob.id.desc()).limit(50).all()
     results = []
     for j in jobs:
         results.append({
@@ -467,9 +477,73 @@ def list_jobs(db: Session = Depends(get_db)):
             "current_step": j.current_step,
             "error_message": j.error_message,
             "started_at": j.started_at,
-            "completed_at": j.completed_at
+            "completed_at": j.completed_at,
+            "cancelled_at": j.completed_at if j.status == "cancelled" else None
         })
     return results
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: int, db: Session = Depends(get_db)):
+    """
+    Cancels an individual video processing job.
+    - Validates job exists (404).
+    - If status is 'completed', returns 400.
+    - If status is 'cancelled', returns 200 (idempotent).
+    - Signals cancellation to the pipeline and worker process tree.
+    - Persists cancelled state.
+    """
+    job = db.query(ProcessingJob).filter_by(id=job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job #{job_id} not found.")
+
+    if job.status.lower() == "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job #{job_id} has already completed and cannot be cancelled."
+        )
+
+    if job.status.lower() == "cancelled":
+        return {
+            "status": "already_cancelled",
+            "job_id": job_id,
+            "message": f"Job #{job_id} is already cancelled."
+        }
+
+    # Request cancellation via pipeline service (kills active subprocesses, sets flags)
+    pipeline_service.request_job_cancellation(job_id)
+    
+    # Reload job status from DB
+    db.refresh(job)
+
+    return {
+        "status": job.status,
+        "job_id": job.id,
+        "message": f"Job #{job.id} cancellation requested successfully."
+    }
+
+@router.post("/jobs/{job_id}/dismiss")
+def dismiss_job(job_id: int, db: Session = Depends(get_db)):
+    """
+    Dismisses a failed or cancelled job from the processing queue UI.
+    """
+    job = db.query(ProcessingJob).filter_by(id=job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job #{job_id} not found.")
+
+    if job.status.lower() not in ("failed", "cancelled", "stalled"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only failed or cancelled jobs can be dismissed (Job #{job_id} is '{job.status}')."
+        )
+
+    job.status = "dismissed"
+    db.commit()
+
+    return {
+        "status": "dismissed",
+        "job_id": job.id,
+        "message": f"Job #{job.id} dismissed from queue."
+    }
 
 # 5. Content Library & Clips
 @router.get("/clips")
@@ -479,6 +553,8 @@ def list_clips(status: Optional[str] = None, db: Session = Depends(get_db)):
     out = []
     for c in clips:
         meta = c.metadata_rel
+        events = json.loads(meta.detected_events_json) if meta and meta.detected_events_json else []
+        candidate_titles = json.loads(meta.candidate_titles_json) if meta and meta.candidate_titles_json else ([meta.title] if meta else [])
         out.append({
             "id": c.id,
             "video_url": f"/media/output/{Path(c.output_path).name}",
@@ -491,9 +567,50 @@ def list_clips(status: Optional[str] = None, db: Session = Depends(get_db)):
             "topic": meta.topic if meta else "Gaming",
             "description": meta.description if meta else "",
             "hashtags": meta.hashtags if meta else "",
+            "detected_game": meta.detected_game if meta else "Unknown Game",
+            "game_confidence": meta.game_confidence if meta else 0.0,
+            "game_franchise": meta.game_franchise if meta else "",
+            "game_genre": meta.game_genre if meta else "",
+            "gameplay_summary": meta.gameplay_summary if meta else "",
+            "detected_events": events,
+            "candidate_titles": candidate_titles,
+            "analysis_provider": meta.analysis_provider if meta else "heuristic",
+            "analysis_status": meta.analysis_status if meta else "complete",
             "created_at": c.created_at
         })
     return out
+
+@router.get("/clips/{clip_id}")
+def get_clip(clip_id: int, db: Session = Depends(get_db)):
+    clip = db.query(GeneratedClip).filter_by(id=clip_id).first()
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found.")
+    meta = clip.metadata_rel
+    events = json.loads(meta.detected_events_json) if meta and meta.detected_events_json else []
+    candidate_titles = json.loads(meta.candidate_titles_json) if meta and meta.candidate_titles_json else ([meta.title] if meta else [])
+    return {
+        "id": clip.id,
+        "video_url": f"/media/output/{Path(clip.output_path).name}",
+        "thumbnail_url": f"/media/thumbnails/{Path(clip.thumbnail_path).name}" if clip.thumbnail_path else None,
+        "duration_sec": clip.duration_sec,
+        "layout_template": clip.layout_template,
+        "quality_score": clip.quality_score,
+        "validation_status": clip.validation_status,
+        "title": meta.title if meta else "Gaming Moment",
+        "topic": meta.topic if meta else "Gaming",
+        "description": meta.description if meta else "",
+        "hashtags": meta.hashtags if meta else "",
+        "detected_game": meta.detected_game if meta else "Unknown Game",
+        "game_confidence": meta.game_confidence if meta else 0.0,
+        "game_franchise": meta.game_franchise if meta else "",
+        "game_genre": meta.game_genre if meta else "",
+        "gameplay_summary": meta.gameplay_summary if meta else "",
+        "detected_events": events,
+        "candidate_titles": candidate_titles,
+        "analysis_provider": meta.analysis_provider if meta else "heuristic",
+        "analysis_status": meta.analysis_status if meta else "complete",
+        "created_at": clip.created_at
+    }
 
 # 6. Clip Controls & Metadata Updates
 @router.post("/clips/{clip_id}/metadata")
@@ -515,6 +632,16 @@ def update_clip_metadata(clip_id: int, req: UpdateClipMetadataRequest, db: Sessi
         meta.description = req.description.strip()
     if req.hashtags is not None:
         meta.hashtags = req.hashtags.strip()
+    if req.detected_game is not None:
+        meta.detected_game = req.detected_game.strip()
+    if req.youtube_title is not None:
+        meta.youtube_title = req.youtube_title.strip()
+    if req.youtube_desc is not None:
+        meta.youtube_desc = req.youtube_desc.strip()
+    if req.instagram_caption is not None:
+        meta.instagram_caption = req.instagram_caption.strip()
+    if req.facebook_caption is not None:
+        meta.facebook_caption = req.facebook_caption.strip()
     
     db.commit()
     return {
@@ -524,9 +651,44 @@ def update_clip_metadata(clip_id: int, req: UpdateClipMetadataRequest, db: Sessi
             "title": meta.title,
             "topic": meta.topic,
             "description": meta.description,
-            "hashtags": meta.hashtags
+            "hashtags": meta.hashtags,
+            "detected_game": meta.detected_game,
+            "youtube_title": meta.youtube_title,
+            "youtube_desc": meta.youtube_desc,
+            "instagram_caption": meta.instagram_caption,
+            "facebook_caption": meta.facebook_caption
         }
     }
+
+@router.post("/clips/{clip_id}/regenerate-metadata")
+@router.post("/clips/{clip_id}/reanalyze")
+def regenerate_clip_metadata_endpoint(clip_id: int, db: Session = Depends(get_db)):
+    """
+    Regenerates grounded, clip-specific metadata for a single historical clip
+    using its actual rendered MP4 video file on disk. Never auto-publishes.
+    """
+    from backend.app.services.metadata_regenerator import regenerate_clip_metadata
+    try:
+        res = regenerate_clip_metadata(clip_id=clip_id, db=db)
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to regenerate metadata: {str(e)}")
+
+@router.post("/clips/batch-regenerate-metadata")
+def batch_regenerate_metadata_endpoint(req: BatchRegenerateMetadataRequest, db: Session = Depends(get_db)):
+    """
+    Batch regenerates metadata for specified clip IDs or all clips flagged with generic templates.
+    """
+    from backend.app.services.metadata_regenerator import batch_regenerate_metadata
+    try:
+        report = batch_regenerate_metadata(db=db, clip_ids=req.clip_ids, force_all=bool(req.force_all))
+        return report
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Batch metadata regeneration failed: {str(e)}")
 
 @router.post("/clips/{clip_id}/queue")
 def add_clip_to_queue(clip_id: int, req: AddToQueueRequest, db: Session = Depends(get_db)):
@@ -669,6 +831,13 @@ def get_connections():
             "status_label": "Configured" if gemini_key else "Not Configured"
         }
     }
+
+@router.get("/settings/facebook/status")
+@router.post("/settings/facebook/test")
+def test_facebook_connection():
+    """Live diagnostic verification of Facebook Page credentials and publishing permissions."""
+    from backend.app.publishers.facebook.facebook_client import facebook_client
+    return facebook_client.test_connection()
 
 # Dedicated YouTube OAuth Endpoints
 @router.post("/settings/youtube/connect/start")

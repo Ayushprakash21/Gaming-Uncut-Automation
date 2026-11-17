@@ -129,7 +129,7 @@ class BaseSourceAdapter(ABC):
         pass
 
     @abstractmethod
-    def validate_and_ingest(self, url_or_path: str, auth_type: str = "user_owned") -> Dict[str, Any]:
+    def validate_and_ingest(self, url_or_path: str, auth_type: str = "user_owned", job_id: Optional[int] = None) -> Dict[str, Any]:
         """
         Validates the source, downloads/copies if necessary,
         returns normalized metadata and local file path.
@@ -169,7 +169,11 @@ class LocalFileAdapter(BaseSourceAdapter):
             "message": f"Local footage verified ({meta['width']}x{meta['height']}, {minutes}:{seconds:02d})."
         }
 
-    def validate_and_ingest(self, url_or_path: str, auth_type: str = "user_owned") -> Dict[str, Any]:
+    def validate_and_ingest(self, url_or_path: str, auth_type: str = "user_owned", job_id: Optional[int] = None) -> Dict[str, Any]:
+        if job_id:
+            from backend.app.services.pipeline_service import pipeline_service, JobCancelledException
+            if pipeline_service.is_cancellation_requested(job_id):
+                raise JobCancelledException(f"Job #{job_id} cancelled during local file ingestion.")
         raw_str = str(url_or_path).strip().strip('\"\'')
         path = Path(os.path.expandvars(os.path.expanduser(raw_str))).resolve()
         meta = probe_local_media(path)
@@ -226,7 +230,7 @@ class DirectUrlAdapter(BaseSourceAdapter):
         except Exception as e:
             raise ValueError(f"Direct stream validation error: {e}")
 
-    def validate_and_ingest(self, url_or_path: str, auth_type: str = "creator_authorized") -> Dict[str, Any]:
+    def validate_and_ingest(self, url_or_path: str, auth_type: str = "creator_authorized", job_id: Optional[int] = None) -> Dict[str, Any]:
         # Validate accessibility with HEAD request
         with httpx.Client(timeout=10.0, follow_redirects=True) as client:
             resp = client.head(url_or_path)
@@ -243,6 +247,10 @@ class DirectUrlAdapter(BaseSourceAdapter):
                 raise ValueError(f"Failed to stream direct URL: HTTP {response.status_code}")
             with open(dest_path, "wb") as f:
                 for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+                    if job_id:
+                        from backend.app.services.pipeline_service import pipeline_service, JobCancelledException
+                        if pipeline_service.is_cancellation_requested(job_id):
+                            raise JobCancelledException(f"Direct stream download cancelled for Job #{job_id}")
                     f.write(chunk)
 
         meta = probe_local_media(dest_path)
@@ -303,7 +311,12 @@ class YouTubeAdapter(BaseSourceAdapter):
         except Exception as e:
             raise ValueError(f"YouTube source validation failed: {e}")
 
-    def validate_and_ingest(self, url_or_path: str, auth_type: str = "creator_authorized") -> Dict[str, Any]:
+    def validate_and_ingest(self, url_or_path: str, auth_type: str = "creator_authorized", job_id: Optional[int] = None) -> Dict[str, Any]:
+        if job_id:
+            from backend.app.services.pipeline_service import pipeline_service, JobCancelledException
+            if pipeline_service.is_cancellation_requested(job_id):
+                raise JobCancelledException(f"Job #{job_id} cancelled prior to YouTube download.")
+
         canonical_url = normalize_youtube_url(url_or_path)
         video_id = extract_youtube_id(canonical_url)
         if not video_id:
@@ -314,6 +327,11 @@ class YouTubeAdapter(BaseSourceAdapter):
 
         # Concurrency protection: Lock per video ID so multiple jobs do not conflict
         with source_lock:
+            if job_id:
+                from backend.app.services.pipeline_service import pipeline_service, JobCancelledException
+                if pipeline_service.is_cancellation_requested(job_id):
+                    raise JobCancelledException(f"Job #{job_id} cancelled while acquiring source lock.")
+
             # 1. Deduplication / Cache: Check if already downloaded, readable, and non-empty
             if target_file.exists() and target_file.stat().st_size > 1024:
                 meta = probe_local_media(target_file)
@@ -338,6 +356,12 @@ class YouTubeAdapter(BaseSourceAdapter):
             unique_token = uuid.uuid4().hex[:8]
             temp_out_tmpl = str(settings.TEMP_DIR / f"yt_{video_id}_{unique_token}.%(ext)s")
 
+            def _yt_cancel_hook(d):
+                if job_id:
+                    from backend.app.services.pipeline_service import pipeline_service, JobCancelledException
+                    if pipeline_service.is_cancellation_requested(job_id):
+                        raise JobCancelledException(f"Job #{job_id} cancelled during YouTube download.")
+
             ydl_opts = {
                 "format": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
                 "outtmpl": temp_out_tmpl,
@@ -345,6 +369,7 @@ class YouTubeAdapter(BaseSourceAdapter):
                 "quiet": True,
                 "no_warnings": True,
                 "noplaylist": True,
+                "progress_hooks": [_yt_cancel_hook],
             }
 
             try:
@@ -427,7 +452,7 @@ class IngestionManager:
             )
         return matched_adapter.validate_source(raw)
 
-    def process_url_or_path(self, url_or_path: str, auth_type: str = "user_owned", notes: str = "") -> SourceVideo:
+    def process_url_or_path(self, url_or_path: str, auth_type: str = "user_owned", notes: str = "", job_id: Optional[int] = None) -> SourceVideo:
         target = url_or_path.strip()
         matched_adapter = next((a for a in self.adapters if a.can_handle(target)), None)
         
@@ -438,7 +463,7 @@ class IngestionManager:
             )
 
         logger.info(f"Ingesting source with {matched_adapter.__class__.__name__}: {target}")
-        data = matched_adapter.validate_and_ingest(target, auth_type=auth_type)
+        data = matched_adapter.validate_and_ingest(target, auth_type=auth_type, job_id=job_id)
 
         with SessionLocal() as db:
             # Check duplicate by local_path or URL

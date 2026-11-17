@@ -62,6 +62,12 @@ export interface ProcessingJobItem {
   error_message?: string;
   started_at?: string;
   completed_at?: string;
+  cancelled_at?: string;
+  detected_game?: string;
+  game_confidence?: number;
+  gameplay_event?: string;
+  analysis_status?: string;
+  analysis_provider?: string;
 }
 
 export interface GeneratedClipItem {
@@ -76,6 +82,22 @@ export interface GeneratedClipItem {
   topic?: string;
   description?: string;
   hashtags?: string;
+  detected_game?: string;
+  game_confidence?: number;
+  game_franchise?: string;
+  game_genre?: string;
+  gameplay_summary?: string;
+  detected_events?: Array<{
+    name: string;
+    start: number;
+    end: number;
+    confidence?: number;
+    visual_evidence?: string;
+    importance_score?: number;
+  }>;
+  candidate_titles?: string[];
+  analysis_provider?: string;
+  analysis_status?: string;
   created_at: string;
 }
 
@@ -84,10 +106,20 @@ export interface PublishingQueueItem {
   job_id: number;
   platform: 'youtube' | 'instagram' | 'facebook';
   status: string;
+  approval_status?: string;
   external_url?: string;
+  error_code?: string;
   error_message?: string;
   attempts: number;
   title: string;
+  description?: string;
+  hashtags?: string;
+  detected_game?: string;
+  game_confidence?: number;
+  gameplay_summary?: string;
+  analysis_status?: string;
+  analysis_provider?: string;
+  thumbnail_url?: string;
   scheduled_time?: string;
   uploaded_at?: string;
 }
@@ -131,10 +163,12 @@ export interface ConnectionsData {
     connected: boolean;
     status: string;
     status_label: string;
+    page_id?: string;
   };
   meta: {
     app_configured: boolean;
     token_configured: boolean;
+    page_id?: string;
     instagram_account_id: string;
   };
   gemini: {

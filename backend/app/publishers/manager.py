@@ -11,9 +11,12 @@ from typing import Dict, Any, List
 
 from backend.app.database.session import SessionLocal
 from backend.app.models.schema import PublishingJob, PlatformUpload, GeneratedClip, ClipMetadata, SystemLog
-from backend.app.publishers.youtube.youtube_client import youtube_client
+from backend.app.publishers.youtube.youtube_client import youtube_client, YouTubeShortsValidationError
 from backend.app.publishers.instagram.instagram_client import instagram_client
-from backend.app.publishers.facebook.facebook_client import facebook_client
+from backend.app.publishers.facebook.facebook_client import (
+    facebook_client, FacebookAPIError, FacebookTokenExpiredError,
+    FacebookPermissionError, FacebookConfigError, FacebookRateLimitError as ClientFBRateLimitError
+)
 from backend.app.publishers.quota_tracker import (
     can_publish, record_upload_success, record_platform_restriction,
     YouTubeQuotaExceededError, YouTubeChannelUploadLimitError,
@@ -46,10 +49,15 @@ class PublishingManager:
             job.attempts += 1
             db.commit()
 
-            title = meta.title if meta else "Epic Gaming Moment | Gaming Uncut"
-            desc = meta.description if meta else "Watch this high intensity moment from Gaming Uncut."
-            hashtags = [h.strip() for h in (meta.hashtags if meta else "#GamingUncut #Shorts").split() if h.startswith("#")]
+            title = meta.title if meta else "Raw Gameplay Sequence | Gaming Uncut"
+            desc = meta.description if meta else "Raw unedited gameplay capture from Gaming Uncut."
+            hashtags = [h.strip() for h in (meta.hashtags if meta else "#GamingUncut #Shorts #GameplayMoments").split() if h.startswith("#")]
             caption = f"{title}\n\n{desc}\n\n{' '.join(hashtags)}"
+
+            yt_title = (meta.youtube_title if meta and meta.youtube_title else title)
+            yt_desc = (meta.youtube_desc if meta and meta.youtube_desc else desc)
+            ig_caption = (meta.instagram_caption if meta and meta.instagram_caption else caption)
+            fb_caption = (meta.facebook_caption if meta and meta.facebook_caption else caption)
 
             results = {}
             rescheduled_windows = []
@@ -71,7 +79,7 @@ class PublishingManager:
                         yt_upload.status = "uploading"
                         yt_upload.attempts += 1
                         db.commit()
-                        res = youtube_client.upload_short(video_path, meta.youtube_title or title, meta.youtube_desc or desc, hashtags)
+                        res = youtube_client.upload_short(video_path, yt_title, yt_desc, hashtags)
                         yt_upload.status = "published"
                         yt_upload.external_post_id = res["post_id"]
                         yt_upload.external_url = res["url"]
@@ -88,6 +96,11 @@ class PublishingManager:
                         yt_upload.status = "paused_quota"
                         yt_upload.error_message = f"Paused: YouTube Channel Daily Upload Limit reached. Rescheduled for next window."
                         rescheduled_windows.append(next_win)
+                    except YouTubeShortsValidationError as e:
+                        yt_upload.status = "failed"
+                        yt_upload.error_code = "SHORTS_PROFILE_VIOLATION"
+                        yt_upload.error_message = str(e)
+                        logger.error(f"YouTube Shorts validation failed for Job #{job.id}: {e}")
                     except Exception as e:
                         yt_upload.status = "failed"
                         yt_upload.error_message = str(e)
@@ -111,7 +124,7 @@ class PublishingManager:
                         ig_upload.status = "uploading"
                         ig_upload.attempts += 1
                         db.commit()
-                        res = instagram_client.publish_reel(video_path, meta.instagram_caption or caption)
+                        res = instagram_client.publish_reel(video_path, ig_caption)
                         ig_upload.status = "published"
                         ig_upload.external_post_id = res["post_id"]
                         ig_upload.external_url = res["url"]
@@ -143,24 +156,55 @@ class PublishingManager:
                     logger.info(f"Safely skipping Facebook for Job #{job.id}: {pause_reason}")
                 else:
                     try:
-                        fb_upload.status = "uploading"
+                        fb_upload.status = "upload_initialized"
                         fb_upload.attempts += 1
+                        fb_upload.error_code = None
+                        fb_upload.error_message = None
                         db.commit()
-                        res = facebook_client.publish_reel(video_path, meta.facebook_caption or caption)
+
+                        def fb_stage_callback(stage: str):
+                            fb_upload.status = stage
+                            db.commit()
+
+                        res = facebook_client.publish_reel(
+                            video_path,
+                            fb_caption,
+                            stage_callback=fb_stage_callback
+                        )
                         fb_upload.status = "published"
+                        fb_upload.error_code = None
+                        fb_upload.error_message = None
                         fb_upload.external_post_id = res["post_id"]
                         fb_upload.external_url = res["url"]
                         fb_upload.uploaded_at = datetime.utcnow()
                         record_upload_success(db, "facebook", quota_units=0)
                         results["facebook"] = res
-                    except FacebookRateLimitError as e:
+                    except (FacebookRateLimitError, ClientFBRateLimitError) as e:
+                        code = str(getattr(e, "code", "613"))
                         next_win = record_platform_restriction(db, "facebook", "rate_limited", str(e))
                         fb_upload.status = "paused_quota"
-                        fb_upload.error_message = f"Paused: Facebook publishing rate limit. Rescheduled for next window."
+                        fb_upload.error_code = code
+                        fb_upload.error_message = getattr(e, "user_message", f"Paused: Facebook publishing rate limit ({code}). Rescheduled for next window.")
                         rescheduled_windows.append(next_win)
+                    except FacebookTokenExpiredError as e:
+                        fb_upload.status = "failed"
+                        fb_upload.error_code = str(e.code or "190")
+                        fb_upload.error_message = e.user_message
+                        logger.error(f"Facebook upload failed due to expired token: {e.user_message}")
+                    except FacebookPermissionError as e:
+                        fb_upload.status = "failed"
+                        fb_upload.error_code = str(e.code or "200")
+                        fb_upload.error_message = e.user_message
+                        logger.error(f"Facebook upload failed due to permissions: {e.user_message}")
+                    except FacebookConfigError as e:
+                        fb_upload.status = "failed"
+                        fb_upload.error_code = str(e.code or "CONFIG_ERROR")
+                        fb_upload.error_message = e.user_message
+                        logger.error(f"Facebook upload failed due to configuration: {e.user_message}")
                     except Exception as e:
                         fb_upload.status = "failed"
-                        fb_upload.error_message = str(e)
+                        fb_upload.error_code = str(getattr(e, "code", "UPLOAD_FAILED"))
+                        fb_upload.error_message = getattr(e, "user_message", str(e))
                         logger.error(f"Facebook upload failed: {e}")
                 db.commit()
 
@@ -181,9 +225,6 @@ class PublishingManager:
                 logger.info(f"Publishing Job #{job.id} safely paused: Platform authorization required.")
             else:
                 job.status = "failed"
-
-            db.commit()
-            return results
 
             db.commit()
             return results

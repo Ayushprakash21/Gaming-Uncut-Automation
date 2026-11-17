@@ -29,6 +29,55 @@ class _SessionLocalProxy:
 SessionLocal = _SessionLocalProxy()
 Base = declarative_base()
 
+def ensure_schema_compatibility(db_engine):
+    """Ensures existing SQLite databases contain newly added columns without data loss."""
+    from sqlalchemy import inspect, text
+    try:
+        inspector = inspect(db_engine)
+        if "processing_jobs" in inspector.get_table_names():
+            columns = [c["name"] for c in inspector.get_columns("processing_jobs")]
+            with db_engine.connect() as conn:
+                if "last_heartbeat" not in columns:
+                    conn.execute(text("ALTER TABLE processing_jobs ADD COLUMN last_heartbeat DATETIME"))
+                if "worker_pid" not in columns:
+                    conn.execute(text("ALTER TABLE processing_jobs ADD COLUMN worker_pid INTEGER"))
+                if "cancellation_requested" not in columns:
+                    conn.execute(text("ALTER TABLE processing_jobs ADD COLUMN cancellation_requested BOOLEAN DEFAULT 0"))
+                conn.commit()
+        if "platform_uploads" in inspector.get_table_names():
+            p_columns = [c["name"] for c in inspector.get_columns("platform_uploads")]
+            with db_engine.connect() as conn:
+                if "error_code" not in p_columns:
+                    conn.execute(text("ALTER TABLE platform_uploads ADD COLUMN error_code VARCHAR(50)"))
+                conn.commit()
+        if "clip_metadata" in inspector.get_table_names():
+            cm_cols = [c["name"] for c in inspector.get_columns("clip_metadata")]
+            with db_engine.connect() as conn:
+                if "detected_game" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN detected_game VARCHAR(100) DEFAULT 'Unknown Game'"))
+                if "game_confidence" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN game_confidence FLOAT DEFAULT 0.0"))
+                if "game_franchise" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN game_franchise VARCHAR(100)"))
+                if "game_genre" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN game_genre VARCHAR(100)"))
+                if "gameplay_summary" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN gameplay_summary TEXT"))
+                if "detected_events_json" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN detected_events_json TEXT"))
+                if "candidate_titles_json" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN candidate_titles_json TEXT"))
+                if "analysis_provider" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN analysis_provider VARCHAR(50) DEFAULT 'heuristic'"))
+                if "analysis_status" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN analysis_status VARCHAR(50) DEFAULT 'complete'"))
+                if "analysis_fingerprint" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN analysis_fingerprint VARCHAR(64)"))
+                conn.commit()
+    except Exception as e:
+        import logging
+        logging.getLogger("gaming_uncut.db").warning(f"Schema compatibility check warning: {e}")
+
 def get_db():
     db = SessionLocal()
     try:

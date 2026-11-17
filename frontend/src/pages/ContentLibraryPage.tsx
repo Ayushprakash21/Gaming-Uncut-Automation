@@ -91,9 +91,20 @@ export const ContentLibraryPage: React.FC = () => {
 
                 {/* Metadata Details */}
                 <div className="space-y-1.5 flex-1">
-                  <span className="text-[10px] uppercase font-mono font-bold text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded">
-                    {clip.topic || 'Gameplay Climax'}
-                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {clip.detected_game && clip.detected_game !== 'Unknown Game' ? (
+                      <span className="text-[10px] font-mono font-bold text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/30">
+                        {clip.detected_game} {clip.game_confidence ? `(${Math.round(clip.game_confidence * 100)}%)` : ''}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-mono text-slate-400 bg-slate-800 px-2 py-0.5 rounded">
+                        Action Gameplay
+                      </span>
+                    )}
+                    <span className="text-[10px] uppercase font-mono text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded">
+                      {clip.topic || 'Gaming'}
+                    </span>
+                  </div>
                   <h4 className="font-bold text-xs text-slate-200 line-clamp-2 leading-snug">{clip.title}</h4>
                   <p className="text-[11px] text-slate-400 line-clamp-2">{clip.description}</p>
                   <p className="text-[10px] font-mono text-cyan-400 line-clamp-1">{clip.hashtags}</p>

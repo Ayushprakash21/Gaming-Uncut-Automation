@@ -1,4 +1,5 @@
 import logging
+import threading
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
@@ -11,7 +12,6 @@ def get_whisper_model():
     if _whisper_instance is None:
         try:
             from faster_whisper import WhisperModel
-            # Use CUDA float16 or int8 for GTX 1650 (4GB VRAM)
             logger.info("Initializing faster-whisper with CUDA acceleration...")
             try:
                 _whisper_instance = WhisperModel("base", device="cuda", compute_type="float16")
@@ -23,41 +23,62 @@ def get_whisper_model():
             return None
     return _whisper_instance
 
-def transcribe_audio_words(wav_path: Path) -> Tuple[str, List[Dict[str, Any]]]:
+def _execute_transcription(wav_path: Path) -> Tuple[str, List[Dict[str, Any]]]:
+    model = get_whisper_model()
+    if model is None:
+        return "", []
+    segments, info = model.transcribe(
+        str(wav_path),
+        word_timestamps=True,
+        language="en",
+        vad_filter=True
+    )
+    
+    full_text_list = []
+    words_data = []
+
+    for seg in segments:
+        full_text_list.append(seg.text)
+        if seg.words:
+            for w in seg.words:
+                words_data.append({
+                    "word": w.word.strip(),
+                    "start": round(w.start, 2),
+                    "end": round(w.end, 2),
+                    "probability": round(w.probability, 2)
+                })
+
+    full_text = " ".join(full_text_list).strip()
+    logger.info(f"Transcribed {len(words_data)} words. Language: {getattr(info, 'language', 'unknown')}")
+    return full_text, words_data
+
+def transcribe_audio_words(wav_path: Path, timeout_seconds: float = 20.0) -> Tuple[str, List[Dict[str, Any]]]:
     """
-    Transcribes audio file and returns:
+    Transcribes audio file with strict bounded daemon thread timeout to prevent pipeline stalling.
+    Returns:
     (full_text, list of words with [{"word": str, "start": float, "end": float}])
     """
     if not wav_path.exists():
         return "", []
 
-    try:
-        model = get_whisper_model()
-        if model is None:
-            return "", []
-        segments, info = model.transcribe(str(wav_path), word_timestamps=True, language="en")
-        
-        full_text_list = []
-        words_data = []
+    result: List[Tuple[str, List[Dict[str, Any]]]] = []
 
-        for seg in segments:
-            full_text_list.append(seg.text)
-            if seg.words:
-                for w in seg.words:
-                    words_data.append({
-                        "word": w.word.strip(),
-                        "start": round(w.start, 2),
-                        "end": round(w.end, 2),
-                        "probability": round(w.probability, 2)
-                    })
+    def _worker():
+        try:
+            res = _execute_transcription(wav_path)
+            result.append(res)
+        except Exception as e:
+            logger.warning(f"Transcription error: {e}")
 
-        full_text = " ".join(full_text_list).strip()
-        logger.info(f"Transcribed {len(words_data)} words. Language: {info.language}")
-        return full_text, words_data
-    except Exception as e:
-        logger.warning(f"Transcription error: {e}")
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout_seconds)
+
+    if thread.is_alive() or not result:
+        logger.info(
+            f"Transcription bounded at {timeout_seconds}s for {wav_path.name}. "
+            "Proceeding with gameplay telemetry signals."
+        )
         return "", []
 
-    except Exception as e:
-        logger.error(f"Transcription error: {e}")
-        return "", []
+    return result[0]

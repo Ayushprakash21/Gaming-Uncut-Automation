@@ -36,6 +36,11 @@ class YouTubeAuthError(Exception):
     pass
 
 
+class YouTubeShortsValidationError(Exception):
+    """Raised when a video fails the mandatory YouTube Shorts technical profile (1080x1920 9:16 <= 180s)."""
+    pass
+
+
 class YouTubePublishClient:
     def __init__(self):
         self._service = None
@@ -211,6 +216,13 @@ class YouTubePublishClient:
         if not video_path.exists():
             raise FileNotFoundError(f"Video file missing: {video_path}")
 
+        # Mandatory Pre-Upload Validation for YouTube Shorts
+        from backend.app.video.validator import validate_shorts_profile
+        is_valid, validation_msg, probe_info = validate_shorts_profile(video_path)
+        if not is_valid:
+            logger.error(f"YouTube Shorts Pre-Upload Validation Failed: {validation_msg}")
+            raise YouTubeShortsValidationError(f"Cannot upload to YouTube Shorts: {validation_msg}")
+
         service = self.get_service()
 
         # Enforce #Shorts in title and description
@@ -289,13 +301,33 @@ class YouTubePublishClient:
                 time.sleep(2 ** retry)
 
         video_id = response.get("id")
-        video_url = f"https://www.youtube.com/shorts/{video_id}"
-        logger.info(f"Published YouTube Short: {video_url}")
+        shorts_url = f"https://www.youtube.com/shorts/{video_id}"
+        watch_url = f"https://www.youtube.com/watch?v={video_id}"
+        logger.info(f"Published YouTube Short: {shorts_url}")
+
+        # Post-upload verification through YouTube Data API
+        upload_status = "uploaded"
+        try:
+            verify_res = service.videos().list(
+                part="snippet,contentDetails,status",
+                id=video_id
+            ).execute()
+            if verify_res.get("items"):
+                v_item = verify_res["items"][0]
+                upload_status = v_item.get("status", {}).get("uploadStatus", "uploaded")
+        except Exception as e:
+            logger.debug(f"Post-upload verification notice: {e}")
 
         return {
             "platform": "youtube",
             "post_id": video_id,
-            "url": video_url,
+            "url": shorts_url,
+            "watch_url": watch_url,
+            "is_short": True,
+            "dimensions": f"{probe_info['width']}x{probe_info['height']}",
+            "duration": probe_info["duration"],
+            "aspect_ratio": "9:16",
+            "upload_status": upload_status,
             "quota_units": 1600
         }
 

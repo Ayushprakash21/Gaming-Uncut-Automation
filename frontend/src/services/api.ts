@@ -56,11 +56,18 @@ export async function fetchJobProgress(jobId: number) {
   return res.json()
 }
 
-export async function updateClipMetadata(clipId: number, data: { title: string; topic?: string; description?: string; hashtags?: string }) {
+export async function updateClipMetadata(clipId: number, data: { title: string; topic?: string; description?: string; hashtags?: string; detected_game?: string }) {
   const res = await fetch(`${API_BASE}/clips/${clipId}/metadata`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
+  })
+  return res.json()
+}
+
+export async function reanalyzeClip(clipId: number) {
+  const res = await fetch(`${API_BASE}/clips/${clipId}/reanalyze`, {
+    method: 'POST'
   })
   return res.json()
 }
@@ -129,6 +136,7 @@ export async function updateConnections(data: {
   meta_app_id?: string;
   meta_app_secret?: string;
   meta_page_token?: string;
+  meta_page_id?: string;
   meta_ig_id?: string;
 }) {
   const res = await fetch(`${API_BASE}/settings/connections`, {
@@ -226,6 +234,13 @@ export async function updateSystemLimits(data: Partial<SystemLimits>): Promise<a
   return res.json()
 }
 
+export async function testFacebookConnection(): Promise<any> {
+  const res = await fetch(`${API_BASE}/settings/facebook/test`, {
+    method: 'POST'
+  })
+  return res.json()
+}
+
 export async function retryJob(jobId: number): Promise<any> {
   const res = await fetch(`${API_BASE}/jobs/${jobId}/retry`, {
     method: 'POST',
@@ -233,6 +248,28 @@ export async function retryJob(jobId: number): Promise<any> {
   const json = await res.json()
   if (!res.ok) {
     throw new Error(json.detail || 'Failed to retry job.')
+  }
+  return json
+}
+
+export async function cancelJob(jobId: number): Promise<any> {
+  const res = await fetch(`${API_BASE}/jobs/${jobId}/cancel`, {
+    method: 'POST',
+  })
+  const json = await res.json()
+  if (!res.ok) {
+    throw new Error(json.detail || 'Failed to cancel job.')
+  }
+  return json
+}
+
+export async function dismissJob(jobId: number): Promise<any> {
+  const res = await fetch(`${API_BASE}/jobs/${jobId}/dismiss`, {
+    method: 'POST',
+  })
+  const json = await res.json()
+  if (!res.ok) {
+    throw new Error(json.detail || 'Failed to dismiss job.')
   }
   return json
 }

@@ -33,13 +33,15 @@ class Settings(BaseSettings):
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = int(os.getenv("PORT", "8765"))
     
-    # Video Specifications
+    # Video Specifications (YouTube Shorts & Vertical Reels Profile)
     TARGET_WIDTH: int = 1080
     TARGET_HEIGHT: int = 1920
     TARGET_FPS: int = 60
-    TARGET_DURATION: int = 60  # Exactly 60-second Reels / Shorts
-    MIN_DURATION: int = 25
-    MAX_DURATION: int = 60
+    TARGET_DURATION: int = 60  # Default 60-second Reels / Shorts
+    MIN_DURATION: int = 15
+    MAX_DURATION: int = 180  # Up to 180 seconds (3 minutes) officially supported by YouTube Shorts
+    DEFAULT_SHORTS_DURATION: int = 60
+    MAX_SHORTS_DURATION: int = 180
     USE_NVENC: bool = True
     
     # Quality & Automation Defaults

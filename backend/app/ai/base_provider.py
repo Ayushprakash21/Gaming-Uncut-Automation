@@ -8,7 +8,8 @@ class BaseAIProvider(ABC):
         transcript_text: str,
         scene_timestamps: List[float],
         audio_peaks: List[Dict[str, Any]],
-        video_duration: float
+        video_duration: float,
+        source_title: str = ""
     ) -> List[Dict[str, Any]]:
         """
         Analyzes multimodal gameplay signals and returns ranked candidate moments

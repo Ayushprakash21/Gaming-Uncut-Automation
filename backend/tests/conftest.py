@@ -71,6 +71,7 @@ def setup_isolated_test_environment():
     })
     vault.set_secret("google", "project_id", "test-suite-project")
     vault.set_secret("meta", "page_access_token", "test-suite-meta-token")
+    vault.set_secret("meta", "page_id", "test-suite-page-id")
     vault.set_secret("meta", "instagram_account_id", "test-suite-ig-account")
 
     yield
@@ -93,6 +94,14 @@ def mock_external_publishers(monkeypatch):
     from backend.app.publishers.facebook.facebook_client import facebook_client
 
     def mock_yt_upload(*args, **kwargs):
+        video_path = kwargs.get("video_path") or (args[0] if args else None)
+        if video_path:
+            from backend.app.video.validator import validate_shorts_profile
+            from backend.app.publishers.youtube.youtube_client import YouTubeShortsValidationError
+            is_valid, reason, _ = validate_shorts_profile(Path(video_path))
+            if not is_valid:
+                raise YouTubeShortsValidationError(f"Cannot upload to YouTube Shorts: {reason}")
+
         return {
             "status": "success",
             "post_id": "test_yt_post_123",

@@ -35,6 +35,14 @@ def run_process_due_publishing_jobs():
         except Exception as e:
             logger.error(f"Scheduled publish error on job #{j_id}: {e}")
 
+def run_stalled_jobs_watchdog():
+    """Periodically scans for stalled/zombie processing jobs whose worker heartbeat has lapsed."""
+    try:
+        from backend.app.services.pipeline_service import pipeline_service
+        pipeline_service.detect_and_recover_stalled_jobs(stale_threshold_seconds=180)
+    except Exception as e:
+        logger.warning(f"Watchdog stalled job check warning: {e}")
+
 class TaskScheduler:
     def __init__(self):
         jobstores = {
@@ -53,8 +61,15 @@ class TaskScheduler:
                 id="queue_checker",
                 replace_existing=True
             )
+            self.scheduler.add_job(
+                run_stalled_jobs_watchdog,
+                "interval",
+                seconds=60,
+                id="stalled_watchdog",
+                replace_existing=True
+            )
             self.scheduler.start()
-            logger.info("Persistent background scheduler started.")
+            logger.info("Persistent background scheduler started with stalled job watchdog.")
 
     def shutdown(self):
         if self.scheduler.running:
@@ -62,15 +77,13 @@ class TaskScheduler:
 
     def recover_interrupted_jobs(self):
         """Recovers any jobs left in running or analyzing states during crash or reboot."""
+        try:
+            from backend.app.services.pipeline_service import pipeline_service
+            pipeline_service.detect_and_recover_stalled_jobs(stale_threshold_seconds=0)
+        except Exception as e:
+            logger.warning(f"Crash recovery warning: {e}")
+
         with SessionLocal() as db:
-            interrupted = db.query(ProcessingJob).filter(
-                ProcessingJob.status.in_(["analyzing", "rendering"])
-            ).all()
-            for job in interrupted:
-                logger.warning(f"Recovering interrupted processing job #{job.id}. Resetting to queued.")
-                job.status = "queued"
-                job.current_step = "Recovered after application restart"
-            
             interrupted_pub = db.query(PublishingJob).filter(
                 PublishingJob.status == "publishing"
             ).all()
