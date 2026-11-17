@@ -66,6 +66,11 @@ class BaseSourceAdapter(ABC):
         pass
 
     @abstractmethod
+    def validate_source(self, url_or_path: str) -> Dict[str, Any]:
+        """Validates source accessibility, format, and metadata without downloading full payload."""
+        pass
+
+    @abstractmethod
     def validate_and_ingest(self, url_or_path: str, auth_type: str = "user_owned") -> Dict[str, Any]:
         """
         Validates the source, downloads/copies if necessary,
@@ -75,11 +80,40 @@ class BaseSourceAdapter(ABC):
 
 class LocalFileAdapter(BaseSourceAdapter):
     def can_handle(self, url_or_path: str) -> bool:
-        p = Path(url_or_path)
-        return p.exists() and p.is_file() and p.suffix.lower() in [".mp4", ".mkv", ".mov", ".avi", ".ts"]
+        raw_str = str(url_or_path).strip().strip('\"\'')
+        p = Path(os.path.expandvars(os.path.expanduser(raw_str)))
+        return p.exists() and p.is_file() and p.suffix.lower() in [".mp4", ".mkv", ".mov", ".avi", ".ts", ".webm"]
+
+    def validate_source(self, url_or_path: str) -> Dict[str, Any]:
+        raw_str = str(url_or_path).strip().strip('\"\'')
+        path = Path(os.path.expandvars(os.path.expanduser(raw_str))).resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"Local video file not found at: '{path}'")
+        if not path.is_file():
+            raise ValueError(f"Path is not a regular file: '{path}'")
+        meta = probe_local_media(path)
+        if meta["duration"] < 5.0:
+            raise ValueError(f"Local video duration ({meta['duration']:.1f}s) is too short. Minimum 5 seconds required.")
+
+        minutes = int(meta["duration"] // 60)
+        seconds = int(meta["duration"] % 60)
+        return {
+            "valid": True,
+            "source_type": "local",
+            "platform_name": "Local Video Footage",
+            "title": path.name,
+            "duration": meta["duration"],
+            "duration_formatted": f"{minutes}:{seconds:02d}",
+            "resolution": f"{meta['width']}x{meta['height']}",
+            "thumbnail_url": "",
+            "author": "Local Device",
+            "accessible": True,
+            "message": f"Local footage verified ({meta['width']}x{meta['height']}, {minutes}:{seconds:02d})."
+        }
 
     def validate_and_ingest(self, url_or_path: str, auth_type: str = "user_owned") -> Dict[str, Any]:
-        path = Path(url_or_path).resolve()
+        raw_str = str(url_or_path).strip().strip('\"\'')
+        path = Path(os.path.expandvars(os.path.expanduser(raw_str))).resolve()
         meta = probe_local_media(path)
         if meta["duration"] < 5.0:
             raise ValueError("Local video duration is too short for reel production (minimum 5s required).")
@@ -101,10 +135,38 @@ class LocalFileAdapter(BaseSourceAdapter):
 
 class DirectUrlAdapter(BaseSourceAdapter):
     def can_handle(self, url_or_path: str) -> bool:
-        return url_or_path.startswith(("http://", "https://")) and any(
-            url_or_path.lower().endswith(ext) or f"{ext}?" in url_or_path.lower()
+        clean = url_or_path.strip().strip('\"\'')
+        return clean.startswith(("http://", "https://")) and any(
+            clean.lower().endswith(ext) or f"{ext}?" in clean.lower()
             for ext in [".mp4", ".mkv", ".mov", ".webm"]
         )
+
+    def validate_source(self, url_or_path: str) -> Dict[str, Any]:
+        url = url_or_path.strip().strip('\"\'')
+        try:
+            with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+                resp = client.head(url)
+                if resp.status_code >= 400:
+                    resp = client.get(url, headers={"Range": "bytes=0-1024"})
+                if resp.status_code not in (200, 206):
+                    raise ValueError(f"Direct video stream returned HTTP status {resp.status_code}.")
+                content_type = resp.headers.get("content-type", "video/mp4")
+                filename = url.split("?")[0].split("/")[-1] or "direct_video.mp4"
+                return {
+                    "valid": True,
+                    "source_type": "direct_url",
+                    "platform_name": "Direct Video Stream",
+                    "title": filename,
+                    "duration": 0.0,
+                    "duration_formatted": "Remote Stream",
+                    "resolution": "1920x1080 (Estimated)",
+                    "thumbnail_url": "",
+                    "author": "Web Video Source",
+                    "accessible": True,
+                    "message": f"Direct video stream accessible ({content_type})."
+                }
+        except Exception as e:
+            raise ValueError(f"Direct stream validation error: {e}")
 
     def validate_and_ingest(self, url_or_path: str, auth_type: str = "creator_authorized") -> Dict[str, Any]:
         # Validate accessibility with HEAD request
@@ -145,7 +207,42 @@ class YouTubeAdapter(BaseSourceAdapter):
     YT_REGEX = re.compile(r"^(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/|youtube\.com/live/|youtube\.com/shorts/)[\w-]+")
 
     def can_handle(self, url_or_path: str) -> bool:
-        return bool(self.YT_REGEX.match(url_or_path.strip()))
+        return bool(self.YT_REGEX.match(url_or_path.strip().strip('\"\'')))
+
+    def validate_source(self, url_or_path: str) -> Dict[str, Any]:
+        url = url_or_path.strip().strip('\"\'')
+        ydl_opts = {
+            "extract_flat": False,
+            "skip_download": True,
+            "quiet": True,
+            "no_warnings": True,
+        }
+        try:
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    raise ValueError("Could not extract metadata from YouTube URL.")
+                duration = float(info.get("duration", 0) or 0)
+                minutes = int(duration // 60)
+                seconds = int(duration % 60)
+                width = info.get("width") or 1920
+                height = info.get("height") or 1080
+                thumb = info.get("thumbnail") or ""
+                return {
+                    "valid": True,
+                    "source_type": "youtube",
+                    "platform_name": "YouTube",
+                    "title": info.get("title", f"YouTube {info.get('id', '')}"),
+                    "duration": duration,
+                    "duration_formatted": f"{minutes}:{seconds:02d}",
+                    "resolution": f"{width}x{height}",
+                    "thumbnail_url": thumb,
+                    "author": info.get("uploader") or info.get("channel") or "YouTube Creator",
+                    "accessible": True,
+                    "message": f"YouTube video verified ({minutes}:{seconds:02d}, {width}x{height})."
+                }
+        except Exception as e:
+            raise ValueError(f"YouTube source validation failed: {e}")
 
     def validate_and_ingest(self, url_or_path: str, auth_type: str = "creator_authorized") -> Dict[str, Any]:
         url = url_or_path.strip()
@@ -205,6 +302,25 @@ class IngestionManager:
             YouTubeAdapter(),
             DirectUrlAdapter()
         ]
+
+    def validate_source(self, url_or_path: str) -> Dict[str, Any]:
+        """Probes and validates source accessibility, metadata, and platform type."""
+        raw = str(url_or_path).strip().strip('\"\'')
+        # Check local path expansion first
+        try:
+            local_p = Path(os.path.expandvars(os.path.expanduser(raw)))
+            if local_p.exists() and local_p.is_file():
+                return LocalFileAdapter().validate_source(str(local_p))
+        except Exception:
+            pass
+
+        matched_adapter = next((a for a in self.adapters if a.can_handle(raw)), None)
+        if not matched_adapter:
+            raise ValueError(
+                f"Unsupported source format or unreachable URL: '{raw}'. "
+                "Supported: Authorized YouTube URLs, Direct Video MP4 streams, or Local MP4/MKV files."
+            )
+        return matched_adapter.validate_source(raw)
 
     def process_url_or_path(self, url_or_path: str, auth_type: str = "user_owned", notes: str = "") -> SourceVideo:
         target = url_or_path.strip()

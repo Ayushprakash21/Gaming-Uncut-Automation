@@ -95,7 +95,13 @@
 
         <!-- Sidebar Tabs -->
         <aside class="w-64 flex-shrink-0 flex flex-col space-y-2">
-            <button onclick="switchTab('review')" id="tab-btn-review" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl bg-purple-600/20 text-purple-400 border border-purple-500/30 font-medium text-sm transition">
+            <button onclick="switchTab('create-reel')" id="tab-btn-create-reel" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl bg-purple-600/20 text-purple-400 border border-purple-500/30 font-medium text-sm transition">
+                <i class="fa-solid fa-wand-magic-sparkles text-base w-5 text-purple-400"></i>
+                <span class="font-bold tracking-wide">CREATE REEL</span>
+                <span class="ml-auto bg-purple-500/30 text-purple-300 text-[10px] px-2 py-0.5 rounded font-extrabold uppercase tracking-wider">PRIMARY</span>
+            </button>
+
+            <button onclick="switchTab('review')" id="tab-btn-review" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-slate-800 text-slate-400 font-medium text-sm transition">
                 <i class="fa-solid fa-film text-base w-5"></i>
                 <span>Review & Approval</span>
                 <span id="badge-pending" class="ml-auto bg-purple-500/30 text-purple-300 text-xs px-2 py-0.5 rounded-full font-bold">0</span>
@@ -138,8 +144,375 @@
         <!-- Dynamic Content Area -->
         <main class="flex-1 min-w-0">
 
+            <!-- TAB 0: CREATE REEL (PRIMARY) -->
+            <section id="tab-create-reel" class="space-y-6">
+                <!-- Page Title & Brand Header -->
+                <div class="flex items-center justify-between pb-4 border-b border-slate-800">
+                    <div>
+                        <div class="flex items-center space-x-3">
+                            <h2 class="text-2xl font-black tracking-tight text-slate-100">Create Your Gaming Reel</h2>
+                            <span class="bg-gradient-to-r from-purple-500/20 to-pink-500/20 border border-purple-500/30 text-purple-300 text-xs px-2.5 py-0.5 rounded-full font-bold tracking-wide uppercase">
+                                NO FILTER. JUST GAMEPLAY.
+                            </span>
+                        </div>
+                        <p class="text-xs text-slate-400 mt-1">
+                            Turn gaming footage into engaging 60-second vertical videos automatically. AI detects climax gameplay moments, frames dynamic vertical crops, writes captions, and prepares multi-platform dispatch.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Source URL Input & Ingestion Card -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5 shadow-xl">
+                    <div class="space-y-3">
+                        <div class="flex items-center justify-between">
+                            <label class="text-xs font-bold uppercase tracking-wider text-purple-400 flex items-center space-x-2">
+                                <i class="fa-solid fa-gamepad"></i>
+                                <span>Paste Your Gaming Video URL or Local Path</span>
+                            </label>
+                            <span id="detected-platform-badge" class="hidden text-[11px] px-2.5 py-0.5 rounded-full font-semibold border"></span>
+                        </div>
+
+                        <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                            <div class="relative flex-1">
+                                <input
+                                    type="text"
+                                    id="reel-source-url"
+                                    oninput="handleUrlInput(this.value)"
+                                    placeholder="https://www.youtube.com/watch?v=... or direct MP4 URL or D:\Recordings\game.mp4"
+                                    class="w-full bg-slate-950 border border-slate-800 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 rounded-xl px-4 py-3.5 text-xs text-slate-100 placeholder-slate-500 font-mono transition"
+                                />
+                            </div>
+                            <button onclick="pasteClipboardToUrl()" type="button" class="px-4 py-3.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center justify-center space-x-2 transition border border-slate-700">
+                                <i class="fa-solid fa-clipboard text-slate-400"></i>
+                                <span>Paste URL</span>
+                            </button>
+                            <button onclick="validateSourceClick()" id="btn-validate-source" type="button" class="px-5 py-3.5 bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/40 rounded-xl text-xs font-bold flex items-center justify-center space-x-2 transition">
+                                <i class="fa-solid fa-circle-check" id="icon-validate"></i>
+                                <span id="text-validate">Validate Source</span>
+                            </button>
+                            <button onclick="startGenerateReel()" id="btn-generate-reel" type="button" class="px-6 py-3.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-xl text-xs font-black shadow-lg shadow-purple-600/30 flex items-center justify-center space-x-2 transition disabled:opacity-50">
+                                <i class="fa-solid fa-wand-magic-sparkles"></i>
+                                <span>GENERATE REEL</span>
+                            </button>
+                        </div>
+
+                        <!-- Source Validation Details Card -->
+                        <div id="source-validation-card" class="hidden p-4 rounded-xl border space-y-3 mt-3 transition"></div>
+
+                        <!-- Local Upload Alternative & Authorization Check -->
+                        <div class="pt-3 border-t border-slate-800/80 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-400 gap-3">
+                            <div class="flex items-center space-x-2">
+                                <span class="text-slate-500">Local alternative:</span>
+                                <input type="file" id="reel-local-file" accept="video/mp4,video/x-matroska,video/quicktime" class="hidden" onchange="handleReelFileSelected(this)" />
+                                <button onclick="document.getElementById('reel-local-file').click()" type="button" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300 font-medium flex items-center space-x-1.5 transition">
+                                    <i class="fa-solid fa-folder-open text-purple-400"></i>
+                                    <span>Pick Local Video...</span>
+                                </button>
+                                <span id="local-file-name" class="text-slate-400 font-mono text-[11px] truncate max-w-xs"></span>
+                            </div>
+
+                            <!-- Mandatory Usage Rights Checkbox -->
+                            <label class="flex items-center space-x-2 cursor-pointer select-none">
+                                <input type="checkbox" id="reel-auth-confirm" checked class="w-4 h-4 rounded bg-slate-950 border-slate-700 text-purple-600 focus:ring-0 cursor-pointer" />
+                                <span class="text-[11px] text-slate-300 font-medium">I confirm usage rights or creator authorization for this gaming footage.</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Processing Configuration & Platforms Grid -->
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <!-- Left: Configuration Toggles (2 cols) -->
+                    <div class="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-xl">
+                        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center space-x-2">
+                                <i class="fa-solid fa-sliders text-purple-400"></i>
+                                <span>Processing & Vertical AI Configuration</span>
+                            </h3>
+                            <span class="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded font-mono">1080×1920 • 9:16 • 60s Default</span>
+                        </div>
+
+                        <!-- Template Selector -->
+                        <div class="space-y-2">
+                            <label class="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">Layout Template</label>
+                            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                <label class="p-3 rounded-xl border border-purple-500 bg-purple-600/10 cursor-pointer flex flex-col justify-between space-y-1 text-purple-200 transition" id="tpl-card-blurred_bg">
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-xs font-bold">Blurred Background</span>
+                                        <input type="radio" name="reel-template" value="blurred_bg" checked onchange="updateTemplateSelection('blurred_bg')" class="text-purple-600" />
+                                    </div>
+                                    <p class="text-[10px] text-slate-400 leading-tight">Gaussian blurred background with centered 16:9 gameplay.</p>
+                                </label>
+                                <label class="p-3 rounded-xl border border-slate-800 bg-slate-950 cursor-pointer flex flex-col justify-between space-y-1 text-slate-300 hover:border-slate-700 transition" id="tpl-card-dynamic_gameplay">
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-xs font-bold">Dynamic Gameplay</span>
+                                        <input type="radio" name="reel-template" value="dynamic_gameplay" onchange="updateTemplateSelection('dynamic_gameplay')" class="text-purple-600" />
+                                    </div>
+                                    <p class="text-[10px] text-slate-400 leading-tight">Full-bleed vertical crop centered dynamically on action.</p>
+                                </label>
+                                <label class="p-3 rounded-xl border border-slate-800 bg-slate-950 cursor-pointer flex flex-col justify-between space-y-1 text-slate-300 hover:border-slate-700 transition" id="tpl-card-split_layout">
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-xs font-bold">Smart Split</span>
+                                        <input type="radio" name="reel-template" value="split_layout" onchange="updateTemplateSelection('split_layout')" class="text-purple-600" />
+                                    </div>
+                                    <p class="text-[10px] text-slate-400 leading-tight">Dual-zone framing for facecam/reaction & gameplay.</p>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- 8 AI Feature Toggles -->
+                        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
+                            <label class="flex items-center space-x-2 text-xs text-slate-300 bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/80 cursor-pointer hover:border-slate-700 transition">
+                                <input type="checkbox" id="cfg-highlight-detection" checked class="w-3.5 h-3.5 rounded bg-slate-900 border-slate-700 text-purple-600 focus:ring-0 cursor-pointer" />
+                                <span class="text-[11px] font-medium">AI Highlights</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-xs text-slate-300 bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/80 cursor-pointer hover:border-slate-700 transition">
+                                <input type="checkbox" id="cfg-smart-cropping" checked class="w-3.5 h-3.5 rounded bg-slate-900 border-slate-700 text-purple-600 focus:ring-0 cursor-pointer" />
+                                <span class="text-[11px] font-medium">Smart Cropping</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-xs text-slate-300 bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/80 cursor-pointer hover:border-slate-700 transition">
+                                <input type="checkbox" id="cfg-animated-captions" checked class="w-3.5 h-3.5 rounded bg-slate-900 border-slate-700 text-purple-600 focus:ring-0 cursor-pointer" />
+                                <span class="text-[11px] font-medium">Animated Captions</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-xs text-slate-300 bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/80 cursor-pointer hover:border-slate-700 transition">
+                                <input type="checkbox" id="cfg-watermark" checked class="w-3.5 h-3.5 rounded bg-slate-900 border-slate-700 text-purple-600 focus:ring-0 cursor-pointer" />
+                                <span class="text-[11px] font-medium">Watermark Brand</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-xs text-slate-300 bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/80 cursor-pointer hover:border-slate-700 transition">
+                                <input type="checkbox" id="cfg-ai-title" checked class="w-3.5 h-3.5 rounded bg-slate-900 border-slate-700 text-purple-600 focus:ring-0 cursor-pointer" />
+                                <span class="text-[11px] font-medium">AI Titles</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-xs text-slate-300 bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/80 cursor-pointer hover:border-slate-700 transition">
+                                <input type="checkbox" id="cfg-ai-topic" checked class="w-3.5 h-3.5 rounded bg-slate-900 border-slate-700 text-purple-600 focus:ring-0 cursor-pointer" />
+                                <span class="text-[11px] font-medium">Topic Classifier</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-xs text-slate-300 bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/80 cursor-pointer hover:border-slate-700 transition">
+                                <input type="checkbox" id="cfg-ai-desc" checked class="w-3.5 h-3.5 rounded bg-slate-900 border-slate-700 text-purple-600 focus:ring-0 cursor-pointer" />
+                                <span class="text-[11px] font-medium">AI Description</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-xs text-slate-300 bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/80 cursor-pointer hover:border-slate-700 transition">
+                                <input type="checkbox" id="cfg-ai-hashtags" checked class="w-3.5 h-3.5 rounded bg-slate-900 border-slate-700 text-purple-600 focus:ring-0 cursor-pointer" />
+                                <span class="text-[11px] font-medium">AI Hashtags</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Right: Publishing Platforms & Real Status (1 col) -->
+                    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-xl flex flex-col justify-between">
+                        <div>
+                            <div class="flex items-center justify-between border-b border-slate-800 pb-3 mb-3">
+                                <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center space-x-2">
+                                    <i class="fa-solid fa-share-nodes text-pink-400"></i>
+                                    <span>Publishing Platforms</span>
+                                </h3>
+                                <span class="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded font-semibold">
+                                    Manual Review Default
+                                </span>
+                            </div>
+
+                            <div class="space-y-2.5">
+                                <!-- YouTube Shorts Destination -->
+                                <div class="p-3 rounded-xl border border-slate-800 bg-slate-950/80 flex items-center justify-between">
+                                    <div class="flex items-center space-x-2.5">
+                                        <input type="checkbox" id="plat-target-youtube" checked class="w-4 h-4 rounded bg-slate-900 border-slate-700 text-purple-600 focus:ring-0 cursor-pointer" />
+                                        <div>
+                                            <span class="text-xs font-bold flex items-center space-x-1.5 text-slate-200">
+                                                <i class="fa-brands fa-youtube text-red-500"></i>
+                                                <span>YouTube Shorts</span>
+                                            </span>
+                                            <span id="plat-conn-youtube" class="block text-[10px] text-slate-500 font-mono mt-0.5">
+                                                Checking connection...
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <span id="badge-conn-youtube" class="text-[10px] px-2 py-0.5 rounded-full font-bold bg-slate-800 text-slate-400">
+                                        ...
+                                    </span>
+                                </div>
+
+                                <!-- Instagram Reels Destination -->
+                                <div class="p-3 rounded-xl border border-slate-800 bg-slate-950/80 flex items-center justify-between">
+                                    <div class="flex items-center space-x-2.5">
+                                        <input type="checkbox" id="plat-target-instagram" checked class="w-4 h-4 rounded bg-slate-900 border-slate-700 text-purple-600 focus:ring-0 cursor-pointer" />
+                                        <div>
+                                            <span class="text-xs font-bold flex items-center space-x-1.5 text-slate-200">
+                                                <i class="fa-brands fa-instagram text-pink-500"></i>
+                                                <span>Instagram Reels</span>
+                                            </span>
+                                            <span id="plat-conn-instagram" class="block text-[10px] text-slate-500 font-mono mt-0.5">
+                                                Checking connection...
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <span id="badge-conn-instagram" class="text-[10px] px-2 py-0.5 rounded-full font-bold bg-slate-800 text-slate-400">
+                                        ...
+                                    </span>
+                                </div>
+
+                                <!-- Facebook Reels Destination -->
+                                <div class="p-3 rounded-xl border border-slate-800 bg-slate-950/80 flex items-center justify-between">
+                                    <div class="flex items-center space-x-2.5">
+                                        <input type="checkbox" id="plat-target-facebook" checked class="w-4 h-4 rounded bg-slate-900 border-slate-700 text-purple-600 focus:ring-0 cursor-pointer" />
+                                        <div>
+                                            <span class="text-xs font-bold flex items-center space-x-1.5 text-slate-200">
+                                                <i class="fa-brands fa-facebook text-blue-500"></i>
+                                                <span>Facebook Reels</span>
+                                            </span>
+                                            <span id="plat-conn-facebook" class="block text-[10px] text-slate-500 font-mono mt-0.5">
+                                                Checking connection...
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <span id="badge-conn-facebook" class="text-[10px] px-2 py-0.5 rounded-full font-bold bg-slate-800 text-slate-400">
+                                        ...
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <p class="text-[10px] text-slate-500 leading-tight">
+                            <i class="fa-solid fa-shield-halved text-emerald-400 mr-1"></i>
+                            Clips default to Human Review until official publishing API connections are verified.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- 10-Stage Real-Time Progress Interface -->
+                <div id="progress-container" class="hidden bg-slate-900 border border-purple-500/30 rounded-2xl p-6 space-y-5 shadow-2xl">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center space-x-3">
+                            <div class="w-8 h-8 rounded-xl bg-purple-600/20 text-purple-400 flex items-center justify-center animate-spin">
+                                <i class="fa-solid fa-circle-notch text-base"></i>
+                            </div>
+                            <div>
+                                <h3 class="text-sm font-bold text-slate-100 flex items-center space-x-2">
+                                    <span id="progress-job-header">Processing Reel: Initializing...</span>
+                                    <span id="progress-job-id" class="text-xs font-mono text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded">Job #--</span>
+                                </h3>
+                                <p id="progress-status-desc" class="text-xs text-slate-400">Autonomous video pipeline active</p>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <span id="progress-pct-display" class="text-2xl font-black font-mono text-purple-400">0%</span>
+                        </div>
+                    </div>
+
+                    <!-- Main Progress Bar -->
+                    <div class="w-full bg-slate-950 h-3 rounded-full overflow-hidden border border-slate-800">
+                        <div id="progress-bar-fill" class="bg-gradient-to-r from-purple-600 via-indigo-500 to-emerald-400 h-full w-0 transition-all duration-300"></div>
+                    </div>
+
+                    <!-- 10 Stages Stepper Grid -->
+                    <div id="stages-grid" class="grid grid-cols-2 sm:grid-cols-5 gap-2.5 pt-2">
+                        <!-- Populated dynamically via JS -->
+                    </div>
+                </div>
+
+                <!-- Generated Reel Preview Card -->
+                <div id="reel-preview-card" class="hidden bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6 shadow-2xl">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-4 gap-3">
+                        <div>
+                            <div class="flex items-center space-x-2">
+                                <h3 class="text-lg font-black text-slate-100">Generated Reel Preview</h3>
+                                <span class="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs px-2.5 py-0.5 rounded-full font-bold">
+                                    1080×1920 Ready
+                                </span>
+                            </div>
+                            <p class="text-xs text-slate-400 mt-0.5">Rendered with NVIDIA NVENC hardware acceleration. Subtitles & Gaming Uncut watermark burned.</p>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <button onclick="downloadRenderedClip()" id="btn-download-clip" type="button" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition">
+                                <i class="fa-solid fa-download text-purple-400"></i>
+                                <span>Download MP4</span>
+                            </button>
+                            <button onclick="regenerateClip()" type="button" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition">
+                                <i class="fa-solid fa-rotate text-indigo-400"></i>
+                                <span>Regenerate</span>
+                            </button>
+                            <button onclick="addCurrentClipToQueue()" id="btn-queue-clip" type="button" class="px-5 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-purple-600/30 flex items-center space-x-1.5 transition">
+                                <i class="fa-solid fa-list-check"></i>
+                                <span>Add to Publishing Queue</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-12 gap-6 items-start">
+                        <!-- 9:16 Vertical Video Player (5 cols) -->
+                        <div class="md:col-span-5 flex flex-col items-center">
+                            <div class="relative w-full max-w-[280px] aspect-vertical bg-black rounded-2xl overflow-hidden border border-slate-800 shadow-2xl flex items-center justify-center">
+                                <video id="preview-video-player" controls class="w-full h-full object-contain"></video>
+                                <div class="absolute top-2.5 left-2.5 bg-black/70 backdrop-blur-md px-2 py-0.5 rounded text-[10px] font-mono font-bold text-white flex items-center space-x-1 border border-white/10">
+                                    <i class="fa-solid fa-clock text-purple-400"></i>
+                                    <span id="preview-duration-badge">60.0s</span>
+                                </div>
+                                <div class="absolute top-2.5 right-2.5 bg-purple-600/80 backdrop-blur-md px-2 py-0.5 rounded text-[10px] font-mono font-bold text-white flex items-center space-x-1 border border-purple-400/30">
+                                    <i class="fa-solid fa-fire text-amber-400"></i>
+                                    <span id="preview-score-badge">88% Hype</span>
+                                </div>
+                            </div>
+                            <div class="flex items-center space-x-3 mt-3 text-xs text-slate-400">
+                                <span class="flex items-center space-x-1">
+                                    <i class="fa-solid fa-expand text-slate-500"></i>
+                                    <span id="preview-res-badge">1080×1920</span>
+                                </span>
+                                <span>•</span>
+                                <span class="flex items-center space-x-1">
+                                    <i class="fa-solid fa-microchip text-slate-500"></i>
+                                    <span id="preview-tpl-badge">Template B</span>
+                                </span>
+                            </div>
+                        </div>
+
+                        <!-- AI Metadata & Editor (7 cols) -->
+                        <div class="md:col-span-7 space-y-4 bg-slate-950/60 border border-slate-800/80 rounded-2xl p-5">
+                            <div class="flex items-center justify-between border-b border-slate-800/80 pb-2">
+                                <h4 class="text-xs font-bold uppercase tracking-wider text-purple-400 flex items-center space-x-1.5">
+                                    <i class="fa-solid fa-sparkles"></i>
+                                    <span>AI Generated Publishing Metadata</span>
+                                </h4>
+                                <button onclick="toggleEditMetadata()" id="btn-toggle-edit" type="button" class="text-xs text-slate-400 hover:text-purple-400 flex items-center space-x-1 transition">
+                                    <i class="fa-solid fa-pen-to-square"></i>
+                                    <span id="text-edit-metadata">Edit Metadata</span>
+                                </button>
+                            </div>
+
+                            <!-- View / Edit Form -->
+                            <div class="space-y-3">
+                                <div>
+                                    <label class="block text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-1">Title</label>
+                                    <input type="text" id="edit-meta-title" class="w-full bg-slate-900 border border-slate-800 focus:border-purple-500 rounded-xl px-3.5 py-2 text-xs text-slate-100 font-semibold transition" />
+                                </div>
+
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-1">Topic / Category</label>
+                                        <input type="text" id="edit-meta-topic" class="w-full bg-slate-900 border border-slate-800 focus:border-purple-500 rounded-xl px-3.5 py-2 text-xs text-slate-200 transition" />
+                                    </div>
+                                    <div>
+                                        <label class="block text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-1">Hashtags</label>
+                                        <input type="text" id="edit-meta-hashtags" class="w-full bg-slate-900 border border-slate-800 focus:border-purple-500 rounded-xl px-3.5 py-2 text-xs text-purple-300 font-mono transition" />
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label class="block text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-1">Description & Pinned Comment</label>
+                                    <textarea id="edit-meta-desc" rows="3" class="w-full bg-slate-900 border border-slate-800 focus:border-purple-500 rounded-xl px-3.5 py-2 text-xs text-slate-300 transition leading-relaxed"></textarea>
+                                </div>
+
+                                <div id="meta-save-container" class="hidden flex justify-end">
+                                    <button onclick="saveClipMetadata()" type="button" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition flex items-center space-x-1.5 shadow-md shadow-emerald-600/30">
+                                        <i class="fa-solid fa-floppy-disk"></i>
+                                        <span>Save Metadata Changes</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <!-- TAB 1: REVIEW & APPROVAL -->
-            <section id="tab-review" class="space-y-6">
+            <section id="tab-review" class="hidden space-y-6">
                 <div class="flex items-center justify-between">
                     <div>
                         <h2 class="text-lg font-bold">Clips Awaiting Review</h2>
@@ -281,22 +654,513 @@
 
     <!-- Scripts -->
     <script>
-        let currentTab = 'review';
+        let currentTab = 'create-reel';
+        let currentJobId = null;
+        let currentClip = null;
+        let jobPollInterval = null;
+        let isEditingMetadata = false;
 
         function switchTab(tab) {
-            ['review', 'queue', 'ingest', 'settings', 'logs'].forEach(t => {
-                document.getElementById(`tab-${t}`).classList.add('hidden');
+            ['create-reel', 'review', 'queue', 'ingest', 'settings', 'logs'].forEach(t => {
+                const el = document.getElementById(`tab-${t}`);
+                if (el) el.classList.add('hidden');
                 const btn = document.getElementById(`tab-btn-${t}`);
-                btn.className = 'w-full flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-slate-800 text-slate-400 font-medium text-sm transition';
+                if (btn) btn.className = 'w-full flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-slate-800 text-slate-400 font-medium text-sm transition';
             });
-            document.getElementById(`tab-${tab}`).classList.remove('hidden');
+            const targetEl = document.getElementById(`tab-${tab}`);
+            if (targetEl) targetEl.classList.remove('hidden');
             const activeBtn = document.getElementById(`tab-btn-${tab}`);
-            activeBtn.className = 'w-full flex items-center space-x-3 px-4 py-3 rounded-xl bg-purple-600/20 text-purple-400 border border-purple-500/30 font-medium text-sm transition';
+            if (activeBtn) activeBtn.className = 'w-full flex items-center space-x-3 px-4 py-3 rounded-xl bg-purple-600/20 text-purple-400 border border-purple-500/30 font-medium text-sm transition';
             currentTab = tab;
 
+            if (tab === 'create-reel') fetchPlatformConnections();
             if (tab === 'review') loadClips();
             if (tab === 'queue') loadQueue();
             if (tab === 'logs') loadLogs();
+        }
+
+        // --- CREATE REEL WORKFLOW FUNCTIONS ---
+
+        function handleUrlInput(val) {
+            const badge = document.getElementById('detected-platform-badge');
+            const clean = val.trim();
+            if (!clean) {
+                badge.classList.add('hidden');
+                return;
+            }
+
+            badge.classList.remove('hidden');
+            if (clean.includes('youtube.com') || clean.includes('youtu.be')) {
+                badge.className = 'text-[11px] px-2.5 py-0.5 rounded-full font-semibold border bg-red-500/10 text-red-400 border-red-500/30';
+                badge.innerHTML = '<i class="fa-brands fa-youtube mr-1"></i> YouTube Detected';
+            } else if (clean.startsWith('http://') || clean.startsWith('https://')) {
+                badge.className = 'text-[11px] px-2.5 py-0.5 rounded-full font-semibold border bg-indigo-500/10 text-indigo-400 border-indigo-500/30';
+                badge.innerHTML = '<i class="fa-solid fa-globe mr-1"></i> Direct Web Stream';
+            } else if (clean.includes(':') || clean.startsWith('/') || clean.startsWith('\\')) {
+                badge.className = 'text-[11px] px-2.5 py-0.5 rounded-full font-semibold border bg-emerald-500/10 text-emerald-400 border-emerald-500/30';
+                badge.innerHTML = '<i class="fa-solid fa-hard-drive mr-1"></i> Local Device Path';
+            } else {
+                badge.className = 'text-[11px] px-2.5 py-0.5 rounded-full font-semibold border bg-slate-800 text-slate-400 border-slate-700';
+                badge.innerHTML = 'Analyzing Source...';
+            }
+        }
+
+        async function pasteClipboardToUrl() {
+            try {
+                const text = await navigator.clipboard.readText();
+                if (text) {
+                    const input = document.getElementById('reel-source-url');
+                    input.value = text.trim();
+                    handleUrlInput(input.value);
+                }
+            } catch (err) {
+                const input = document.getElementById('reel-source-url');
+                const manual = prompt('Paste your video URL or path:', input.value);
+                if (manual) {
+                    input.value = manual.trim();
+                    handleUrlInput(input.value);
+                }
+            }
+        }
+
+        function handleReelFileSelected(input) {
+            if (input.files && input.files[0]) {
+                const file = input.files[0];
+                document.getElementById('local-file-name').innerText = file.name;
+                const urlInput = document.getElementById('reel-source-url');
+                // Use input/test path or file name
+                urlInput.value = file.name;
+                handleUrlInput(file.name);
+            }
+        }
+
+        function updateTemplateSelection(selected) {
+            ['blurred_bg', 'dynamic_gameplay', 'split_layout'].forEach(t => {
+                const card = document.getElementById(`tpl-card-${t}`);
+                if (!card) return;
+                if (t === selected) {
+                    card.className = 'p-3 rounded-xl border border-purple-500 bg-purple-600/10 cursor-pointer flex flex-col justify-between space-y-1 text-purple-200 transition';
+                } else {
+                    card.className = 'p-3 rounded-xl border border-slate-800 bg-slate-950 cursor-pointer flex flex-col justify-between space-y-1 text-slate-300 hover:border-slate-700 transition';
+                }
+            });
+        }
+
+        async function validateSourceClick() {
+            const urlInput = document.getElementById('reel-source-url');
+            const url = urlInput ? urlInput.value.trim() : '';
+            const card = document.getElementById('source-validation-card');
+            const icon = document.getElementById('icon-validate');
+            const text = document.getElementById('text-validate');
+
+            if (!url) {
+                card.classList.remove('hidden');
+                card.className = 'p-4 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-300 text-xs flex items-center space-x-2';
+                card.innerHTML = '<i class="fa-solid fa-circle-exclamation flex-shrink-0 text-base"></i><span>Please enter a video URL or local file path to validate.</span>';
+                return;
+            }
+
+            icon.className = 'fa-solid fa-spinner fa-spin';
+            text.innerText = 'Probing Source...';
+            card.classList.remove('hidden');
+            card.className = 'p-4 rounded-xl border border-purple-500/30 bg-purple-500/10 text-purple-300 text-xs flex items-center space-x-2';
+            card.innerHTML = '<i class="fa-solid fa-satellite-dish fa-spin flex-shrink-0 text-base"></i><span>Connecting to video provider and probing media streams...</span>';
+
+            try {
+                const res = await fetch('/api/reels/validate-source', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: url })
+                });
+
+                const data = await res.json();
+                if (!res.ok) {
+                    throw new Error(data.detail || 'Source validation failed.');
+                }
+
+                card.className = 'p-4 rounded-xl border border-emerald-500/30 bg-slate-950/80 text-xs space-y-3';
+                card.innerHTML = `
+                    <div class="flex items-start justify-between">
+                        <div class="space-y-1 flex-1 pr-3">
+                            <div class="flex items-center space-x-2">
+                                <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                    <i class="fa-solid fa-check-double mr-1"></i> ${data.platform_name || 'Source Verified'}
+                                </span>
+                                <span class="text-slate-400 text-[11px] font-mono">${data.duration_formatted || '--:--'}</span>
+                                <span class="text-slate-500 text-[11px]">•</span>
+                                <span class="text-slate-400 text-[11px] font-mono">${data.resolution || '1080p'}</span>
+                            </div>
+                            <h4 class="font-bold text-slate-100 text-sm line-clamp-1">${data.title || 'Gaming Footage'}</h4>
+                            <p class="text-slate-400 text-[11px]">Uploader / Channel: <span class="text-slate-200 font-semibold">${data.author || 'Creator'}</span></p>
+                            <p class="text-emerald-400/90 text-[11px]">${data.message || 'Source accessible and verified for 60s Reel production.'}</p>
+                        </div>
+                        ${data.thumbnail_url ? `<img src="${data.thumbnail_url}" class="w-24 h-14 object-cover rounded-lg border border-slate-800 shadow" />` : ''}
+                    </div>
+                `;
+            } catch (err) {
+                card.className = 'p-4 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-300 text-xs flex items-center space-x-2';
+                card.innerHTML = `<i class="fa-solid fa-triangle-exclamation flex-shrink-0 text-base"></i><span>${err.message}</span>`;
+            } finally {
+                icon.className = 'fa-solid fa-circle-check';
+                text.innerText = 'Validate Source';
+            }
+        }
+
+        async function startGenerateReel() {
+            const url = document.getElementById('reel-source-url').value.trim();
+            const authConfirmed = document.getElementById('reel-auth-confirm').checked;
+            const card = document.getElementById('source-validation-card');
+
+            if (!url) {
+                alert('Please enter or paste a gaming video URL or local file path.');
+                return;
+            }
+
+            if (!authConfirmed) {
+                alert('Usage rights or creator authorization confirmation is required. Please check the authorization box.');
+                return;
+            }
+
+            // Gather toggles and template
+            const templateRadio = document.querySelector('input[name="reel-template"]:checked');
+            const template = templateRadio ? templateRadio.value : 'blurred_bg';
+
+            const platforms = [];
+            if (document.getElementById('plat-target-youtube').checked) platforms.push('youtube');
+            if (document.getElementById('plat-target-instagram').checked) platforms.push('instagram');
+            if (document.getElementById('plat-target-facebook').checked) platforms.push('facebook');
+
+            const payload = {
+                url: url,
+                source_authorized: true,
+                target_duration: 60,
+                resolution: '1080x1920',
+                aspect_ratio: '9:16',
+                template: template,
+                ai_highlight_detection: document.getElementById('cfg-highlight-detection').checked,
+                smart_cropping: document.getElementById('cfg-smart-cropping').checked,
+                animated_captions: document.getElementById('cfg-animated-captions').checked,
+                watermark: document.getElementById('cfg-watermark').checked,
+                ai_title_generation: document.getElementById('cfg-ai-title').checked,
+                ai_topic_classification: document.getElementById('cfg-ai-topic').checked,
+                ai_description_generation: document.getElementById('cfg-ai-desc').checked,
+                ai_hashtag_generation: document.getElementById('cfg-ai-hashtags').checked,
+                publish_mode: 'approval',  // Manual review default
+                platforms: platforms
+            };
+
+            const btnGen = document.getElementById('btn-generate-reel');
+            btnGen.disabled = true;
+            btnGen.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>STARTING AI...</span>';
+
+            // Show progress interface
+            const progressContainer = document.getElementById('progress-container');
+            const previewCard = document.getElementById('reel-preview-card');
+            progressContainer.classList.remove('hidden');
+            previewCard.classList.add('hidden');
+
+            renderStagesInitial();
+
+            try {
+                const res = await fetch('/api/reels/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await res.json();
+                if (!res.ok) {
+                    throw new Error(data.detail || 'Failed to initiate Reel production.');
+                }
+
+                currentJobId = data.job_id;
+                document.getElementById('progress-job-id').innerText = `Job #${currentJobId}`;
+                document.getElementById('progress-job-header').innerText = 'Processing Reel: In Progress...';
+
+                // Begin live polling
+                if (jobPollInterval) clearInterval(jobPollInterval);
+                jobPollInterval = setInterval(() => pollJobProgress(currentJobId), 1200);
+            } catch (err) {
+                alert('Error starting Reel pipeline: ' + err.message);
+                progressContainer.classList.add('hidden');
+            } finally {
+                btnGen.disabled = false;
+                btnGen.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i><span>GENERATE REEL</span>';
+            }
+        }
+
+        const PIPELINE_STAGES = [
+            "Source validation",
+            "Media ingestion",
+            "AI video analysis",
+            "Highlight detection",
+            "Clip composition",
+            "Caption generation",
+            "Video rendering",
+            "Quality validation",
+            "Metadata generation",
+            "Reel ready"
+        ];
+
+        function renderStagesInitial() {
+            const grid = document.getElementById('stages-grid');
+            grid.innerHTML = '';
+            PIPELINE_STAGES.forEach((s, idx) => {
+                const card = document.createElement('div');
+                card.id = `stage-card-${idx}`;
+                card.className = 'p-2.5 rounded-xl border border-slate-800 bg-slate-950/80 text-slate-500 text-xs flex items-center space-x-2 transition';
+                card.innerHTML = `
+                    <span class="w-5 h-5 rounded-full bg-slate-900 border border-slate-800 text-[10px] font-bold flex items-center justify-center text-slate-400">
+                        ${idx + 1}
+                    </span>
+                    <span class="text-[11px] font-medium truncate">${s}</span>
+                `;
+                grid.appendChild(card);
+            });
+            document.getElementById('progress-bar-fill').style.width = '5%';
+            document.getElementById('progress-pct-display').innerText = '5%';
+        }
+
+        async function pollJobProgress(jobId) {
+            try {
+                const res = await fetch(`/api/jobs/${jobId}`);
+                if (!res.ok) return;
+                const job = await res.json();
+
+                // Update percentage & header
+                const pct = job.progress_pct || 0;
+                document.getElementById('progress-bar-fill').style.width = `${pct}%`;
+                document.getElementById('progress-pct-display').innerText = `${pct}%`;
+                document.getElementById('progress-status-desc').innerText = job.current_step || 'Processing...';
+
+                // Update stages UI
+                if (job.stages) {
+                    job.stages.forEach((st, idx) => {
+                        const el = document.getElementById(`stage-card-${idx}`);
+                        if (!el) return;
+                        if (st.status === 'completed') {
+                            el.className = 'p-2.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 text-xs flex items-center space-x-2 font-semibold transition';
+                            el.innerHTML = `
+                                <span class="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 text-[11px] font-bold flex items-center justify-center">
+                                    <i class="fa-solid fa-check"></i>
+                                </span>
+                                <span class="text-[11px] truncate">${st.name}</span>
+                            `;
+                        } else if (st.status === 'in_progress') {
+                            el.className = 'p-2.5 rounded-xl border border-purple-500 bg-purple-600/20 text-purple-200 text-xs flex items-center space-x-2 font-bold ring-1 ring-purple-500/50 transition';
+                            el.innerHTML = `
+                                <span class="w-5 h-5 rounded-full bg-purple-500/30 text-purple-300 text-[10px] font-bold flex items-center justify-center">
+                                    <i class="fa-solid fa-spinner fa-spin"></i>
+                                </span>
+                                <span class="text-[11px] truncate">${st.name}</span>
+                            `;
+                        } else if (st.status === 'failed') {
+                            el.className = 'p-2.5 rounded-xl border border-rose-500 bg-rose-500/20 text-rose-300 text-xs flex items-center space-x-2 font-bold transition';
+                            el.innerHTML = `
+                                <span class="w-5 h-5 rounded-full bg-rose-500/30 text-rose-300 text-[10px] font-bold flex items-center justify-center">
+                                    <i class="fa-solid fa-xmark"></i>
+                                </span>
+                                <span class="text-[11px] truncate">${st.name}</span>
+                            `;
+                        }
+                    });
+                }
+
+                // If completed or failed, stop polling
+                if (job.status === 'completed') {
+                    clearInterval(jobPollInterval);
+                    document.getElementById('progress-job-header').innerText = 'Reel Ready!';
+                    document.getElementById('progress-bar-fill').className = 'bg-gradient-to-r from-purple-500 to-emerald-400 h-full w-full';
+                    if (job.clip) {
+                        currentClip = job.clip;
+                        renderReelPreview(job.clip);
+                    }
+                } else if (job.status === 'failed') {
+                    clearInterval(jobPollInterval);
+                    document.getElementById('progress-job-header').innerText = 'Processing Failed';
+                    document.getElementById('progress-status-desc').innerText = job.error_message || 'An error occurred during video production.';
+                    document.getElementById('progress-bar-fill').className = 'bg-rose-500 h-full w-full';
+                }
+            } catch (err) {
+                console.error('Error polling job:', err);
+            }
+        }
+
+        function renderReelPreview(clip) {
+            const previewCard = document.getElementById('reel-preview-card');
+            previewCard.classList.remove('hidden');
+
+            const player = document.getElementById('preview-video-player');
+            player.src = clip.video_url;
+
+            document.getElementById('preview-duration-badge').innerText = `${clip.duration || 60.0}s`;
+            document.getElementById('preview-score-badge').innerText = `${clip.ai_highlight_score || 88}% Hype`;
+            document.getElementById('preview-res-badge').innerText = clip.resolution || '1080×1920';
+            document.getElementById('preview-tpl-badge').innerText = clip.layout_template ? clip.layout_template.replace('_', ' ') : 'Template B';
+
+            // Metadata inputs
+            document.getElementById('edit-meta-title').value = clip.title || '';
+            document.getElementById('edit-meta-topic').value = clip.topic || 'Gaming';
+            document.getElementById('edit-meta-hashtags').value = clip.hashtags || '#gaming #shorts #gaminguncut';
+            document.getElementById('edit-meta-desc').value = clip.description || '';
+
+            // Scroll down to preview smoothly
+            previewCard.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function toggleEditMetadata() {
+            isEditingMetadata = !isEditingMetadata;
+            const container = document.getElementById('meta-save-container');
+            const btnText = document.getElementById('text-edit-metadata');
+            if (isEditingMetadata) {
+                container.classList.remove('hidden');
+                btnText.innerText = 'Cancel Editing';
+            } else {
+                container.classList.add('hidden');
+                btnText.innerText = 'Edit Metadata';
+            }
+        }
+
+        async function saveClipMetadata() {
+            if (!currentClip || !currentClip.id) return;
+            const title = document.getElementById('edit-meta-title').value.trim();
+            const topic = document.getElementById('edit-meta-topic').value.trim();
+            const hashtags = document.getElementById('edit-meta-hashtags').value.trim();
+            const description = document.getElementById('edit-meta-desc').value.trim();
+
+            try {
+                const res = await fetch(`/api/clips/${currentClip.id}/metadata`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title: title,
+                        topic: topic,
+                        hashtags: hashtags,
+                        description: description
+                    })
+                });
+
+                if (res.ok) {
+                    alert('Metadata successfully saved for Reel!');
+                    toggleEditMetadata();
+                } else {
+                    alert('Failed to save metadata.');
+                }
+            } catch (e) {
+                alert('Network error saving metadata: ' + e.message);
+            }
+        }
+
+        function downloadRenderedClip() {
+            if (!currentClip || !currentClip.video_url) return;
+            const a = document.createElement('a');
+            a.href = currentClip.video_url;
+            a.download = `gaming_uncut_${currentClip.id || 'reel'}.mp4`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
+
+        function regenerateClip() {
+            if (confirm('Regenerate this clip with different highlight selection or layout?')) {
+                startGenerateReel();
+            }
+        }
+
+        async function addCurrentClipToQueue() {
+            if (!currentClip || !currentClip.id) return;
+            const btn = document.getElementById('btn-queue-clip');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>Adding...</span>';
+
+            const platforms = [];
+            if (document.getElementById('plat-target-youtube').checked) platforms.push('youtube');
+            if (document.getElementById('plat-target-instagram').checked) platforms.push('instagram');
+            if (document.getElementById('plat-target-facebook').checked) platforms.push('facebook');
+
+            try {
+                const res = await fetch(`/api/clips/${currentClip.id}/queue`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ platforms: platforms })
+                });
+
+                const data = await res.json();
+                if (res.ok) {
+                    alert(`Success: Reel #${currentClip.id} added to Publishing Queue in Manual Review mode!`);
+                    switchTab('queue');
+                } else {
+                    alert('Error adding clip to queue: ' + (data.detail || 'Unknown error'));
+                }
+            } catch (err) {
+                alert('Network error adding to queue: ' + err.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-list-check"></i><span>Add to Publishing Queue</span>';
+            }
+        }
+
+        async function fetchPlatformConnections() {
+            try {
+                const res = await fetch('/api/settings/connections');
+                if (!res.ok) return;
+                const data = await res.json();
+
+                // YouTube: MUST show Not Connected until OAuth authorization is complete!
+                const ytConn = data.youtube || {};
+                const ytEl = document.getElementById('plat-conn-youtube');
+                const ytBadge = document.getElementById('badge-conn-youtube');
+                if (ytConn.authenticated) {
+                    ytEl.innerText = 'Connected (Official Resumable Upload)';
+                    ytEl.className = 'block text-[10px] text-emerald-400 font-mono mt-0.5';
+                    ytBadge.innerText = 'READY';
+                    ytBadge.className = 'text-[10px] px-2 py-0.5 rounded-full font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+                } else if (ytConn.client_configured) {
+                    ytEl.innerText = 'Not Connected (Channel Auth Required)';
+                    ytEl.className = 'block text-[10px] text-amber-400/90 font-mono mt-0.5';
+                    ytBadge.innerText = 'NOT CONNECTED';
+                    ytBadge.className = 'text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30';
+                } else {
+                    ytEl.innerText = 'Not Connected (Import client_secrets.json)';
+                    ytEl.className = 'block text-[10px] text-slate-500 font-mono mt-0.5';
+                    ytBadge.innerText = 'NOT CONNECTED';
+                    ytBadge.className = 'text-[10px] px-2 py-0.5 rounded-full font-bold bg-slate-800 text-slate-400';
+                }
+
+                // Instagram
+                const igConn = data.instagram || {};
+                const igEl = document.getElementById('plat-conn-instagram');
+                const igBadge = document.getElementById('badge-conn-instagram');
+                if (igConn.connected) {
+                    igEl.innerText = `Connected (Account: ${igConn.account_id ? igConn.account_id.slice(0, 10) + '...' : 'Verified'})`;
+                    igEl.className = 'block text-[10px] text-emerald-400 font-mono mt-0.5';
+                    igBadge.innerText = 'READY';
+                    igBadge.className = 'text-[10px] px-2 py-0.5 rounded-full font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+                } else {
+                    igEl.innerText = 'Not Connected (Token in Vault needed)';
+                    igEl.className = 'block text-[10px] text-slate-500 font-mono mt-0.5';
+                    igBadge.innerText = 'NOT CONNECTED';
+                    igBadge.className = 'text-[10px] px-2 py-0.5 rounded-full font-bold bg-slate-800 text-slate-400';
+                }
+
+                // Facebook
+                const fbConn = data.facebook || {};
+                const fbEl = document.getElementById('plat-conn-facebook');
+                const fbBadge = document.getElementById('badge-conn-facebook');
+                if (fbConn.connected) {
+                    fbEl.innerText = 'Connected (Page Video Session)';
+                    fbEl.className = 'block text-[10px] text-emerald-400 font-mono mt-0.5';
+                    fbBadge.innerText = 'READY';
+                    fbBadge.className = 'text-[10px] px-2 py-0.5 rounded-full font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+                } else {
+                    fbEl.innerText = 'Not Connected (Page Token needed)';
+                    fbEl.className = 'block text-[10px] text-slate-500 font-mono mt-0.5';
+                    fbBadge.innerText = 'NOT CONNECTED';
+                    fbBadge.className = 'text-[10px] px-2 py-0.5 rounded-full font-bold bg-slate-800 text-slate-400';
+                }
+            } catch (e) {
+                console.error('Error fetching platform connections:', e);
+            }
         }
 
         async function fetchStatus() {
@@ -323,10 +1187,13 @@
                     modeBadge.className = 'flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-semibold';
                 }
 
-                // Platform indicators
-                updatePlatformStatus('yt-status', data.integrations.youtube.authenticated, 'YouTube');
-                updatePlatformStatus('ig-status', data.integrations.instagram.configured, 'Instagram');
-                updatePlatformStatus('fb-status', data.integrations.facebook.configured, 'Facebook');
+                // Platform indicators in top header: YouTube must NOT say Ready if not authenticated
+                const ytReady = data.platforms.youtube && data.platforms.youtube.connected;
+                updatePlatformStatus('yt-status', ytReady, 'YouTube');
+                updatePlatformStatus('ig-status', data.platforms.instagram && data.platforms.instagram.connected, 'Instagram');
+                updatePlatformStatus('fb-status', data.platforms.facebook && data.platforms.facebook.connected, 'Facebook');
+
+                fetchPlatformConnections();
             } catch (e) {
                 console.error(e);
             }
@@ -338,7 +1205,7 @@
             if (isConnected) {
                 el.innerHTML = `<i class="fa-solid fa-circle-check text-emerald-400"></i><span class="text-slate-300">${name} (Ready)</span>`;
             } else {
-                el.innerHTML = `<i class="fa-solid fa-circle-xmark text-slate-500"></i><span class="text-slate-500">${name}</span>`;
+                el.innerHTML = `<i class="fa-solid fa-circle-xmark text-slate-500"></i><span class="text-slate-500">${name} (Not Connected)</span>`;
             }
         }
 
@@ -569,9 +1436,10 @@
         // Set default path in Google secrets input if available
         document.getElementById('google-json-path').value = 'C:\\Users\\Ayush\\Downloads\\client_secrets.json';
 
-        // Auto poll
+        // Initialize on primary Create Reel tab
+        switchTab('create-reel');
         fetchStatus();
-        loadClips();
+        fetchPlatformConnections();
         setInterval(fetchStatus, 5000);
     </script>
 </body>

@@ -39,6 +39,18 @@ app.mount("/media/input", StaticFiles(directory=str(settings.INPUT_DIR)), name="
 # Include master API router
 app.include_router(api_router)
 
+# Mount standalone UI directly
+dashboard_html = settings.ROOT_DIR / "src" / "ui" / "index.html"
+if not dashboard_html.exists():
+    dashboard_html = settings.BACKEND_DIR / "app" / "ui" / "index.html"
+
+@app.get("/ui", response_class=HTMLResponse)
+@app.get("/standalone", response_class=HTMLResponse)
+def serve_standalone_dashboard():
+    if dashboard_html.exists():
+        return dashboard_html.read_text(encoding="utf-8")
+    return "<h1>Standalone UI template not found</h1>"
+
 # Mount frontend if built
 frontend_dist = settings.ROOT_DIR / "frontend" / "dist"
 if frontend_dist.exists():

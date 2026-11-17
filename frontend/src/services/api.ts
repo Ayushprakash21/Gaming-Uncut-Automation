@@ -7,6 +7,73 @@ export async function fetchOverview(): Promise<OverviewData> {
   return res.json()
 }
 
+export async function validateSource(url: string) {
+  const res = await fetch(`${API_BASE}/reels/validate-source`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url })
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Source validation failed.')
+  }
+  return data
+}
+
+export async function generateReel(data: {
+  url: string;
+  source_authorized: boolean;
+  target_duration?: number;
+  resolution?: string;
+  aspect_ratio?: string;
+  template: string;
+  ai_highlight_detection?: boolean;
+  smart_cropping?: boolean;
+  animated_captions?: boolean;
+  watermark?: boolean;
+  ai_title_generation?: boolean;
+  ai_topic_classification?: boolean;
+  ai_description_generation?: boolean;
+  ai_hashtag_generation?: boolean;
+  publish_mode: string;
+  platforms: string[];
+  notes?: string;
+}) {
+  const res = await fetch(`${API_BASE}/reels/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  })
+  const json = await res.json()
+  if (!res.ok) {
+    throw new Error(json.detail || 'Reel generation failed.')
+  }
+  return json
+}
+
+export async function fetchJobProgress(jobId: number) {
+  const res = await fetch(`${API_BASE}/jobs/${jobId}`)
+  return res.json()
+}
+
+export async function updateClipMetadata(clipId: number, data: { title: string; topic?: string; description?: string; hashtags?: string }) {
+  const res = await fetch(`${API_BASE}/clips/${clipId}/metadata`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  })
+  return res.json()
+}
+
+export async function addClipToQueue(clipId: number, data: { platforms: string[] }) {
+  const res = await fetch(`${API_BASE}/clips/${clipId}/queue`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  })
+  return res.json()
+}
+
 export async function createReel(data: {
   url: string;
   template: string;

@@ -7,8 +7,13 @@ Includes resilient local heuristic fallback when offline or before API key is pr
 import json
 import logging
 from typing import List, Dict, Any, Optional
-from google import genai
-from google.genai import types
+
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    genai = None
+    types = None
 
 from backend.app.ai.base_provider import BaseAIProvider
 from backend.app.core.config import settings
@@ -20,7 +25,9 @@ class GeminiAIProvider(BaseAIProvider):
     def __init__(self):
         self._client = None
 
-    def _get_client(self) -> Optional[genai.Client]:
+    def _get_client(self) -> Optional[Any]:
+        if genai is None:
+            return None
         api_key = vault.get_gemini_api_key() or settings.model_config.get("env_file")
         if not api_key:
             import os
