@@ -201,3 +201,14 @@ export async function updateSystemLimits(data: Partial<SystemLimits>): Promise<a
   })
   return res.json()
 }
+
+export async function retryJob(jobId: number): Promise<any> {
+  const res = await fetch(`${API_BASE}/jobs/${jobId}/retry`, {
+    method: 'POST',
+  })
+  const json = await res.json()
+  if (!res.ok) {
+    throw new Error(json.detail || 'Failed to retry job.')
+  }
+  return json
+}

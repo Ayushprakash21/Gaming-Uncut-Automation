@@ -81,19 +81,18 @@ if %ERRORLEVEL% equ 0 (
     exit /b 0
 )
 
-:: 7. Network / Security Notice
-if "%ENABLE_LAN_ACCESS%"=="1" (
-    echo [*] LAN access ENABLED (Listening on 0.0.0.0:8765)
-) else (
-    echo [*] Secure Localhost Mode (Default 127.0.0.1:8765)
-)
+:: 7. Network / IP Binding
+if not defined ENABLE_LAN_ACCESS set "ENABLE_LAN_ACCESS=1"
+if not defined HOST set "HOST=0.0.0.0"
 
+echo [*] Network IP mode ENABLED (Binding to 0.0.0.0:8765)
 echo.
 echo ==================================================================
 echo   Starting Gaming Uncut Automation server...
 echo   - Localhost URL:   http://localhost:8765
-echo   - Standalone UI:   http://localhost:8765/ui
-echo   - REST API Docs:   http://localhost:8765/docs
+echo   - Network IP URL:  http://192.168.29.111:8765
+echo   - Standalone UI:   http://192.168.29.111:8765/ui
+echo   - REST API Docs:   http://192.168.29.111:8765/docs
 echo ==================================================================
 echo.
 

@@ -9,6 +9,10 @@ import re
 import json
 import logging
 import subprocess
+import threading
+import time
+import shutil
+import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -20,6 +24,60 @@ from backend.app.database.session import SessionLocal
 from backend.app.models.schema import SourceVideo, SourceAuthorization, SystemLog
 
 logger = logging.getLogger("gaming_uncut.ingestion")
+
+_SOURCE_LOCKS: Dict[str, threading.Lock] = {}
+_SOURCE_LOCKS_MUTEX = threading.Lock()
+
+def get_source_lock(video_key: str) -> threading.Lock:
+    """Returns a process-wide mutex for a specific video source key (e.g. video_id or normalized URL)."""
+    with _SOURCE_LOCKS_MUTEX:
+        if video_key not in _SOURCE_LOCKS:
+            _SOURCE_LOCKS[video_key] = threading.Lock()
+        return _SOURCE_LOCKS[video_key]
+
+def extract_youtube_id(url: str) -> Optional[str]:
+    """Extracts the 11-character YouTube video ID from various URL formats, stripping backslashes."""
+    if not url:
+        return None
+    clean = url.replace("\\", "/").strip().strip('\"\'')
+    patterns = [
+        r"(?:v=|\/v\/|youtu\.be\/|\/embed\/|\/shorts\/|\/live\/)([a-zA-Z0-9_-]{11})",
+        r"(?:^|[^a-zA-Z0-9_-])([a-zA-Z0-9_-]{11})(?:$|[^a-zA-Z0-9_-])"
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, clean)
+        if match:
+            vid = match.group(1)
+            if vid not in ("watch", "embed", "live", "shorts"):
+                return vid
+    return None
+
+def normalize_youtube_url(url: str) -> str:
+    """Normalizes any valid YouTube URL variant into canonical https://www.youtube.com/watch?v=VIDEO_ID."""
+    vid = extract_youtube_id(url)
+    if vid:
+        return f"https://www.youtube.com/watch?v={vid}"
+    return url.replace("\\", "/").strip().strip('\"\'')
+
+def safe_windows_replace(src: Path, dst: Path, max_retries: int = 5, initial_delay: float = 0.5) -> Path:
+    """
+    Safely moves or replaces a file on Windows, handling transient file locks
+    (WinError 32) from antivirus, indexing, or flush delays with exponential backoff.
+    """
+    delay = initial_delay
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            os.replace(str(src), str(dst))
+            return dst
+        except (PermissionError, OSError) as e:
+            last_err = e
+            logger.warning(
+                f"Transient file lock on {src} -> {dst} (attempt {attempt+1}/{max_retries}): {e}. Retrying in {delay:.2f}s..."
+            )
+            time.sleep(delay)
+            delay *= 2
+    raise OSError(f"Failed to move {src} to {dst} after {max_retries} attempts: {last_err}") from last_err
 
 def probe_local_media(file_path: Path) -> Dict[str, Any]:
     """Probes media metadata using ffprobe."""
@@ -207,10 +265,11 @@ class YouTubeAdapter(BaseSourceAdapter):
     YT_REGEX = re.compile(r"^(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/|youtube\.com/live/|youtube\.com/shorts/)[\w-]+")
 
     def can_handle(self, url_or_path: str) -> bool:
-        return bool(self.YT_REGEX.match(url_or_path.strip().strip('\"\'')))
+        clean = url_or_path.replace("\\", "/").strip().strip('\"\'')
+        return bool(extract_youtube_id(clean) or ("youtube.com" in clean.lower()) or ("youtu.be" in clean.lower()))
 
     def validate_source(self, url_or_path: str) -> Dict[str, Any]:
-        url = url_or_path.strip().strip('\"\'')
+        canonical_url = normalize_youtube_url(url_or_path)
         ydl_opts = {
             "extract_flat": False,
             "skip_download": True,
@@ -219,7 +278,7 @@ class YouTubeAdapter(BaseSourceAdapter):
         }
         try:
             with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+                info = ydl.extract_info(canonical_url, download=False)
                 if not info:
                     raise ValueError("Could not extract metadata from YouTube URL.")
                 duration = float(info.get("duration", 0) or 0)
@@ -245,55 +304,101 @@ class YouTubeAdapter(BaseSourceAdapter):
             raise ValueError(f"YouTube source validation failed: {e}")
 
     def validate_and_ingest(self, url_or_path: str, auth_type: str = "creator_authorized") -> Dict[str, Any]:
-        url = url_or_path.strip()
-        out_tmpl = str(settings.INPUT_DIR / "yt_%(id)s.%(ext)s")
-        
-        ydl_opts = {
-            "format": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "outtmpl": out_tmpl,
-            "merge_output_format": "mp4",
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-        }
+        canonical_url = normalize_youtube_url(url_or_path)
+        video_id = extract_youtube_id(canonical_url)
+        if not video_id:
+            raise ValueError(f"Could not extract a valid YouTube video ID from: {url_or_path}")
 
-        with YoutubeDL(ydl_opts) as ydl:
-            # 1. Extract metadata without downloading first
-            info = ydl.extract_info(url, download=False)
-            if not info:
-                raise ValueError(f"Could not retrieve metadata for YouTube URL: {url}")
-            
-            duration = float(info.get("duration", 0))
-            if duration > 7200:  # Max 2 hours for safe local processing
-                raise ValueError(f"Video duration ({duration/60:.1f}m) exceeds 2-hour processing maximum.")
+        source_lock = get_source_lock(video_id)
+        target_file = settings.INPUT_DIR / f"yt_{video_id}.mp4"
 
-            # 2. Download authorized stream
-            ydl.download([url])
-            local_file = settings.INPUT_DIR / f"yt_{info['id']}.mp4"
+        # Concurrency protection: Lock per video ID so multiple jobs do not conflict
+        with source_lock:
+            # 1. Deduplication / Cache: Check if already downloaded, readable, and non-empty
+            if target_file.exists() and target_file.stat().st_size > 1024:
+                meta = probe_local_media(target_file)
+                if meta.get("duration", 0) > 0 and meta.get("width", 0) > 0:
+                    logger.info(f"Reusing existing downloaded source: {target_file}")
+                    return {
+                        "source_type": "youtube",
+                        "url": canonical_url,
+                        "title": f"YouTube {video_id}",
+                        "duration": meta["duration"],
+                        "width": meta["width"],
+                        "height": meta["height"],
+                        "fps": meta["fps"],
+                        "format": meta["format"],
+                        "local_path": str(target_file.resolve()),
+                        "author": "YouTube Creator",
+                        "license_info": "Authorized Creator Ingestion",
+                        "auth_type": auth_type
+                    }
 
-        if not local_file.exists():
-            # Check if ext was mkv
-            alt = settings.INPUT_DIR / f"yt_{info['id']}.mkv"
-            if alt.exists():
-                local_file = alt
-            else:
-                raise FileNotFoundError(f"Expected YouTube download output not found: {local_file}")
+            # 2. Download with unique temp file per thread to avoid file collisions
+            unique_token = uuid.uuid4().hex[:8]
+            temp_out_tmpl = str(settings.TEMP_DIR / f"yt_{video_id}_{unique_token}.%(ext)s")
 
-        meta = probe_local_media(local_file)
-        return {
-            "source_type": "youtube",
-            "url": url,
-            "title": info.get("title", f"YouTube {info['id']}"),
-            "duration": meta["duration"] or duration,
-            "width": meta["width"],
-            "height": meta["height"],
-            "fps": meta["fps"],
-            "format": meta["format"],
-            "local_path": str(local_file),
-            "author": info.get("uploader", "YouTube Creator"),
-            "license_info": info.get("license", "Authorized Creator Ingestion"),
-            "auth_type": auth_type
-        }
+            ydl_opts = {
+                "format": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "outtmpl": temp_out_tmpl,
+                "merge_output_format": "mp4",
+                "quiet": True,
+                "no_warnings": True,
+                "noplaylist": True,
+            }
+
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(canonical_url, download=False)
+                    if not info:
+                        raise ValueError(f"Could not retrieve metadata for YouTube URL: {canonical_url}")
+                    
+                    duration = float(info.get("duration", 0) or 0)
+                    if duration > 7200:
+                        raise ValueError(f"Video duration ({duration/60:.1f}m) exceeds 2-hour processing maximum.")
+
+                    ydl.download([canonical_url])
+
+                # Locate downloaded temp output file
+                downloaded_temp = None
+                for ext in ["mp4", "mkv", "webm"]:
+                    candidate = settings.TEMP_DIR / f"yt_{video_id}_{unique_token}.{ext}"
+                    if candidate.exists() and candidate.stat().st_size > 1024:
+                        downloaded_temp = candidate
+                        break
+
+                if not downloaded_temp:
+                    raise FileNotFoundError(f"yt-dlp download failed to produce expected file for video ID {video_id}")
+
+                # Safely replace to canonical target location with Windows retry/backoff
+                safe_windows_replace(downloaded_temp, target_file)
+
+            except Exception as e:
+                logger.error(f"Downloader failed for YouTube video {video_id}: {e}", exc_info=True)
+                raise RuntimeError(f"YouTube video acquisition failed: {e}") from e
+
+            # Validate target file exists, is non-empty, and probe-able
+            if not target_file.exists() or target_file.stat().st_size <= 1024:
+                raise FileNotFoundError(f"Downloaded video file missing or corrupt: {target_file}")
+
+            meta = probe_local_media(target_file)
+            if meta.get("duration", 0) <= 0:
+                raise ValueError(f"Downloaded media is unreadable or corrupt: {target_file}")
+
+            return {
+                "source_type": "youtube",
+                "url": canonical_url,
+                "title": info.get("title", f"YouTube {video_id}"),
+                "duration": meta["duration"] or duration,
+                "width": meta["width"],
+                "height": meta["height"],
+                "fps": meta["fps"],
+                "format": meta["format"],
+                "local_path": str(target_file.resolve()),
+                "author": info.get("uploader", "YouTube Creator"),
+                "license_info": info.get("license", "Authorized Creator Ingestion"),
+                "auth_type": auth_type
+            }
 
 class IngestionManager:
     def __init__(self):
@@ -343,6 +448,21 @@ class IngestionManager:
 
             if existing:
                 video = existing
+                # ALWAYS update local_path, title, duration, and dimensions to real media values
+                video.local_path = data["local_path"]
+                video.url = data["url"]
+                if data.get("title") and ("Source " not in data["title"] or not video.title):
+                    video.title = data["title"]
+                if data.get("duration"):
+                    video.duration = data["duration"]
+                if data.get("width"):
+                    video.width = data["width"]
+                if data.get("height"):
+                    video.height = data["height"]
+                if data.get("fps"):
+                    video.fps = data["fps"]
+                if data.get("format"):
+                    video.format = data["format"]
                 video.status = "ready"
             else:
                 video = SourceVideo(

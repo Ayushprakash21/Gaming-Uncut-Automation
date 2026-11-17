@@ -1,6 +1,6 @@
 @echo off
 setlocal enabledelayedexpansion
-title Gaming Uncut Automation — System & Security Diagnostics
+title Gaming Uncut Automation — System ^& Security Diagnostics
 cd /d "%~dp0"
 
 set PYTHON_EXE=

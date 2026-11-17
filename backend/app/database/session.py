@@ -16,7 +16,17 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor.execute("PRAGMA foreign_keys = ON")
     cursor.close()
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+_session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+def set_session_factory(factory):
+    global _session_factory
+    _session_factory = factory
+
+class _SessionLocalProxy:
+    def __call__(self, *args, **kwargs):
+        return _session_factory(*args, **kwargs)
+
+SessionLocal = _SessionLocalProxy()
 Base = declarative_base()
 
 def get_db():

@@ -26,12 +26,11 @@ class Settings(BaseSettings):
     TEMP_DIR: Path = ROOT_DIR / "data" / "temporary"
     LOGS_DIR: Path = ROOT_DIR / "logs"
     ASSETS_DIR: Path = ROOT_DIR / "assets"
-    VAULT_DIR: Path = ROOT_DIR / ".vault"
+    VAULT_DIR: Path = Path(os.getenv("VAULT_DIR", str(ROOT_DIR / ".vault")))
     
-    # Server / Binding: Default to secure localhost (127.0.0.1).
-    # To enable local network access across your Wi-Fi, set ENABLE_LAN_ACCESS=1 or HOST=0.0.0.0
-    ENABLE_LAN_ACCESS: bool = os.getenv("ENABLE_LAN_ACCESS", "0") in ("1", "true", "True")
-    HOST: str = os.getenv("HOST", "0.0.0.0" if (os.getenv("ENABLE_LAN_ACCESS", "0") in ("1", "true", "True")) else "127.0.0.1")
+    # Server / Binding: Default to 0.0.0.0 so the application is live and accessible on network IP
+    ENABLE_LAN_ACCESS: bool = os.getenv("ENABLE_LAN_ACCESS", "1") in ("1", "true", "True")
+    HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = int(os.getenv("PORT", "8765"))
     
     # Video Specifications
@@ -62,7 +61,7 @@ class Settings(BaseSettings):
     YOUTUBE_QUOTA_PER_UPLOAD: int = 1600  # Official Google Data API v3 cost for videos.insert
     
     # Database
-    DATABASE_URL: str = f"sqlite:///{ROOT_DIR / 'data' / 'gaming_uncut_v2.db'}"
+    DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{ROOT_DIR / 'data' / 'gaming_uncut_v2.db'}")
 
     model_config = SettingsConfigDict(
         env_file=str(ROOT_DIR / ".env"),
