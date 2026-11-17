@@ -36,7 +36,7 @@ from backend.app.publishers.manager import publishing_manager
 
 client = TestClient(app)
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def db():
     db_session = SessionLocal()
     yield db_session

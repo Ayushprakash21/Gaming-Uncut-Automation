@@ -877,28 +877,44 @@ def update_system_limits(req: SystemLimitsUpdateRequest, db: Session = Depends(g
     - Facebook daily limit (reels per day, default 25)
     """
     settings_obj = get_or_create_settings(db)
+    changed = False
+
     if req.daily_generation_target is not None:
-        settings_obj.daily_generation_target = max(1, req.daily_generation_target)
+        val = max(1, req.daily_generation_target)
+        if settings_obj.daily_generation_target != val:
+            settings_obj.daily_generation_target = val
+            changed = True
     if req.daily_publishing_target is not None:
-        settings_obj.daily_publishing_target = max(1, req.daily_publishing_target)
+        val = max(1, req.daily_publishing_target)
+        if settings_obj.daily_publishing_target != val:
+            settings_obj.daily_publishing_target = val
+            changed = True
     if req.youtube_daily_limit is not None:
-        settings_obj.youtube_daily_limit = max(1, req.youtube_daily_limit)
+        val = max(1, req.youtube_daily_limit)
+        if settings_obj.youtube_daily_limit != val:
+            settings_obj.youtube_daily_limit = val
+            changed = True
     if req.instagram_daily_limit is not None:
-        settings_obj.instagram_daily_limit = max(1, req.instagram_daily_limit)
+        val = max(1, req.instagram_daily_limit)
+        if settings_obj.instagram_daily_limit != val:
+            settings_obj.instagram_daily_limit = val
+            changed = True
     if req.facebook_daily_limit is not None:
-        settings_obj.facebook_daily_limit = max(1, req.facebook_daily_limit)
-    
-    settings_obj.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(settings_obj)
-    
-    log_entry = SystemLog(
-        module="settings",
-        level="INFO",
-        message=f"System targets & limits updated: Gen Target={settings_obj.daily_generation_target}, Pub Target={settings_obj.daily_publishing_target}, YT Limit={settings_obj.youtube_daily_limit}, IG Limit={settings_obj.instagram_daily_limit}, FB Limit={settings_obj.facebook_daily_limit}"
-    )
-    db.add(log_entry)
-    db.commit()
+        val = max(1, req.facebook_daily_limit)
+        if settings_obj.facebook_daily_limit != val:
+            settings_obj.facebook_daily_limit = val
+            changed = True
+
+    if changed:
+        settings_obj.updated_at = datetime.utcnow()
+        log_entry = SystemLog(
+            module="settings",
+            level="INFO",
+            message=f"System targets & limits updated: Gen Target={settings_obj.daily_generation_target}, Pub Target={settings_obj.daily_publishing_target}, YT Limit={settings_obj.youtube_daily_limit}, IG Limit={settings_obj.instagram_daily_limit}, FB Limit={settings_obj.facebook_daily_limit}"
+        )
+        db.add(log_entry)
+        db.commit()
+        db.refresh(settings_obj)
 
     return {
         "status": "success",
