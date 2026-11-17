@@ -5,11 +5,12 @@ and real-time publishing status.
 """
 
 import os
+import json
 import shutil
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -207,15 +208,64 @@ def get_logs(limit: int = 50):
         return [dict(r) for r in cursor.fetchall()]
 
 @app.post("/api/settings/import-google-secrets")
-def import_google_secrets(path: str = Form(...)):
+async def import_google_secrets(request: Request):
     """Imports Google OAuth desktop client_secrets.json securely into the vault."""
-    p = Path(path.strip('\"\' '))
+    target_path = None
+    content_type = request.headers.get("content-type", "")
+
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+            target_path = body.get("path")
+        except Exception:
+            pass
+    elif "form" in content_type or "multipart" in content_type:
+        try:
+            form = await request.form()
+            target_path = form.get("path")
+        except Exception:
+            pass
+
+    if not target_path:
+        try:
+            body = await request.json()
+            target_path = body.get("path")
+        except Exception:
+            pass
+
+    if not target_path or not str(target_path).strip():
+        raise HTTPException(status_code=400, detail="Missing 'path' parameter. Please specify the path to client_secrets.json.")
+
+    raw_str = str(target_path).strip().strip('\"\'')
+    expanded_str = os.path.expandvars(os.path.expanduser(raw_str))
+    p = Path(expanded_str).resolve()
+
     if not p.exists():
-        raise HTTPException(status_code=400, detail=f"File not found at: {p}")
+        raise HTTPException(status_code=400, detail=f"File not found at: '{p}'. Please verify that the path is correct.")
+    if not p.is_file():
+        raise HTTPException(status_code=400, detail=f"The specified path is a directory, not a file: '{p}'.")
+
+    try:
+        content = p.read_text(encoding="utf-8")
+        data = json.loads(content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON file: {e}")
+
+    info = data.get("installed") or data.get("web")
+    if not info or not isinstance(info, dict):
+        raise HTTPException(status_code=400, detail="Invalid Google OAuth JSON: Missing 'installed' or 'web' client definition.")
+    if not info.get("client_id") or not info.get("client_secret"):
+        raise HTTPException(status_code=400, detail="Invalid Google OAuth JSON: Missing 'client_id' or 'client_secret'.")
+
     try:
         res = vault.import_google_desktop_client(p)
-        log_event("security", "INFO", "Imported Google Desktop Client secrets into vault.")
-        return res
+        log_event("security", "INFO", f"Imported Google Desktop Client secrets into vault for project: {info.get('project_id')}")
+        return {
+            "status": "success",
+            "message": "Google Desktop OAuth credentials verified and securely stored in Vault.",
+            "project_id": info.get("project_id", ""),
+            "client_id_preview": f"{info.get('client_id')[:12]}..."
+        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

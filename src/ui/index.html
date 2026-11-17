@@ -224,10 +224,12 @@
                         </div>
                         <p class="text-xs text-slate-400">Import your downloaded OAuth JSON credential file.</p>
                         <div class="space-y-2">
-                            <input type="text" id="google-json-path" placeholder="C:\Users\...\Downloads\client_secrets.json" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-2.5 text-xs text-slate-200">
-                            <button onclick="importGoogleSecrets()" class="w-full bg-purple-600 hover:bg-purple-500 text-xs font-semibold py-2 rounded-lg transition">
-                                Import Secrets into Secure Vault
+                            <input type="text" id="google-json-path" placeholder="C:\Users\...\Downloads\client_secrets.json" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-2.5 text-xs text-slate-200 font-mono">
+                            <button id="btn-import-google" onclick="importGoogleSecrets()" class="w-full bg-purple-600 hover:bg-purple-500 text-xs font-semibold py-2.5 rounded-lg transition flex items-center justify-center space-x-2 shadow-md shadow-purple-600/20">
+                                <i class="fa-solid fa-file-shield" id="btn-import-icon"></i>
+                                <span id="btn-import-text">Import Secrets into Secure Vault</span>
                             </button>
+                            <div id="google-import-feedback" class="hidden text-xs p-2.5 rounded-lg border leading-relaxed"></div>
                         </div>
                     </div>
 
@@ -449,16 +451,67 @@
         }
 
         async function importGoogleSecrets() {
-            const path = document.getElementById('google-json-path').value;
-            const formData = new FormData();
-            formData.append('path', path);
-            const res = await fetch('/api/settings/import-google-secrets', { method: 'POST', body: formData });
-            const data = await res.json();
-            if (res.ok) {
-                alert('Google Desktop OAuth credentials securely imported into Vault!');
-                fetchStatus();
-            } else {
-                alert('Error: ' + data.detail);
+            const pathInput = document.getElementById('google-json-path');
+            const btn = document.getElementById('btn-import-google');
+            const icon = document.getElementById('btn-import-icon');
+            const text = document.getElementById('btn-import-text');
+            const feedback = document.getElementById('google-import-feedback');
+
+            const path = pathInput ? pathInput.value.trim() : '';
+
+            feedback.className = 'hidden';
+            feedback.innerHTML = '';
+
+            if (!path) {
+                feedback.className = 'text-xs p-2.5 rounded-lg bg-rose-500/10 text-rose-300 border border-rose-500/30 flex items-center space-x-2';
+                feedback.innerHTML = '<i class="fa-solid fa-circle-exclamation flex-shrink-0"></i><span>Please specify the path to your client_secrets.json file.</span>';
+                return;
+            }
+
+            // Visible loading feedback
+            btn.disabled = true;
+            btn.classList.add('opacity-75', 'cursor-not-allowed');
+            icon.className = 'fa-solid fa-spinner fa-spin';
+            text.innerText = 'Verifying & Encrypting...';
+
+            try {
+                const res = await fetch('/api/settings/import-google-secrets', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: path })
+                });
+
+                let data;
+                try {
+                    data = await res.json();
+                } catch (e) {
+                    data = { detail: `Server responded with status ${res.status}` };
+                }
+
+                if (res.ok) {
+                    feedback.className = 'text-xs p-2.5 rounded-lg bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 flex flex-col space-y-1';
+                    feedback.innerHTML = `
+                        <div class="flex items-center space-x-2 font-semibold">
+                            <i class="fa-solid fa-circle-check text-emerald-400"></i>
+                            <span>Import & Verification Succeeded!</span>
+                        </div>
+                        <div class="text-[11px] text-emerald-400/90 pl-5">
+                            Project: <span class="font-mono">${data.project_id || 'gaming-uncut'}</span> • Client ID: <span class="font-mono">${data.client_id_preview || 'Configured'}</span>
+                        </div>
+                    `;
+                    fetchStatus();
+                } else {
+                    feedback.className = 'text-xs p-2.5 rounded-lg bg-rose-500/10 text-rose-300 border border-rose-500/30 flex items-center space-x-2';
+                    feedback.innerHTML = `<i class="fa-solid fa-circle-xmark flex-shrink-0"></i><span>${data.detail || 'Import failed. Verify the path and JSON file.'}</span>`;
+                }
+            } catch (err) {
+                feedback.className = 'text-xs p-2.5 rounded-lg bg-rose-500/10 text-rose-300 border border-rose-500/30 flex items-center space-x-2';
+                feedback.innerHTML = `<i class="fa-solid fa-triangle-exclamation flex-shrink-0"></i><span>Network error connecting to API: ${err.message}</span>`;
+            } finally {
+                btn.disabled = false;
+                btn.classList.remove('opacity-75', 'cursor-not-allowed');
+                icon.className = 'fa-solid fa-file-shield';
+                text.innerText = 'Import Secrets into Secure Vault';
             }
         }
 

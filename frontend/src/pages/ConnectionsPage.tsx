@@ -1,10 +1,15 @@
 import React, { useEffect, useState } from 'react'
-import { Share2, Youtube, Instagram, Facebook, Sparkles, Shield, KeyRound, CheckCircle2 } from 'lucide-react'
-import { fetchConnections, updateConnections } from '../services/api'
+import { Share2, Youtube, Instagram, Facebook, Sparkles, Shield, KeyRound, CheckCircle2, AlertCircle, Loader2, FileCheck } from 'lucide-react'
+import { fetchConnections, updateConnections, importGoogleSecrets } from '../services/api'
 import { ConnectionsData } from '../types'
 
 export const ConnectionsPage: React.FC = () => {
   const [connections, setConnections] = useState<ConnectionsData | null>(null)
+  const [googlePath, setGooglePath] = useState('C:\\Users\\Ayush\\Downloads\\client_secrets.json')
+  const [importingGoogle, setImportingGoogle] = useState(false)
+  const [googleMsg, setGoogleMsg] = useState('')
+  const [googleErr, setGoogleErr] = useState('')
+
   const [geminiKey, setGeminiKey] = useState('')
   const [metaAppId, setMetaAppId] = useState('')
   const [metaAppSecret, setMetaAppSecret] = useState('')
@@ -21,6 +26,30 @@ export const ConnectionsPage: React.FC = () => {
   useEffect(() => {
     load()
   }, [])
+
+  const handleImportGoogle = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!googlePath.trim()) {
+      setGoogleErr('Please specify the path to your client_secrets.json file.')
+      return
+    }
+
+    setImportingGoogle(true)
+    setGoogleMsg('')
+    setGoogleErr('')
+
+    try {
+      const res = await importGoogleSecrets(googlePath.trim())
+      setGoogleMsg(
+        `✓ ${res.message || 'OAuth Client verified & saved'} (Project: ${res.project_id || 'gaming-uncut'}, Client: ${res.client_id_preview || 'Configured'})`
+      )
+      load()
+    } catch (err: any) {
+      setGoogleErr(err.message || 'Failed to import Google credentials')
+    } finally {
+      setImportingGoogle(false)
+    }
+  }
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -110,6 +139,61 @@ export const ConnectionsPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Google OAuth Import Card */}
+      <form onSubmit={handleImportGoogle} className="bg-[#111827] border border-gaming-border rounded-2xl p-6 space-y-4 shadow-xl">
+        <div className="flex items-center space-x-2 text-purple-400 font-semibold text-sm">
+          <Youtube className="w-5 h-5 text-red-500" />
+          <span>Import Google OAuth Desktop Client Credentials</span>
+        </div>
+        <p className="text-xs text-slate-400">
+          Enter the full Windows path to your downloaded <code className="bg-slate-800 text-purple-300 px-1.5 py-0.5 rounded font-mono">client_secrets.json</code> file to securely store and verify the Desktop client credentials in Windows Vault.
+        </p>
+
+        {googleMsg && (
+          <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs px-4 py-3 rounded-xl flex items-center space-x-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+            <span>{googleMsg}</span>
+          </div>
+        )}
+
+        {googleErr && (
+          <div className="bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs px-4 py-3 rounded-xl flex items-center space-x-2">
+            <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0" />
+            <span>{googleErr}</span>
+          </div>
+        )}
+
+        <div className="space-y-2">
+          <label className="block text-xs font-semibold text-slate-300">Google OAuth JSON Path</label>
+          <div className="flex flex-col sm:flex-row gap-3">
+            <input
+              type="text"
+              value={googlePath}
+              onChange={(e) => setGooglePath(e.target.value)}
+              placeholder="C:\Users\...\Downloads\client_secrets.json"
+              className="flex-1 bg-[#0a0d14] border border-gaming-border rounded-xl px-3.5 py-2.5 text-xs text-slate-200 placeholder-slate-600 font-mono"
+            />
+            <button
+              type="submit"
+              disabled={importingGoogle}
+              className="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-bold text-xs px-6 py-2.5 rounded-xl transition flex items-center justify-center space-x-2 flex-shrink-0"
+            >
+              {importingGoogle ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Verifying & Encrypting...</span>
+                </>
+              ) : (
+                <>
+                  <FileCheck className="w-4 h-4" />
+                  <span>Import Secrets into Secure Vault</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </form>
 
       {/* Credential Update Form */}
       <form onSubmit={handleSave} className="bg-[#111827] border border-gaming-border rounded-2xl p-6 space-y-6 shadow-xl">

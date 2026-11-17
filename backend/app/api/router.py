@@ -6,8 +6,11 @@ Publishing Queue, Platform Connections, Analytics, and Logs.
 
 from pathlib import Path
 from datetime import datetime
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Form, UploadFile, File
+from typing import List, Optional, Dict, Any
+import os
+import json
+import logging
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Form, UploadFile, File, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -22,6 +25,7 @@ from backend.app.services.pipeline_service import pipeline_service
 from backend.app.publishers.manager import publishing_manager
 from backend.app.security.vault import vault
 
+logger = logging.getLogger("gaming_uncut.api")
 router = APIRouter(prefix="/api")
 
 # Schemas
@@ -239,6 +243,143 @@ def update_connections(req: ConnectionUpdateRequest):
             req.meta_ig_id or ""
         )
     return {"status": "success", "message": "Credentials securely stored in Vault."}
+
+@router.post("/settings/import-google-secrets")
+async def import_google_secrets(request: Request, db: Session = Depends(get_db)):
+    """
+    Imports and validates Google OAuth 2.0 Desktop Client JSON secrets file into secure vault.
+    Supports JSON body {"path": "..."}, Form data (path=...), or direct payload.
+    Ensures safe Windows path resolution, format verification, and vault write confirmation.
+    Never exposes or logs secret tokens.
+    """
+    target_path = None
+    content_type = request.headers.get("content-type", "")
+
+    # Extract path from JSON or Form
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+            target_path = body.get("path") or body.get("file_path")
+        except Exception:
+            pass
+    elif "form" in content_type or "multipart" in content_type:
+        try:
+            form = await request.form()
+            target_path = form.get("path") or form.get("file_path")
+        except Exception:
+            pass
+
+    if not target_path:
+        # Fallback inspection
+        try:
+            body = await request.json()
+            target_path = body.get("path")
+        except Exception:
+            pass
+
+    if not target_path or not str(target_path).strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Missing 'path' parameter. Please specify the path to your downloaded client_secrets.json file."
+        )
+
+    # 1. Clean & resolve Windows path
+    raw_str = str(target_path).strip().strip('\"\'')
+    expanded_str = os.path.expandvars(os.path.expanduser(raw_str))
+    p = Path(expanded_str).resolve()
+
+    # 2. Check existence & file type
+    if not p.exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"File not found at: '{p}'. Please verify that the file exists and the path is correct."
+        )
+
+    if not p.is_file():
+        raise HTTPException(
+            status_code=400,
+            detail=f"The specified path is a directory, not a file: '{p}'."
+        )
+
+    # 3. Read & validate JSON structure
+    try:
+        content = p.read_text(encoding="utf-8")
+        data = json.loads(content)
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to read file: The file is not valid UTF-8 text."
+        )
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid JSON format in file: {e}"
+        )
+
+    info = data.get("installed") or data.get("web")
+    if not info or not isinstance(info, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Google OAuth file: Missing 'installed' or 'web' root configuration. Ensure this is a Desktop OAuth client credentials file from Google Cloud Console."
+        )
+
+    client_id = info.get("client_id")
+    client_secret = info.get("client_secret")
+    project_id = info.get("project_id", "gaming-uncut")
+
+    if not client_id or not isinstance(client_id, str) or not client_id.strip():
+        raise HTTPException(status_code=400, detail="Invalid Google OAuth file: 'client_id' is missing or empty.")
+
+    if not client_secret or not isinstance(client_secret, str) or not client_secret.strip():
+        raise HTTPException(status_code=400, detail="Invalid Google OAuth file: 'client_secret' is missing or empty.")
+
+    # 4. Secure storage in Vault
+    try:
+        # Backend vault
+        vault.save_json("google", "client_config", data)
+        vault.set_secret("google", "client_id", client_id.strip())
+        vault.set_secret("google", "client_secret", client_secret.strip())
+        vault.set_secret("google", "project_id", project_id.strip())
+
+        # Also sync to root legacy vault for backwards compatibility
+        try:
+            from src.core.security import vault as legacy_vault
+            legacy_vault.save_json_secret("google_client_config", data)
+            legacy_vault.set_secret("google_client_id", client_id.strip())
+            legacy_vault.set_secret("google_client_secret", client_secret.strip())
+            legacy_vault.set_secret("google_project_id", project_id.strip())
+        except Exception:
+            pass
+
+        # 5. Confirm successful storage
+        stored_id = vault.get_secret("google", "client_id")
+        stored_secret = vault.get_secret("google", "client_secret")
+        if not stored_id or not stored_secret or stored_id != client_id.strip():
+            raise RuntimeError("Vault write confirmation failed.")
+
+    except Exception as e:
+        logger.error(f"Failed to securely store Google credentials: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Secure storage error while saving to vault: {e}"
+        )
+
+    # 6. Audit logging (Never log secret values)
+    log_entry = SystemLog(
+        module="security",
+        level="INFO",
+        message=f"Google OAuth Desktop Client successfully imported and verified for project: '{project_id}'."
+    )
+    db.add(log_entry)
+    db.commit()
+
+    client_id_preview = f"{client_id[:12]}...{client_id[-16:]}" if len(client_id) > 28 else f"{client_id[:8]}..."
+    return {
+        "status": "success",
+        "message": "Google Desktop OAuth credentials verified and securely stored in Vault.",
+        "project_id": project_id,
+        "client_id_preview": client_id_preview
+    }
 
 # 9. Audit Logs
 @router.get("/logs")

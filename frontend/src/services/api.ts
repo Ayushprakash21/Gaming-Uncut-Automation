@@ -72,6 +72,19 @@ export async function updateConnections(data: {
   return res.json()
 }
 
+export async function importGoogleSecrets(path: string) {
+  const res = await fetch(`${API_BASE}/settings/import-google-secrets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path })
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Failed to import Google secrets')
+  }
+  return data
+}
+
 export async function fetchLogs(): Promise<SystemLogItem[]> {
   const res = await fetch(`${API_BASE}/logs`)
   return res.json()
