@@ -10,17 +10,41 @@ logger = logging.getLogger("gaming_uncut.audio_analyzer")
 
 def extract_pcm_wav(video_path: Path, output_wav: Path) -> Path:
     """Extracts 16kHz mono 16-bit PCM WAV for signal processing."""
+    raw_str = str(video_path).strip().strip('\"\'')
+    clean = raw_str.replace("\\", "/").lower()
+    if (
+        clean.startswith(("http://", "https://", "http:/", "https:/", "ftp://", "rtmp://"))
+        or "://" in clean
+        or "youtube.com" in clean
+        or "youtu.be" in clean
+    ):
+        raise ValueError(
+            f"Cannot extract audio from a remote URL. Video must be downloaded locally first: '{raw_str}'"
+        )
+
+    resolved_path = Path(raw_str).resolve()
+    if not resolved_path.exists() or not resolved_path.is_file():
+        raise FileNotFoundError(f"Input video file not found for audio extraction: '{resolved_path}'")
+
     output_wav.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         "ffmpeg", "-y",
-        "-i", str(video_path),
+        "-i", str(resolved_path),
         "-vn",
         "-ac", "1",
         "-ar", "16000",
         "-f", "wav",
         str(output_wav)
     ]
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if res.returncode != 0:
+        err_msg = res.stderr.strip() if res.stderr else f"FFmpeg exited with code {res.returncode}"
+        logger.error(f"FFmpeg audio extraction error (code {res.returncode}): {err_msg}")
+        raise RuntimeError(f"FFmpeg audio extraction failed (exit code {res.returncode}): {err_msg}")
+
+    if not output_wav.exists() or output_wav.stat().st_size == 0:
+        raise FileNotFoundError(f"FFmpeg audio extraction completed but output WAV is empty or missing: '{output_wav}'")
+
     return output_wav
 
 def calculate_loudness_peaks(wav_path: Path, window_sec: float = 1.0) -> List[Dict[str, Any]]:

@@ -16,7 +16,7 @@ from backend.app.models.schema import (
     SourceVideo, ProcessingJob, DetectedHighlight, GeneratedClip, ClipMetadata,
     PublishingJob, PlatformUpload, SystemLog, ApplicationEvent
 )
-from backend.app.ingestion.adapters import ingestion_manager
+from backend.app.ingestion.adapters import ingestion_manager, normalize_youtube_url
 from backend.app.ai.audio_analyzer import extract_pcm_wav, calculate_loudness_peaks
 from backend.app.ai.scene_analyzer import detect_scene_cuts
 from backend.app.ai.transcriber import transcribe_audio_words
@@ -84,24 +84,27 @@ class PipelineService:
         if platforms is None:
             platforms = ["youtube", "instagram", "facebook"]
 
+        # Normalize input URL if YouTube
+        clean_target = normalize_youtube_url(url_or_path) if ("youtube.com" in url_or_path or "youtu.be" in url_or_path) else url_or_path.strip()
+
         # Ensure initial Job record exists
         if job_id is None:
             with SessionLocal() as db:
-                clean_target = url_or_path.strip()
                 sv = db.query(SourceVideo).filter(
                     (SourceVideo.url == clean_target) | (SourceVideo.local_path == clean_target)
                 ).first()
                 if not sv:
+                    is_local = Path(clean_target).exists() and Path(clean_target).is_file()
                     sv = SourceVideo(
                         url=clean_target,
-                        title=Path(clean_target).stem,
+                        title=Path(clean_target).stem if is_local else "Pending Ingestion",
                         duration=float(target_duration),
                         width=1920,
                         height=1080,
                         fps=30.0,
                         format="mp4",
-                        local_path=clean_target,
-                        source_type="local" if Path(clean_target).exists() else "url",
+                        local_path=clean_target if is_local else "",
+                        source_type="local" if is_local else ("youtube" if "youtube.com" in clean_target else "url"),
                         status="ingesting"
                     )
                     db.add(sv)
@@ -124,14 +127,39 @@ class PipelineService:
         try:
             # Stage 1: Source validation
             self._update_job_stage(job_id, 0, self.STAGES[0], 10)
-            val_result = ingestion_manager.validate_source(url_or_path)
+            val_result = ingestion_manager.validate_source(clean_target)
             if not val_result.get("accessible", False):
                 raise ValueError(f"Source validation rejected: {val_result.get('message', 'Source not accessible')}")
 
             # Stage 2: Media ingestion
             self._update_job_stage(job_id, 1, self.STAGES[1], 20)
-            source_video = ingestion_manager.process_url_or_path(url_or_path, notes=notes or "")
-            video_path = Path(source_video.local_path)
+            source_video = ingestion_manager.process_url_or_path(clean_target, notes=notes or "")
+
+            # STRICT PRE-STAGE 3 VALIDATION GUARD:
+            # Under NO circumstances pass a remote URL, non-existent file, or corrupt file to FFmpeg.
+            raw_local_path = str(source_video.local_path or "").strip().strip('\"\'')
+            clean_path = raw_local_path.replace("\\", "/").lower()
+            if (
+                not raw_local_path
+                or clean_path.startswith(("http://", "https://", "http:/", "https:/", "ftp://", "rtmp://"))
+                or "://" in clean_path
+                or "youtube.com" in clean_path
+                or "youtu.be" in clean_path
+            ):
+                raise ValueError(
+                    f"Media ingestion failed: Ingested source video local_path is an invalid remote URL or empty: '{raw_local_path}'"
+                )
+
+            video_path = Path(raw_local_path).resolve()
+            if not video_path.exists() or not video_path.is_file():
+                raise FileNotFoundError(
+                    f"Media ingestion failed: Local video file not found on disk at '{video_path}'."
+                )
+
+            if video_path.stat().st_size <= 1024:
+                raise ValueError(
+                    f"Media ingestion failed: Downloaded video file is empty or corrupted ({video_path.stat().st_size} bytes)."
+                )
 
             # Link real source_video_id to job
             with SessionLocal() as db:

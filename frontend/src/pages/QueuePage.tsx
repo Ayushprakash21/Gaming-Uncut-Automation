@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react'
-import { RotateCw, CheckCircle2, Clock, AlertTriangle, ListOrdered, Film } from 'lucide-react'
-import { fetchJobs } from '../services/api'
+import { RotateCw, CheckCircle2, Clock, AlertTriangle, ListOrdered, Film, RefreshCw } from 'lucide-react'
+import { fetchJobs, retryJob } from '../services/api'
 import { ProcessingJobItem } from '../types'
 
 export const QueuePage: React.FC = () => {
   const [jobs, setJobs] = useState<ProcessingJobItem[]>([])
   const [loading, setLoading] = useState(false)
+  const [retryingJobs, setRetryingJobs] = useState<Record<number, boolean>>({})
 
   const load = async () => {
     setLoading(true)
@@ -14,6 +15,18 @@ export const QueuePage: React.FC = () => {
       setJobs(data)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleRetry = async (jobId: number) => {
+    setRetryingJobs((prev) => ({ ...prev, [jobId]: true }))
+    try {
+      await retryJob(jobId)
+      await load()
+    } catch (err: any) {
+      alert(`Retry failed: ${err.message}`)
+    } finally {
+      setRetryingJobs((prev) => ({ ...prev, [jobId]: false }))
     }
   }
 
@@ -100,8 +113,22 @@ export const QueuePage: React.FC = () => {
                   </div>
 
                   {job.error_message && (
-                    <div className="text-[11px] text-rose-400 bg-rose-500/10 p-2 rounded-lg border border-rose-500/20 font-mono">
-                      Error: {job.error_message}
+                    <div className="space-y-2">
+                      <div className="text-[11px] text-rose-400 bg-rose-500/10 p-2 rounded-lg border border-rose-500/20 font-mono">
+                        Error: {job.error_message}
+                      </div>
+                      {isFailed && (
+                        <div className="flex justify-end">
+                          <button
+                            onClick={() => handleRetry(job.id)}
+                            disabled={retryingJobs[job.id]}
+                            className="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-[11px] font-semibold px-3 py-1 rounded-md flex items-center space-x-1.5 transition shadow"
+                          >
+                            <RefreshCw className={`w-3 h-3 ${retryingJobs[job.id] ? 'animate-spin' : ''}`} />
+                            <span>{retryingJobs[job.id] ? 'Retrying...' : 'Retry Job'}</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

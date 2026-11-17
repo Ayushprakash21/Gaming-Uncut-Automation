@@ -22,7 +22,7 @@ from backend.app.models.schema import (
     PublishingJob, PlatformUpload, PublishingAnalytics, SystemLog, CredentialsMetadata,
     SystemSettings, PlatformQuotaState
 )
-from backend.app.ingestion.adapters import ingestion_manager
+from backend.app.ingestion.adapters import ingestion_manager, normalize_youtube_url
 from backend.app.services.pipeline_service import pipeline_service
 from backend.app.publishers.manager import publishing_manager
 from backend.app.publishers.youtube.youtube_client import youtube_client, YouTubeAuthError
@@ -274,20 +274,22 @@ def generate_reel(req: CreateReelRequest, background_tasks: BackgroundTasks, db:
         )
 
     # Ensure or create SourceVideo record for foreign key consistency
-    clean_url = req.url.strip()
+    raw_url = req.url.strip()
+    clean_url = normalize_youtube_url(raw_url) if ("youtube.com" in raw_url or "youtu.be" in raw_url) else raw_url
     source_video = db.query(SourceVideo).filter(
         (SourceVideo.url == clean_url) | (SourceVideo.local_path == clean_url)
     ).first()
     if not source_video:
+        is_local = Path(clean_url).exists() and Path(clean_url).is_file()
         source_video = SourceVideo(
             url=clean_url,
-            title=Path(clean_url).stem if not clean_url.startswith("http") else f"Source {abs(hash(clean_url)) % 100000}",
+            title=Path(clean_url).stem if is_local else f"Source {abs(hash(clean_url)) % 100000}",
             duration=float(req.target_duration),
             width=1920,
             height=1080,
             fps=30.0,
             format="mp4",
-            local_path=clean_url,
+            local_path=clean_url if is_local else "",
             source_type="youtube" if ("youtube.com" in clean_url or "youtu.be" in clean_url) else ("direct_url" if clean_url.startswith("http") else "local"),
             status="ingesting"
         )
@@ -309,7 +311,7 @@ def generate_reel(req: CreateReelRequest, background_tasks: BackgroundTasks, db:
 
     background_tasks.add_task(
         pipeline_service.execute_from_url_or_path,
-        url_or_path=req.url.strip(),
+        url_or_path=clean_url,
         template=req.template,
         publish_mode=req.publish_mode,
         platforms=req.platforms,
@@ -329,8 +331,50 @@ def generate_reel(req: CreateReelRequest, background_tasks: BackgroundTasks, db:
         "status": "processing_queued",
         "job_id": job.id,
         "message": "Reel production initiated. Real-time stages tracking active.",
-        "url": req.url,
+        "url": clean_url,
         "template": req.template
+    }
+
+@router.post("/jobs/{job_id}/retry")
+def retry_job(job_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """
+    Retries a failed processing job cleanly without creating duplicate job IDs.
+    Resets status, error_message, progress, and re-dispatches the pipeline.
+    """
+    job = db.query(ProcessingJob).filter_by(id=job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Processing job #{job_id} not found.")
+
+    if job.status == "processing":
+        raise HTTPException(status_code=400, detail=f"Job #{job_id} is already currently processing.")
+
+    source_video = db.query(SourceVideo).filter_by(id=job.source_video_id).first()
+    if not source_video:
+        raise HTTPException(status_code=404, detail="Associated source video not found for this job.")
+
+    url_or_path = source_video.url or source_video.local_path
+    if not url_or_path:
+        raise HTTPException(status_code=400, detail="No source URL or local path found for this job.")
+
+    job.status = "processing"
+    job.error_message = None
+    job.progress_pct = 5
+    job.current_step = "Source validation"
+    job.started_at = datetime.utcnow()
+    job.completed_at = None
+    db.commit()
+
+    background_tasks.add_task(
+        pipeline_service.execute_from_url_or_path,
+        url_or_path=url_or_path,
+        job_id=job.id,
+        target_duration=int(source_video.duration or 60),
+    )
+
+    return {
+        "status": "retrying",
+        "job_id": job.id,
+        "message": f"Job #{job.id} re-enqueued for autonomous processing."
     }
 
 # 5. Job Progress & 10-Stage Tracking
