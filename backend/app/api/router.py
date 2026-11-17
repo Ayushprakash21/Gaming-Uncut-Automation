@@ -25,6 +25,7 @@ from backend.app.models.schema import (
 from backend.app.ingestion.adapters import ingestion_manager
 from backend.app.services.pipeline_service import pipeline_service
 from backend.app.publishers.manager import publishing_manager
+from backend.app.publishers.youtube.youtube_client import youtube_client, YouTubeAuthError
 from backend.app.publishers.quota_tracker import get_or_create_settings, get_or_create_quota_state, get_today_bucket
 from backend.app.security.vault import vault
 
@@ -132,8 +133,10 @@ def get_overview(db: Session = Depends(get_db)):
     gen_pct = min(100, round((today_generated / gen_target) * 100)) if gen_target > 0 else 0
     pub_pct = min(100, round((today_published / pub_target) * 100)) if pub_target > 0 else 0
 
-    # Credentials status
-    yt_ready = vault.get_json("google", "oauth_tokens") is not None
+    # Credentials & Verified Status
+    verified_channel = vault.get_json("google", "verified_channel")
+    yt_client_cfg = vault.get_json("google", "client_config") is not None
+    yt_ready = bool(verified_channel and vault.get_json("google", "oauth_tokens"))
     meta_ready = vault.get_secret("meta", "page_access_token") is not None
     ig_ready = vault.get_secret("meta", "instagram_account_id") is not None
     gemini_ready = vault.get_gemini_api_key() is not None
@@ -201,7 +204,8 @@ def get_overview(db: Session = Depends(get_db)):
         "platforms": {
             "youtube": {
                 "connected": yt_ready,
-                "status": "Connected" if yt_ready else ("Not Connected (Channel Auth Required)" if vault.get_json("google", "client_config") else "Not Connected"),
+                "status": f"Connected ({verified_channel.get('title')})" if (yt_ready and verified_channel) else ("Not Connected (Channel Auth Required)" if yt_client_cfg else "Not Connected"),
+                "channel": verified_channel if yt_ready else None,
                 "quota_used_today": yt_quota.quota_units_used,
                 "quota_bucket_limit": 10000,
                 "published_today": yt_quota.published_today,
@@ -579,8 +583,10 @@ def force_dispatch(job_id: int, background_tasks: BackgroundTasks):
 # 8. Platform Connections & Settings
 @router.get("/settings/connections")
 def get_connections():
+    verified_channel = vault.get_json("google", "verified_channel")
     yt_client_cfg = vault.get_json("google", "client_config") is not None
-    yt_auth = vault.get_json("google", "oauth_tokens") is not None
+    # YouTube is only Connected when OAuth tokens exist AND the channel is verified!
+    yt_auth = bool(verified_channel and vault.get_json("google", "oauth_tokens"))
     meta_app = vault.get_secret("meta", "app_id") is not None
     meta_token = vault.get_secret("meta", "page_access_token") is not None
     ig_account = vault.get_secret("meta", "instagram_account_id")
@@ -591,9 +597,10 @@ def get_connections():
         "youtube": {
             "client_configured": yt_client_cfg,
             "authenticated": yt_auth,
-            "connected": yt_auth,  # Explicitly false until OAuth tokens/channel verified
+            "connected": yt_auth,  # Strictly false until Google OAuth and channel verification complete
             "status": "connected" if yt_auth else ("client_ready_auth_needed" if yt_client_cfg else "not_configured"),
-            "status_label": "Connected" if yt_auth else ("Not Connected (Channel Auth Required)" if yt_client_cfg else "Not Connected"),
+            "status_label": f"Connected ({verified_channel.get('title')})" if (yt_auth and verified_channel) else ("Not Connected (Channel Auth Required)" if yt_client_cfg else "Not Connected"),
+            "channel": verified_channel if yt_auth else None,
             "project_id": vault.get_secret("google", "project_id") or "gaming-uncut"
         },
         "instagram": {
@@ -618,6 +625,66 @@ def get_connections():
             "status_label": "Configured" if gemini_key else "Not Configured"
         }
     }
+
+# Dedicated YouTube OAuth Endpoints
+@router.post("/settings/youtube/connect")
+def connect_youtube_account(open_browser: bool = True, db: Session = Depends(get_db)):
+    """
+    Initiates Google's official Desktop OAuth 2.0 InstalledAppFlow on localhost.
+    Opens the default browser for Google user consent, stores credentials securely,
+    and calls channels.list to verify channel identity.
+    """
+    try:
+        result = youtube_client.connect_account(open_browser=open_browser)
+        channel = result.get("channel", {})
+        log_entry = SystemLog(
+            module="youtube_oauth",
+            level="INFO",
+            message=f"YouTube channel successfully authorized & verified: '{channel.get('title')}' (ID: {channel.get('channel_id')})."
+        )
+        db.add(log_entry)
+        db.commit()
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except YouTubeAuthError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"YouTube OAuth connection error: {e}")
+        raise HTTPException(status_code=500, detail=f"OAuth connection failed: {e}")
+
+@router.post("/settings/youtube/test")
+def test_youtube_connection():
+    """
+    Tests existing YouTube connection by making an authentic API call to channels.list.
+    """
+    result = youtube_client.test_connection()
+    return result
+
+@router.post("/settings/youtube/disconnect")
+def disconnect_youtube_account(db: Session = Depends(get_db)):
+    """
+    Disconnects YouTube: wipes OAuth tokens and verified channel information from vault.
+    """
+    result = youtube_client.disconnect_account()
+    log_entry = SystemLog(
+        module="youtube_oauth",
+        level="INFO",
+        message="YouTube account disconnected and tokens removed from vault."
+    )
+    db.add(log_entry)
+    db.commit()
+    return result
+
+@router.get("/settings/youtube/channel")
+def get_youtube_channel_info():
+    """
+    Retrieves verified YouTube channel information from vault.
+    """
+    channel = vault.get_json("google", "verified_channel")
+    if not channel:
+        return {"authenticated": False, "channel": None}
+    return {"authenticated": True, "channel": channel}
 
 @router.post("/settings/connections")
 def update_connections(req: ConnectionUpdateRequest):
