@@ -19,17 +19,26 @@ from backend.app.core.config import settings
 from backend.app.database.session import get_db
 from backend.app.models.schema import (
     SourceVideo, ProcessingJob, GeneratedClip, ClipMetadata,
-    PublishingJob, PlatformUpload, PublishingAnalytics, SystemLog, CredentialsMetadata
+    PublishingJob, PlatformUpload, PublishingAnalytics, SystemLog, CredentialsMetadata,
+    SystemSettings, PlatformQuotaState
 )
 from backend.app.ingestion.adapters import ingestion_manager
 from backend.app.services.pipeline_service import pipeline_service
 from backend.app.publishers.manager import publishing_manager
+from backend.app.publishers.quota_tracker import get_or_create_settings, get_or_create_quota_state, get_today_bucket
 from backend.app.security.vault import vault
 
 logger = logging.getLogger("gaming_uncut.api")
 router = APIRouter(prefix="/api")
 
 # Schemas
+class SystemLimitsUpdateRequest(BaseModel):
+    daily_generation_target: Optional[int] = 15
+    daily_publishing_target: Optional[int] = 15
+    youtube_daily_limit: Optional[int] = 15
+    instagram_daily_limit: Optional[int] = 25
+    facebook_daily_limit: Optional[int] = 25
+
 class ValidateSourceRequest(BaseModel):
     url: str
 
@@ -89,19 +98,39 @@ def get_health():
 @router.get("/status")
 @router.get("/overview")
 def get_overview(db: Session = Depends(get_db)):
+    # Settings & Quotas
+    sys_settings = get_or_create_settings(db)
+    yt_quota = get_or_create_quota_state(db, "youtube")
+    ig_quota = get_or_create_quota_state(db, "instagram")
+    fb_quota = get_or_create_quota_state(db, "facebook")
+
     total_processed = db.query(SourceVideo).count()
     total_clips = db.query(GeneratedClip).count()
     
     published_count = db.query(PlatformUpload).filter_by(status="published").count()
     failed_count = db.query(PlatformUpload).filter_by(status="failed").count()
-    pending_queue = db.query(PublishingJob).filter_by(status="pending").count()
+    pending_queue = db.query(PublishingJob).filter(
+        PublishingJob.status.in_(["pending", "scheduled_next_window"])
+    ).count()
     
-    # Today's uploads
+    # Today's uploads & generation
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_generated = db.query(GeneratedClip).filter(
+        GeneratedClip.created_at >= today_start
+    ).count()
     today_published = db.query(PlatformUpload).filter(
         PlatformUpload.status == "published",
         PlatformUpload.uploaded_at >= today_start
     ).count()
+    today_failed = db.query(PlatformUpload).filter(
+        PlatformUpload.status == "failed",
+        PlatformUpload.uploaded_at >= today_start
+    ).count()
+
+    gen_target = sys_settings.daily_generation_target or 15
+    pub_target = sys_settings.daily_publishing_target or 15
+    gen_pct = min(100, round((today_generated / gen_target) * 100)) if gen_target > 0 else 0
+    pub_pct = min(100, round((today_published / pub_target) * 100)) if pub_target > 0 else 0
 
     # Credentials status
     yt_ready = vault.get_json("google", "oauth_tokens") is not None
@@ -109,31 +138,94 @@ def get_overview(db: Session = Depends(get_db)):
     ig_ready = vault.get_secret("meta", "instagram_account_id") is not None
     gemini_ready = vault.get_gemini_api_key() is not None
 
+    quotas = {
+        "youtube": {
+            "published_today": yt_quota.published_today,
+            "user_daily_limit": sys_settings.youtube_daily_limit,
+            "quota_units_used_today": yt_quota.quota_units_used,
+            "quota_units_bucket_limit": 10000,
+            "api_quota_exceeded": yt_quota.api_quota_exceeded,
+            "channel_limit_reached": yt_quota.channel_limit_reached,
+            "pause_until": yt_quota.pause_until.isoformat() if yt_quota.pause_until else None,
+            "status": "api_quota_paused" if yt_quota.api_quota_exceeded else (
+                "channel_limit_paused" if yt_quota.channel_limit_reached else (
+                    "user_limit_reached" if yt_quota.published_today >= sys_settings.youtube_daily_limit else "normal"
+                )
+            ),
+            "last_restriction_reason": yt_quota.last_restriction_reason
+        },
+        "instagram": {
+            "published_today": ig_quota.published_today,
+            "user_daily_limit": sys_settings.instagram_daily_limit,
+            "rate_limited": ig_quota.rate_limited,
+            "pause_until": ig_quota.pause_until.isoformat() if ig_quota.pause_until else None,
+            "status": "rate_limited" if ig_quota.rate_limited else (
+                "user_limit_reached" if ig_quota.published_today >= sys_settings.instagram_daily_limit else "normal"
+            ),
+            "last_restriction_reason": ig_quota.last_restriction_reason
+        },
+        "facebook": {
+            "published_today": fb_quota.published_today,
+            "user_daily_limit": sys_settings.facebook_daily_limit,
+            "rate_limited": fb_quota.rate_limited,
+            "pause_until": fb_quota.pause_until.isoformat() if fb_quota.pause_until else None,
+            "status": "rate_limited" if fb_quota.rate_limited else (
+                "user_limit_reached" if fb_quota.published_today >= sys_settings.facebook_daily_limit else "normal"
+            ),
+            "last_restriction_reason": fb_quota.last_restriction_reason
+        }
+    }
+
     return {
         "kpis": {
             "total_videos_processed": total_processed,
             "total_clips_generated": total_clips,
+            "today_generated": today_generated,
+            "today_queued": pending_queue,
+            "today_published": today_published,
+            "today_failed": today_failed,
             "published_count": published_count,
             "published_today": today_published,
             "failed_count": failed_count,
             "pending_queue": pending_queue,
             "pending_approvals": pending_queue,
             "queued": pending_queue,
-            "today_published": today_published,
-            "daily_target": settings.DAILY_TARGET_CLIPS,
-            "target_progress_pct": min(100, round((today_published / settings.DAILY_TARGET_CLIPS) * 100)),
+            "daily_target": pub_target,
+            "daily_generation_target": gen_target,
+            "daily_publishing_target": pub_target,
+            "generation_progress_pct": gen_pct,
+            "publishing_progress_pct": pub_pct,
+            "target_progress_pct": pub_pct,
             "workflow_mode": "manual"
         },
         "platforms": {
             "youtube": {
                 "connected": yt_ready,
                 "status": "Connected" if yt_ready else ("Not Connected (Channel Auth Required)" if vault.get_json("google", "client_config") else "Not Connected"),
-                "quota_used_today": today_published * 1600
+                "quota_used_today": yt_quota.quota_units_used,
+                "quota_bucket_limit": 10000,
+                "published_today": yt_quota.published_today,
+                "limit": sys_settings.youtube_daily_limit,
+                "paused": yt_quota.api_quota_exceeded or yt_quota.channel_limit_reached,
+                "pause_until": yt_quota.pause_until.isoformat() if yt_quota.pause_until else None
             },
-            "instagram": {"connected": meta_ready and ig_ready},
-            "facebook": {"connected": meta_ready},
+            "instagram": {
+                "connected": meta_ready and ig_ready,
+                "published_today": ig_quota.published_today,
+                "limit": sys_settings.instagram_daily_limit,
+                "paused": ig_quota.rate_limited,
+                "pause_until": ig_quota.pause_until.isoformat() if ig_quota.pause_until else None
+            },
+            "facebook": {
+                "connected": meta_ready,
+                "published_today": fb_quota.published_today,
+                "limit": sys_settings.facebook_daily_limit,
+                "paused": fb_quota.rate_limited,
+                "pause_until": fb_quota.pause_until.isoformat() if fb_quota.pause_until else None
+            },
             "gemini": {"connected": gemini_ready}
         },
+        "quotas": quotas,
         "integrations": {
             "youtube": {"authenticated": yt_ready, "configured": vault.get_json("google", "client_config") is not None},
             "instagram": {"configured": meta_ready and ig_ready},
@@ -688,3 +780,68 @@ def get_system_logs(limit: int = 50, db: Session = Depends(get_db)):
         "message": l.message,
         "created_at": l.created_at
     } for l in logs]
+
+# 10. Daily Limits & System Settings
+@router.get("/settings/limits")
+def get_system_limits(db: Session = Depends(get_db)):
+    """
+    Returns current daily generation and publishing target configuration,
+    and individual platform upload limits.
+    """
+    settings_obj = get_or_create_settings(db)
+    return {
+        "daily_generation_target": settings_obj.daily_generation_target,
+        "daily_publishing_target": settings_obj.daily_publishing_target,
+        "youtube_daily_limit": settings_obj.youtube_daily_limit,
+        "instagram_daily_limit": settings_obj.instagram_daily_limit,
+        "facebook_daily_limit": settings_obj.facebook_daily_limit,
+        "auto_reschedule_on_quota": settings_obj.auto_reschedule_on_quota,
+        "updated_at": settings_obj.updated_at.isoformat() if settings_obj.updated_at else None
+    }
+
+@router.post("/settings/limits")
+def update_system_limits(req: SystemLimitsUpdateRequest, db: Session = Depends(get_db)):
+    """
+    Updates configurable targets and limits:
+    - Daily generation target (clips created per day, default 15)
+    - Daily publishing target (clips published across platforms per day, default 15)
+    - YouTube daily limit (upload attempts per day, default 15)
+    - Instagram daily limit (reels per day, default 25)
+    - Facebook daily limit (reels per day, default 25)
+    """
+    settings_obj = get_or_create_settings(db)
+    if req.daily_generation_target is not None:
+        settings_obj.daily_generation_target = max(1, req.daily_generation_target)
+    if req.daily_publishing_target is not None:
+        settings_obj.daily_publishing_target = max(1, req.daily_publishing_target)
+    if req.youtube_daily_limit is not None:
+        settings_obj.youtube_daily_limit = max(1, req.youtube_daily_limit)
+    if req.instagram_daily_limit is not None:
+        settings_obj.instagram_daily_limit = max(1, req.instagram_daily_limit)
+    if req.facebook_daily_limit is not None:
+        settings_obj.facebook_daily_limit = max(1, req.facebook_daily_limit)
+    
+    settings_obj.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(settings_obj)
+    
+    log_entry = SystemLog(
+        module="settings",
+        level="INFO",
+        message=f"System targets & limits updated: Gen Target={settings_obj.daily_generation_target}, Pub Target={settings_obj.daily_publishing_target}, YT Limit={settings_obj.youtube_daily_limit}, IG Limit={settings_obj.instagram_daily_limit}, FB Limit={settings_obj.facebook_daily_limit}"
+    )
+    db.add(log_entry)
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": "System limits and daily targets updated successfully.",
+        "settings": {
+            "daily_generation_target": settings_obj.daily_generation_target,
+            "daily_publishing_target": settings_obj.daily_publishing_target,
+            "youtube_daily_limit": settings_obj.youtube_daily_limit,
+            "instagram_daily_limit": settings_obj.instagram_daily_limit,
+            "facebook_daily_limit": settings_obj.facebook_daily_limit,
+            "auto_reschedule_on_quota": settings_obj.auto_reschedule_on_quota
+        }
+    }

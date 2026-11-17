@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Any
 from backend.app.security.vault import vault
+from backend.app.publishers.quota_tracker import FacebookRateLimitError
 
 logger = logging.getLogger("gaming_uncut.facebook")
 API_VERSION = "v21.0"
@@ -39,6 +40,9 @@ class FacebookPublishClient:
 
         if "video_id" not in init_res or "upload_url" not in init_res:
             err = init_res.get("error", {}).get("message", str(init_res))
+            code = init_res.get("error", {}).get("code")
+            if code in (32, 4, 17, 613) or "rate limit" in str(err).lower():
+                raise FacebookRateLimitError(f"Facebook Graph API rate limit reached (code {code}): {err}")
             logger.error(f"Facebook Reel start error: {err}")
             raise RuntimeError(f"Facebook Reel session start failed: {err}")
 
@@ -72,6 +76,9 @@ class FacebookPublishClient:
 
         if not finish_res.get("success"):
             err = finish_res.get("error", {}).get("message", str(finish_res))
+            code = finish_res.get("error", {}).get("code")
+            if code in (32, 4, 17, 613) or "rate limit" in str(err).lower():
+                raise FacebookRateLimitError(f"Facebook Graph API publish rate limit reached (code {code}): {err}")
             raise RuntimeError(f"Facebook Reel finish failed: {err}")
 
         post_url = f"https://www.facebook.com/reel/{video_id}"

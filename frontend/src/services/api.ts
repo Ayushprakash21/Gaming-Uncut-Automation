@@ -1,4 +1,4 @@
-import { OverviewData, ProcessingJobItem, GeneratedClipItem, PublishingQueueItem, ConnectionsData, SystemLogItem } from '../types'
+import { OverviewData, ProcessingJobItem, GeneratedClipItem, PublishingQueueItem, ConnectionsData, SystemLogItem, SystemLimits } from '../types'
 
 const API_BASE = '/api'
 
@@ -154,5 +154,19 @@ export async function importGoogleSecrets(path: string) {
 
 export async function fetchLogs(): Promise<SystemLogItem[]> {
   const res = await fetch(`${API_BASE}/logs`)
+  return res.json()
+}
+
+export async function fetchSystemLimits(): Promise<SystemLimits> {
+  const res = await fetch(`${API_BASE}/settings/limits`)
+  return res.json()
+}
+
+export async function updateSystemLimits(data: Partial<SystemLimits>): Promise<any> {
+  const res = await fetch(`${API_BASE}/settings/limits`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  })
   return res.json()
 }

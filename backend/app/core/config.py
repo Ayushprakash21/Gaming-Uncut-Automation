@@ -28,9 +28,9 @@ class Settings(BaseSettings):
     ASSETS_DIR: Path = ROOT_DIR / "assets"
     VAULT_DIR: Path = ROOT_DIR / ".vault"
     
-    # Server / Binding (Localhost only)
-    HOST: str = "127.0.0.1"
-    PORT: int = 8765
+    # Server / Binding (0.0.0.0 to listen on all network interfaces & local IPs)
+    HOST: str = os.getenv("HOST", "0.0.0.0")
+    PORT: int = int(os.getenv("PORT", "8765"))
     
     # Video Specifications
     TARGET_WIDTH: int = 1080
@@ -44,17 +44,20 @@ class Settings(BaseSettings):
     # Quality & Automation Defaults
     DEFAULT_PUBLISH_MODE: str = "auto"  # "auto" (quality-gated auto-publish) | "approval" (manual approval)
     MIN_QUALITY_SCORE: float = 75.0
-    DAILY_TARGET_CLIPS: int = 12
+    DAILY_TARGET_CLIPS: int = 15  # Default target 15 videos/day
+    DEFAULT_GENERATION_TARGET: int = 15
+    DEFAULT_PUBLISHING_TARGET: int = 15
     MAX_CONCURRENT_RENDERS: int = 1
     
     # AI Engine Provider
     AI_PROVIDER: str = "gemini"  # "gemini" or local fallback
     GEMINI_MODEL: str = "gemini-2.5-flash"
     
-    # Platform APIs
-    YOUTUBE_MAX_DAILY_UPLOADS: int = 6  # standard free quota threshold
-    INSTAGRAM_DAILY_LIMIT: int = 50
-    FACEBOOK_DAILY_LIMIT: int = 50
+    # Platform Quota Defaults (Configurable in Settings, tracked via live API responses)
+    YOUTUBE_DEFAULT_DAILY_LIMIT: int = 15
+    INSTAGRAM_DEFAULT_DAILY_LIMIT: int = 25
+    FACEBOOK_DEFAULT_DAILY_LIMIT: int = 25
+    YOUTUBE_QUOTA_PER_UPLOAD: int = 1600  # Official Google Data API v3 cost for videos.insert
     
     # Database
     DATABASE_URL: str = f"sqlite:///{ROOT_DIR / 'data' / 'gaming_uncut_v2.db'}"

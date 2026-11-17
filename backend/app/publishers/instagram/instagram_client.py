@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Any
 from backend.app.security.vault import vault
+from backend.app.publishers.quota_tracker import InstagramRateLimitError
 
 logger = logging.getLogger("gaming_uncut.instagram")
 API_VERSION = "v21.0"
@@ -50,6 +51,9 @@ class InstagramPublishClient:
 
         if "id" not in init_res or "uri" not in init_res:
             err = init_res.get("error", {}).get("message", str(init_res))
+            code = init_res.get("error", {}).get("code")
+            if code in (32, 4, 9, 17) or "rate limit" in str(err).lower() or "calls to this api" in str(err).lower():
+                raise InstagramRateLimitError(f"Instagram Graph API publishing limit reached (code {code}): {err}")
             logger.error(f"Instagram init container error: {err}")
             raise RuntimeError(f"Instagram container creation failed: {err}")
 
@@ -94,6 +98,9 @@ class InstagramPublishClient:
 
         if "id" not in pub_res:
             err = pub_res.get("error", {}).get("message", str(pub_res))
+            err_code = pub_res.get("error", {}).get("code")
+            if err_code in (32, 4, 9, 17) or "rate limit" in str(err).lower() or "limit" in str(err).lower():
+                raise InstagramRateLimitError(f"Instagram media_publish rate limit reached (code {err_code}): {err}")
             raise RuntimeError(f"Instagram media_publish failed: {err}")
 
         media_id = pub_res["id"]

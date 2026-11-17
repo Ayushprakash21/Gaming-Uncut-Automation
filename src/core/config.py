@@ -36,14 +36,14 @@ class AppSettings(BaseSettings):
     # Options: "manual" (require human approval) | "auto" (auto-publish if quality score passes)
     WORKFLOW_MODE: str = "manual"
     MIN_QUALITY_SCORE: float = 75.0  # Out of 100
-    DAILY_TARGET_CLIPS: int = 12
+    DAILY_TARGET_CLIPS: int = 15
     
     # Branding
     WATERMARK_ENABLED: bool = True
     WATERMARK_TEXT: str = "GAMING UNCUT"
     
-    # Server / UI
-    HOST: str = "127.0.0.1"
+    # Server / UI (0.0.0.0 to listen on all interfaces & local IPs)
+    HOST: str = "0.0.0.0"
     PORT: int = 8765
     
     model_config = SettingsConfigDict(

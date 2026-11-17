@@ -19,6 +19,7 @@ from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
 
 from backend.app.security.vault import vault
+from backend.app.publishers.quota_tracker import YouTubeQuotaExceededError, YouTubeChannelUploadLimitError
 
 logger = logging.getLogger("gaming_uncut.youtube")
 
@@ -117,6 +118,26 @@ class YouTubePublishClient:
                         raise
                     time.sleep(2 ** retry)
                 else:
+                    # Parse error details for quota vs channel limits
+                    try:
+                        err_content = json.loads(e.content.decode("utf-8")) if isinstance(e.content, bytes) else json.loads(str(e.content))
+                        errors_list = err_content.get("error", {}).get("errors", [])
+                        reasons = [item.get("reason", "") for item in errors_list]
+                        error_msg = err_content.get("error", {}).get("message", "")
+
+                        if any(r in ("quotaExceeded", "dailyLimitExceeded") for r in reasons) or "quota" in error_msg.lower():
+                            logger.warning(f"YouTube Project API Quota Exceeded (10,000 unit bucket): {error_msg}")
+                            raise YouTubeQuotaExceededError(f"YouTube API Project Quota Exceeded: {error_msg}")
+
+                        if any(r == "uploadLimitExceeded" for r in reasons) or "upload limit" in error_msg.lower() or "exceeded the number" in error_msg.lower():
+                            logger.warning(f"YouTube Channel-Level Upload Limit Reached: {error_msg}")
+                            raise YouTubeChannelUploadLimitError(f"YouTube Channel-Level Upload Limit Reached: {error_msg}")
+
+                    except (YouTubeQuotaExceededError, YouTubeChannelUploadLimitError):
+                        raise
+                    except Exception:
+                        pass
+
                     logger.error(f"YouTube API Fatal Error ({e.resp.status}): {e.content}")
                     raise
             except Exception as e:

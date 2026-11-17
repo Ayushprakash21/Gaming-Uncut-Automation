@@ -39,8 +39,12 @@ export const App: React.FC = () => {
         <Sidebar
           currentTab={currentTab}
           setCurrentTab={setCurrentTab}
-          dailyPublished={overview?.kpis.today_published ?? 0}
-          dailyTarget={overview?.kpis.daily_target ?? 12}
+          dailyGenerated={overview?.kpis.today_generated ?? 0}
+          targetGeneration={overview?.kpis.daily_generation_target ?? 15}
+          dailyPublished={overview?.kpis.today_published ?? (overview?.kpis.published_count ?? 0)}
+          targetPublishing={overview?.kpis.daily_publishing_target ?? (overview?.kpis.daily_target ?? 15)}
+          queuedCount={overview?.kpis.today_queued ?? (overview?.kpis.pending_queue ?? 0)}
+          failedCount={overview?.kpis.today_failed ?? (overview?.kpis.failed_count ?? 0)}
         />
 
         <main className="flex-1 overflow-y-auto p-8 max-w-7xl mx-auto w-full">

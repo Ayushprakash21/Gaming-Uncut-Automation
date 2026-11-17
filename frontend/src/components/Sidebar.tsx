@@ -16,15 +16,23 @@ import {
 interface SidebarProps {
   currentTab: string
   setCurrentTab: (tab: string) => void
+  dailyGenerated: number
+  targetGeneration: number
   dailyPublished: number
-  dailyTarget: number
+  targetPublishing: number
+  queuedCount: number
+  failedCount: number
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
   currentTab,
   setCurrentTab,
+  dailyGenerated,
+  targetGeneration,
   dailyPublished,
-  dailyTarget
+  targetPublishing,
+  queuedCount,
+  failedCount
 }) => {
   const navItems = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -39,7 +47,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'logs', label: 'Logs & Diagnostics', icon: Terminal },
   ]
 
-  const pct = Math.min(100, Math.round((dailyPublished / (dailyTarget || 12)) * 100))
+  const pctGen = Math.min(100, Math.round((dailyGenerated / (targetGeneration || 15)) * 100))
+  const pctPub = Math.min(100, Math.round((dailyPublished / (targetPublishing || 15)) * 100))
 
   return (
     <aside className="w-64 border-r border-gaming-border bg-[#0d111c] flex flex-col p-4 space-y-1 select-none">
@@ -70,21 +79,59 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* Target Progress Widget */}
-      <div className="bg-[#121826] border border-gaming-border rounded-xl p-3.5 space-y-2 mt-auto">
-        <div className="flex items-center justify-between text-xs">
-          <span className="text-slate-400 font-medium">Daily Target</span>
-          <span className="font-bold text-emerald-400 font-mono">
-            {dailyPublished} / {dailyTarget}
-          </span>
+      <div className="bg-[#121826] border border-gaming-border rounded-xl p-3.5 space-y-3 mt-auto">
+        {/* Local Generation Goal */}
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-slate-400 font-medium flex items-center gap-1.5">
+              <Sparkles className="w-3 h-3 text-purple-400" />
+              Generated
+            </span>
+            <span className="font-bold text-purple-400 font-mono">
+              {dailyGenerated} / {targetGeneration || 15}
+            </span>
+          </div>
+          <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+            <div
+              className="bg-purple-500 h-full transition-all duration-500"
+              style={{ width: `${pctGen}%` }}
+            />
+          </div>
         </div>
-        <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-          <div
-            className="bg-gradient-to-r from-purple-500 to-emerald-400 h-full transition-all duration-500"
-            style={{ width: `${pct}%` }}
-          />
+
+        {/* Publishing Target */}
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-slate-400 font-medium flex items-center gap-1.5">
+              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+              Published
+            </span>
+            <span className="font-bold text-emerald-400 font-mono">
+              {dailyPublished} / {targetPublishing || 15}
+            </span>
+          </div>
+          <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+            <div
+              className="bg-gradient-to-r from-purple-500 to-emerald-400 h-full transition-all duration-500"
+              style={{ width: `${pctPub}%` }}
+            />
+          </div>
         </div>
+
+        {/* Queued / Failed Breakdown */}
+        <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800/80 text-[11px]">
+          <div className="flex items-center justify-between bg-slate-900/60 px-2 py-1 rounded-lg">
+            <span className="text-slate-400">Queued:</span>
+            <span className="font-bold text-slate-200 font-mono">{queuedCount}</span>
+          </div>
+          <div className="flex items-center justify-between bg-slate-900/60 px-2 py-1 rounded-lg">
+            <span className="text-slate-400">Failed:</span>
+            <span className="font-bold text-slate-200 font-mono">{failedCount}</span>
+          </div>
+        </div>
+
         <p className="text-[10px] text-slate-500 leading-tight">
-          Targeting 10–15 high-retention clips/day with automated quota distribution.
+          Configurable limits (15 clips/day default). Independent generation & API quotas.
         </p>
       </div>
     </aside>

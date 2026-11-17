@@ -175,9 +175,35 @@ class Schedule(Base):
     __tablename__ = "schedules"
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), default="Daily Default")
-    target_daily_clips = Column(Integer, default=12)
+    target_daily_clips = Column(Integer, default=15)
     time_slots_json = Column(Text, default="[]")  # List of ["09:00", "11:30", "14:00", ...]
     is_active = Column(Boolean, default=True)
+
+class SystemSettings(Base):
+    __tablename__ = "system_settings"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    daily_generation_target = Column(Integer, default=15)
+    daily_publishing_target = Column(Integer, default=15)
+    youtube_daily_limit = Column(Integer, default=15)
+    instagram_daily_limit = Column(Integer, default=25)
+    facebook_daily_limit = Column(Integer, default=25)
+    auto_reschedule_on_quota = Column(Boolean, default=True)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+class PlatformQuotaState(Base):
+    __tablename__ = "platform_quota_states"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    platform = Column(String(50), nullable=False)  # youtube, instagram, facebook
+    date_bucket = Column(String(10), nullable=False)  # YYYY-MM-DD UTC
+    published_today = Column(Integer, default=0)
+    quota_units_used = Column(Integer, default=0)  # 1600 units per YouTube upload
+    api_quota_exceeded = Column(Boolean, default=False)
+    channel_limit_reached = Column(Boolean, default=False)
+    rate_limited = Column(Boolean, default=False)
+    pause_until = Column(DateTime, nullable=True)
+    last_restriction_type = Column(String(100), nullable=True)  # "api_quota_exceeded", "channel_limit_reached", "rate_limited", "user_limit_reached"
+    last_restriction_reason = Column(Text, nullable=True)
+    last_updated_at = Column(DateTime, default=datetime.utcnow)
 
 class CredentialsMetadata(Base):
     __tablename__ = "credentials_metadata"

@@ -129,15 +129,52 @@
             </button>
 
             <!-- Daily Target Box -->
-            <div class="mt-auto bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                <div class="flex items-center justify-between mb-2">
-                    <span class="text-xs text-slate-400 font-medium">Daily Target</span>
-                    <span class="text-xs font-bold text-emerald-400"><span id="stat-published">0</span> / <span id="stat-target">12</span></span>
+            <div class="mt-auto bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+                <div class="space-y-1">
+                    <div class="flex items-center justify-between text-xs">
+                        <span class="text-slate-400 font-medium flex items-center gap-1.5">
+                            <i class="fa-solid fa-wand-magic-sparkles text-purple-400 text-[10px]"></i>
+                            Generated
+                        </span>
+                        <span class="font-bold text-purple-400">
+                            <span id="stat-generated">0</span> / <span id="stat-target-gen">15</span>
+                        </span>
+                    </div>
+                    <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                        <div id="stat-progress-gen" class="bg-purple-500 h-full w-0 transition-all duration-500"></div>
+                    </div>
                 </div>
-                <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-                    <div id="stat-progress-bar" class="bg-gradient-to-r from-purple-500 to-emerald-400 h-full w-0 transition-all duration-500"></div>
+
+                <div class="space-y-1">
+                    <div class="flex items-center justify-between text-xs">
+                        <span class="text-slate-400 font-medium flex items-center gap-1.5">
+                            <i class="fa-solid fa-cloud-arrow-up text-emerald-400 text-[10px]"></i>
+                            Published
+                        </span>
+                        <span class="font-bold text-emerald-400">
+                            <span id="stat-published">0</span> / <span id="stat-target-pub">15</span>
+                        </span>
+                    </div>
+                    <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                        <div id="stat-progress-pub" class="bg-gradient-to-r from-purple-500 to-emerald-400 h-full w-0 transition-all duration-500"></div>
+                    </div>
                 </div>
-                <p class="text-[11px] text-slate-500 mt-2">Targeting 10–15 high-retention clips/day with safe quota distribution.</p>
+
+                <div class="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800/80 text-[11px]">
+                    <div class="flex items-center justify-between bg-slate-950/60 px-2 py-1 rounded-lg">
+                        <span class="text-slate-400 flex items-center gap-1">
+                            <i class="fa-solid fa-clock text-amber-400 text-[9px]"></i> Queued
+                        </span>
+                        <span id="stat-queued" class="font-bold text-slate-200">0</span>
+                    </div>
+                    <div class="flex items-center justify-between bg-slate-950/60 px-2 py-1 rounded-lg">
+                        <span class="text-slate-400 flex items-center gap-1">
+                            <i class="fa-solid fa-circle-xmark text-rose-400 text-[9px]"></i> Failed
+                        </span>
+                        <span id="stat-failed" class="font-bold text-slate-200">0</span>
+                    </div>
+                </div>
+                <p class="text-[10px] text-slate-500 leading-tight">Configurable targets (15/day default). Independent generation & API quotas.</p>
             </div>
         </aside>
 
@@ -624,6 +661,194 @@
                     </div>
                 </div>
 
+                <!-- Daily Targets & Platform Limits Configuration -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-lg">
+                    <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+                        <div class="flex items-center space-x-2.5">
+                            <div class="bg-purple-500/20 text-purple-400 p-2 rounded-lg text-sm">
+                                <i class="fa-solid fa-sliders"></i>
+                            </div>
+                            <div>
+                                <h3 class="text-sm font-bold text-slate-100">Daily Production Targets & Platform Limits</h3>
+                                <p class="text-xs text-slate-400">Configure separate generation and publishing goals. Limits prevent quota burns while ensuring safe multi-platform distribution.</p>
+                            </div>
+                        </div>
+                        <span class="text-[11px] font-mono px-2.5 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300">
+                            Default: 15 clips/day
+                        </span>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3.5">
+                        <div class="space-y-1.5 bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-[11px] font-bold text-purple-400 uppercase tracking-wide flex items-center gap-1">
+                                <i class="fa-solid fa-wand-magic-sparkles text-[10px]"></i> Daily Gen Target
+                            </label>
+                            <input type="number" id="cfg-target-gen" min="1" max="100" value="15" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono font-bold focus:border-purple-500 focus:outline-none">
+                            <p class="text-[10px] text-slate-500">Clips created locally</p>
+                        </div>
+
+                        <div class="space-y-1.5 bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-[11px] font-bold text-emerald-400 uppercase tracking-wide flex items-center gap-1">
+                                <i class="fa-solid fa-cloud-arrow-up text-[10px]"></i> Daily Pub Target
+                            </label>
+                            <input type="number" id="cfg-target-pub" min="1" max="100" value="15" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono font-bold focus:border-emerald-500 focus:outline-none">
+                            <p class="text-[10px] text-slate-500">Target daily uploads</p>
+                        </div>
+
+                        <div class="space-y-1.5 bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-[11px] font-bold text-red-400 uppercase tracking-wide flex items-center gap-1">
+                                <i class="fa-brands fa-youtube text-[10px]"></i> YouTube Limit
+                            </label>
+                            <input type="number" id="cfg-limit-yt" min="1" max="50" value="15" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono font-bold focus:border-red-500 focus:outline-none">
+                            <p class="text-[10px] text-slate-500">Daily Shorts cap</p>
+                        </div>
+
+                        <div class="space-y-1.5 bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-[11px] font-bold text-pink-400 uppercase tracking-wide flex items-center gap-1">
+                                <i class="fa-brands fa-instagram text-[10px]"></i> Instagram Limit
+                            </label>
+                            <input type="number" id="cfg-limit-ig" min="1" max="50" value="25" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono font-bold focus:border-pink-500 focus:outline-none">
+                            <p class="text-[10px] text-slate-500">Daily Reels cap</p>
+                        </div>
+
+                        <div class="space-y-1.5 bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-[11px] font-bold text-blue-400 uppercase tracking-wide flex items-center gap-1">
+                                <i class="fa-brands fa-facebook text-[10px]"></i> Facebook Limit
+                            </label>
+                            <input type="number" id="cfg-limit-fb" min="1" max="50" value="25" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono font-bold focus:border-blue-500 focus:outline-none">
+                            <p class="text-[10px] text-slate-500">Daily Reels cap</p>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center justify-between pt-2">
+                        <div class="flex items-center space-x-2 text-xs text-slate-400">
+                            <i class="fa-solid fa-circle-info text-purple-400 text-sm"></i>
+                            <span>The dashboard target is a configurable workflow goal, NOT an approved platform quota. Publishing pauses only when actual platform restrictions are reached.</span>
+                        </div>
+                        <button onclick="saveSettingsLimits()" id="btn-save-limits" class="bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition shadow-md shadow-purple-600/30 flex items-center space-x-1.5">
+                            <i class="fa-solid fa-floppy-disk"></i>
+                            <span>Save Limits</span>
+                        </button>
+                    </div>
+                    <div id="limits-save-feedback" class="hidden text-xs p-2.5 rounded-lg border leading-relaxed"></div>
+                </div>
+
+                <!-- Live Platform Quota & Restriction Monitor -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-lg">
+                    <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+                        <div class="flex items-center space-x-2.5">
+                            <div class="bg-emerald-500/20 text-emerald-400 p-2 rounded-lg text-sm">
+                                <i class="fa-solid fa-chart-pie"></i>
+                            </div>
+                            <div>
+                                <h3 class="text-sm font-bold text-slate-100">Live Platform Quotas & Restrictions Monitor</h3>
+                                <p class="text-xs text-slate-400">Real-time tracking of YouTube Data API quota buckets, channel restrictions, and Meta rate limits.</p>
+                            </div>
+                        </div>
+                        <span class="text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 rounded-full flex items-center gap-1.5">
+                            <i class="fa-solid fa-arrows-rotate text-[10px]"></i> Auto-Rollover Active
+                        </span>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <!-- YouTube Quota Box -->
+                        <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-2.5">
+                            <div class="flex items-center justify-between">
+                                <span class="font-bold text-xs text-slate-200 flex items-center gap-1.5">
+                                    <i class="fa-brands fa-youtube text-red-500"></i> YouTube Shorts
+                                </span>
+                                <span id="yt-quota-badge" class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                    NORMAL
+                                </span>
+                            </div>
+                            <div class="space-y-1 text-xs">
+                                <div class="flex justify-between text-slate-400">
+                                    <span>API Quota Used:</span>
+                                    <span id="yt-quota-units" class="font-mono text-slate-200 font-semibold">0 / 10,000 units</span>
+                                </div>
+                                <div class="w-full bg-slate-800 h-1 rounded-full overflow-hidden">
+                                    <div id="yt-quota-bar" class="bg-red-500 h-full w-0 transition-all"></div>
+                                </div>
+                                <div class="flex justify-between text-slate-400 pt-1">
+                                    <span>Uploads Today:</span>
+                                    <span id="yt-uploads-today" class="font-mono text-slate-200">0</span>
+                                </div>
+                                <div class="flex justify-between text-slate-400">
+                                    <span>Channel Restriction:</span>
+                                    <span id="yt-channel-status" class="text-emerald-400 font-semibold">Clear</span>
+                                </div>
+                                <div class="flex justify-between text-slate-400">
+                                    <span>Next Window:</span>
+                                    <span id="yt-resume-window" class="text-slate-400 font-mono text-[11px]">Immediate</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Instagram Box -->
+                        <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-2.5">
+                            <div class="flex items-center justify-between">
+                                <span class="font-bold text-xs text-slate-200 flex items-center gap-1.5">
+                                    <i class="fa-brands fa-instagram text-pink-500"></i> Instagram Reels
+                                </span>
+                                <span id="ig-quota-badge" class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                    NORMAL
+                                </span>
+                            </div>
+                            <div class="space-y-1 text-xs">
+                                <div class="flex justify-between text-slate-400">
+                                    <span>Published Today:</span>
+                                    <span id="ig-uploads-today" class="font-mono text-slate-200 font-semibold">0 / 25</span>
+                                </div>
+                                <div class="w-full bg-slate-800 h-1 rounded-full overflow-hidden">
+                                    <div id="ig-quota-bar" class="bg-pink-500 h-full w-0 transition-all"></div>
+                                </div>
+                                <div class="flex justify-between text-slate-400 pt-1">
+                                    <span>Rate Limit (Code 32/4):</span>
+                                    <span id="ig-rate-status" class="text-emerald-400 font-semibold">Clear</span>
+                                </div>
+                                <div class="flex justify-between text-slate-400">
+                                    <span>Next Window:</span>
+                                    <span id="ig-resume-window" class="text-slate-400 font-mono text-[11px]">Immediate</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Facebook Box -->
+                        <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-2.5">
+                            <div class="flex items-center justify-between">
+                                <span class="font-bold text-xs text-slate-200 flex items-center gap-1.5">
+                                    <i class="fa-brands fa-facebook text-blue-500"></i> Facebook Reels
+                                </span>
+                                <span id="fb-quota-badge" class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                    NORMAL
+                                </span>
+                            </div>
+                            <div class="space-y-1 text-xs">
+                                <div class="flex justify-between text-slate-400">
+                                    <span>Published Today:</span>
+                                    <span id="fb-uploads-today" class="font-mono text-slate-200 font-semibold">0 / 25</span>
+                                </div>
+                                <div class="w-full bg-slate-800 h-1 rounded-full overflow-hidden">
+                                    <div id="fb-quota-bar" class="bg-blue-500 h-full w-0 transition-all"></div>
+                                </div>
+                                <div class="flex justify-between text-slate-400 pt-1">
+                                    <span>Rate Limit (Code 17/613):</span>
+                                    <span id="fb-rate-status" class="text-emerald-400 font-semibold">Clear</span>
+                                </div>
+                                <div class="flex justify-between text-slate-400">
+                                    <span>Next Window:</span>
+                                    <span id="fb-resume-window" class="text-slate-400 font-mono text-[11px]">Immediate</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="p-3 bg-purple-950/20 border border-purple-800/30 rounded-xl text-[11px] text-purple-300 flex items-start space-x-2">
+                        <i class="fa-solid fa-clock-rotate-left flex-shrink-0 text-sm mt-0.5 text-purple-400"></i>
+                        <span><strong>Autonomous Quota Window Rollover:</strong> If YouTube quota (10,000 units/day) or platform rate limits are encountered, publishing automatically pauses for that platform and reschedules remaining videos into <code>scheduled_next_window</code> (YouTube resets daily at 00:00 PST / 08:00 UTC). Publishing resumes automatically with zero manual intervention.</span>
+                    </div>
+                </div>
+
                 <!-- Workflow Mode Toggle -->
                 <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex items-center justify-between">
                     <div>
@@ -676,6 +901,7 @@
             if (tab === 'create-reel') fetchPlatformConnections();
             if (tab === 'review') loadClips();
             if (tab === 'queue') loadQueue();
+            if (tab === 'settings') loadSettingsLimits();
             if (tab === 'logs') loadLogs();
         }
 
@@ -1168,18 +1394,39 @@
                 const res = await fetch('/api/status');
                 const data = await res.json();
                 
-                document.getElementById('stat-published').innerText = data.kpis.published_today;
-                document.getElementById('stat-target').innerText = data.kpis.daily_target;
-                const pct = Math.min(100, Math.round((data.kpis.published_today / data.kpis.daily_target) * 100));
-                document.getElementById('stat-progress-bar').style.width = `${pct}%`;
+                // KPIs & Targets
+                const kpis = data.kpis || {};
+                const todayGen = kpis.today_generated ?? 0;
+                const targetGen = kpis.daily_generation_target ?? 15;
+                const todayPub = kpis.today_published ?? (kpis.published_today ?? 0);
+                const targetPub = kpis.daily_publishing_target ?? (kpis.daily_target ?? 15);
+                const todayQueued = kpis.today_queued ?? (kpis.queued ?? 0);
+                const todayFailed = kpis.today_failed ?? (kpis.failed_count ?? 0);
 
-                document.getElementById('badge-pending').innerText = data.kpis.pending_approvals;
-                document.getElementById('badge-queued').innerText = data.kpis.queued;
+                if (document.getElementById('stat-generated')) document.getElementById('stat-generated').innerText = todayGen;
+                if (document.getElementById('stat-target-gen')) document.getElementById('stat-target-gen').innerText = targetGen;
+                if (document.getElementById('stat-progress-gen')) {
+                    const pctGen = Math.min(100, Math.round((todayGen / targetGen) * 100));
+                    document.getElementById('stat-progress-gen').style.width = `${pctGen}%`;
+                }
+
+                if (document.getElementById('stat-published')) document.getElementById('stat-published').innerText = todayPub;
+                if (document.getElementById('stat-target-pub')) document.getElementById('stat-target-pub').innerText = targetPub;
+                if (document.getElementById('stat-progress-pub')) {
+                    const pctPub = Math.min(100, Math.round((todayPub / targetPub) * 100));
+                    document.getElementById('stat-progress-pub').style.width = `${pctPub}%`;
+                }
+
+                if (document.getElementById('stat-queued')) document.getElementById('stat-queued').innerText = todayQueued;
+                if (document.getElementById('stat-failed')) document.getElementById('stat-failed').innerText = todayFailed;
+
+                if (document.getElementById('badge-pending')) document.getElementById('badge-pending').innerText = kpis.pending_approvals ?? todayQueued;
+                if (document.getElementById('badge-queued')) document.getElementById('badge-queued').innerText = todayQueued;
 
                 // Mode text
                 const modeText = document.getElementById('mode-text');
                 const modeBadge = document.getElementById('mode-badge');
-                if (data.kpis.workflow_mode === 'auto') {
+                if (kpis.workflow_mode === 'auto') {
                     modeText.innerText = 'Mode: Autonomous Auto-Publish';
                     modeBadge.className = 'flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold';
                 } else {
@@ -1193,9 +1440,190 @@
                 updatePlatformStatus('ig-status', data.platforms.instagram && data.platforms.instagram.connected, 'Instagram');
                 updatePlatformStatus('fb-status', data.platforms.facebook && data.platforms.facebook.connected, 'Facebook');
 
+                // Live Platform Quotas & Restrictions Monitor
+                updatePlatformQuotaMonitor(data.quotas, data.platforms);
                 fetchPlatformConnections();
             } catch (e) {
                 console.error(e);
+            }
+        }
+
+        function updatePlatformQuotaMonitor(quotas, platforms) {
+            if (!quotas) return;
+
+            // YouTube Quotas & Limits
+            const yt = quotas.youtube || {};
+            const ytUnits = yt.quota_units_used_today ?? 0;
+            const ytUnitsLimit = yt.quota_units_bucket_limit ?? 10000;
+            const ytPubToday = yt.published_today ?? 0;
+            const ytUserLimit = yt.user_daily_limit ?? 15;
+
+            const ytUnitsEl = document.getElementById('yt-quota-units');
+            const ytBar = document.getElementById('yt-quota-bar');
+            const ytUploadsEl = document.getElementById('yt-uploads-today');
+            const ytBadge = document.getElementById('yt-quota-badge');
+            const ytChanEl = document.getElementById('yt-channel-status');
+            const ytResumeEl = document.getElementById('yt-resume-window');
+
+            if (ytUnitsEl) ytUnitsEl.innerText = `${ytUnits.toLocaleString()} / ${ytUnitsLimit.toLocaleString()} units`;
+            if (ytBar) ytBar.style.width = `${Math.min(100, Math.round((ytUnits / ytUnitsLimit) * 100))}%`;
+            if (ytUploadsEl) ytUploadsEl.innerText = `${ytPubToday} / ${ytUserLimit} daily limit`;
+
+            if (yt.api_quota_exceeded) {
+                if (ytBadge) {
+                    ytBadge.innerText = 'QUOTA PAUSED';
+                    ytBadge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/30';
+                }
+                if (ytResumeEl) ytResumeEl.innerText = yt.pause_until ? new Date(yt.pause_until).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) + ' (08:00 UTC)' : 'Next Quota Reset (08:00 UTC)';
+            } else if (yt.channel_limit_reached) {
+                if (ytBadge) {
+                    ytBadge.innerText = 'CHANNEL LIMIT';
+                    ytBadge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30';
+                }
+                if (ytChanEl) {
+                    ytChanEl.innerText = 'Upload Limit Exceeded';
+                    ytChanEl.className = 'text-amber-400 font-semibold';
+                }
+                if (ytResumeEl) ytResumeEl.innerText = yt.pause_until ? new Date(yt.pause_until).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '24h Rolling Window';
+            } else if (ytPubToday >= ytUserLimit) {
+                if (ytBadge) {
+                    ytBadge.innerText = 'USER CAP REACHED';
+                    ytBadge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30';
+                }
+            } else {
+                if (ytBadge) {
+                    ytBadge.innerText = 'NORMAL';
+                    ytBadge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+                }
+                if (ytChanEl) {
+                    ytChanEl.innerText = 'Clear';
+                    ytChanEl.className = 'text-emerald-400 font-semibold';
+                }
+                if (ytResumeEl) ytResumeEl.innerText = 'Immediate';
+            }
+
+            // Instagram Quota
+            const ig = quotas.instagram || {};
+            const igPubToday = ig.published_today ?? 0;
+            const igLimit = ig.user_daily_limit ?? 25;
+            const igUploadsEl = document.getElementById('ig-uploads-today');
+            const igBar = document.getElementById('ig-quota-bar');
+            const igBadge = document.getElementById('ig-quota-badge');
+            const igRateEl = document.getElementById('ig-rate-status');
+            const igResumeEl = document.getElementById('ig-resume-window');
+
+            if (igUploadsEl) igUploadsEl.innerText = `${igPubToday} / ${igLimit} daily cap`;
+            if (igBar) igBar.style.width = `${Math.min(100, Math.round((igPubToday / igLimit) * 100))}%`;
+
+            if (ig.rate_limited) {
+                if (igBadge) {
+                    igBadge.innerText = 'RATE LIMITED';
+                    igBadge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/30';
+                }
+                if (igRateEl) {
+                    igRateEl.innerText = 'Rate Limited (Graph API)';
+                    igRateEl.className = 'text-rose-400 font-semibold';
+                }
+                if (igResumeEl) igResumeEl.innerText = ig.pause_until ? new Date(ig.pause_until).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Next Window';
+            } else {
+                if (igBadge) {
+                    igBadge.innerText = 'NORMAL';
+                    igBadge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+                }
+                if (igRateEl) {
+                    igRateEl.innerText = 'Clear';
+                    igRateEl.className = 'text-emerald-400 font-semibold';
+                }
+                if (igResumeEl) igResumeEl.innerText = 'Immediate';
+            }
+
+            // Facebook Quota
+            const fb = quotas.facebook || {};
+            const fbPubToday = fb.published_today ?? 0;
+            const fbLimit = fb.user_daily_limit ?? 25;
+            const fbUploadsEl = document.getElementById('fb-uploads-today');
+            const fbBar = document.getElementById('fb-quota-bar');
+            const fbBadge = document.getElementById('fb-quota-badge');
+            const fbRateEl = document.getElementById('fb-rate-status');
+            const fbResumeEl = document.getElementById('fb-resume-window');
+
+            if (fbUploadsEl) fbUploadsEl.innerText = `${fbPubToday} / ${fbLimit} daily cap`;
+            if (fbBar) fbBar.style.width = `${Math.min(100, Math.round((fbPubToday / fbLimit) * 100))}%`;
+
+            if (fb.rate_limited) {
+                if (fbBadge) {
+                    fbBadge.innerText = 'RATE LIMITED';
+                    fbBadge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/30';
+                }
+                if (fbRateEl) {
+                    fbRateEl.innerText = 'Rate Limited (Graph API)';
+                    fbRateEl.className = 'text-rose-400 font-semibold';
+                }
+                if (fbResumeEl) fbResumeEl.innerText = fb.pause_until ? new Date(fb.pause_until).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Next Window';
+            } else {
+                if (fbBadge) {
+                    fbBadge.innerText = 'NORMAL';
+                    fbBadge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+                }
+                if (fbRateEl) {
+                    fbRateEl.innerText = 'Clear';
+                    fbRateEl.className = 'text-emerald-400 font-semibold';
+                }
+                if (fbResumeEl) fbResumeEl.innerText = 'Immediate';
+            }
+        }
+
+        async function loadSettingsLimits() {
+            try {
+                const res = await fetch('/api/settings/limits');
+                if (!res.ok) return;
+                const data = await res.json();
+                if (document.getElementById('cfg-target-gen')) document.getElementById('cfg-target-gen').value = data.daily_generation_target || 15;
+                if (document.getElementById('cfg-target-pub')) document.getElementById('cfg-target-pub').value = data.daily_publishing_target || 15;
+                if (document.getElementById('cfg-limit-yt')) document.getElementById('cfg-limit-yt').value = data.youtube_daily_limit || 15;
+                if (document.getElementById('cfg-limit-ig')) document.getElementById('cfg-limit-ig').value = data.instagram_daily_limit || 25;
+                if (document.getElementById('cfg-limit-fb')) document.getElementById('cfg-limit-fb').value = data.facebook_daily_limit || 25;
+            } catch (err) {
+                console.error('Failed to load settings limits:', err);
+            }
+        }
+
+        async function saveSettingsLimits() {
+            const feedback = document.getElementById('limits-save-feedback');
+            const btn = document.getElementById('btn-save-limits');
+            
+            const payload = {
+                daily_generation_target: parseInt(document.getElementById('cfg-target-gen').value) || 15,
+                daily_publishing_target: parseInt(document.getElementById('cfg-target-pub').value) || 15,
+                youtube_daily_limit: parseInt(document.getElementById('cfg-limit-yt').value) || 15,
+                instagram_daily_limit: parseInt(document.getElementById('cfg-limit-ig').value) || 25,
+                facebook_daily_limit: parseInt(document.getElementById('cfg-limit-fb').value) || 25
+            };
+
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>Saving...</span>';
+
+            try {
+                const res = await fetch('/api/settings/limits', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    feedback.className = 'text-xs p-2.5 rounded-lg bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 flex items-center space-x-2';
+                    feedback.innerHTML = '<i class="fa-solid fa-circle-check text-emerald-400"></i><span>Production targets and platform limits saved successfully!</span>';
+                    fetchStatus();
+                } else {
+                    feedback.className = 'text-xs p-2.5 rounded-lg bg-rose-500/10 text-rose-300 border border-rose-500/30 flex items-center space-x-2';
+                    feedback.innerHTML = `<i class="fa-solid fa-circle-xmark text-rose-400"></i><span>${data.detail || 'Failed to update limits.'}</span>`;
+                }
+            } catch (e) {
+                feedback.className = 'text-xs p-2.5 rounded-lg bg-rose-500/10 text-rose-300 border border-rose-500/30 flex items-center space-x-2';
+                feedback.innerHTML = `<i class="fa-solid fa-circle-xmark text-rose-400"></i><span>${e.message}</span>`;
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i><span>Save Limits</span>';
             }
         }
 

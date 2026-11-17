@@ -16,6 +16,25 @@ from backend.app.publishers.manager import publishing_manager
 
 logger = logging.getLogger("gaming_uncut.scheduler")
 
+def run_process_due_publishing_jobs():
+    """Scans for approved publishing jobs where scheduled_time <= NOW(). Top-level function for clean APScheduler serialization."""
+    now = datetime.utcnow()
+    with SessionLocal() as db:
+        due_jobs = db.query(PublishingJob).filter(
+            PublishingJob.status.in_(["pending", "scheduled_next_window"]),
+            PublishingJob.approval_status.in_(["approved", "auto_approved"]),
+            PublishingJob.scheduled_time <= now
+        ).order_by(PublishingJob.scheduled_time.asc()).limit(3).all()
+
+        job_ids = [j.id for j in due_jobs]
+
+    for j_id in job_ids:
+        try:
+            logger.info(f"Executing scheduled publication for job #{j_id}...")
+            publishing_manager.execute_job(j_id)
+        except Exception as e:
+            logger.error(f"Scheduled publish error on job #{j_id}: {e}")
+
 class TaskScheduler:
     def __init__(self):
         jobstores = {
@@ -28,7 +47,7 @@ class TaskScheduler:
         # Periodic runner every 60 seconds
         if not self.scheduler.running:
             self.scheduler.add_job(
-                self.process_due_publishing_jobs,
+                run_process_due_publishing_jobs,
                 "interval",
                 seconds=60,
                 id="queue_checker",
@@ -62,22 +81,6 @@ class TaskScheduler:
             db.commit()
 
     def process_due_publishing_jobs(self):
-        """Scans for approved publishing jobs where scheduled_time <= NOW()."""
-        now = datetime.utcnow()
-        with SessionLocal() as db:
-            due_jobs = db.query(PublishingJob).filter(
-                PublishingJob.status == "pending",
-                PublishingJob.approval_status.in_(["approved", "auto_approved"]),
-                PublishingJob.scheduled_time <= now
-            ).order_by(PublishingJob.scheduled_time.asc()).limit(3).all()
-
-            job_ids = [j.id for j in due_jobs]
-
-        for j_id in job_ids:
-            try:
-                logger.info(f"Executing scheduled publication for job #{j_id}...")
-                publishing_manager.execute_job(j_id)
-            except Exception as e:
-                logger.error(f"Scheduled publish error on job #{j_id}: {e}")
+        return run_process_due_publishing_jobs()
 
 task_scheduler = TaskScheduler()
