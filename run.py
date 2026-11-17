@@ -1,6 +1,12 @@
 """
-Gaming Uncut Automation: Main Application Launcher.
-Initializes secure storage, database, file watchers, and runs the local dashboard.
+Gaming Uncut Automation — Master Application Launcher.
+Brand: Gaming Uncut | Tagline: NO FILTER. JUST GAMEPLAY.
+Launches the complete unified platform:
+- Persistent SQLite database & SQLAlchemy models
+- APScheduler persistent background queue
+- Encrypted Windows Credential Manager vault (auto-detects Google OAuth client)
+- NVENC hardware-accelerated video rendering engine
+- Built React + TypeScript + Tailwind SPA Dashboard
 """
 
 import sys
@@ -10,12 +16,13 @@ import logging
 from pathlib import Path
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+ROOT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT_DIR))
 
 import uvicorn
-from src.core.config import settings
-from src.core.database import init_db, log_event
-from src.core.security import vault
+from backend.app.core.config import settings
+from backend.app.database.session import engine, Base
+from backend.app.security.vault import vault
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,30 +36,36 @@ logger = logging.getLogger("gaming_uncut.main")
 
 def auto_detect_google_credentials():
     """Checks if client_secrets.json is in user's Downloads and imports into vault if missing."""
-    if not vault.get_json_secret("google_client_config"):
+    if not vault.get_json("google", "client_config"):
         downloads_path = Path.home() / "Downloads" / "client_secrets.json"
         if downloads_path.exists():
             try:
-                res = vault.import_google_desktop_client(downloads_path)
+                res = vault.import_google_client_secrets(downloads_path)
                 logger.info(f"Automatically imported Google Desktop OAuth client ({res['project_id']}) into secure vault.")
             except Exception as e:
                 logger.warning(f"Could not auto-import Google secrets: {e}")
 
 def main():
-    logger.info("Starting Gaming Uncut Automation...")
-    init_db()
+    logger.info("Initializing Gaming Uncut Automation...")
+    logger.info("Tagline: NO FILTER. JUST GAMEPLAY.")
+    
+    # 1. Initialize DB tables
+    Base.metadata.create_all(bind=engine)
+    
+    # 2. Ingest credentials if available
     auto_detect_google_credentials()
     
     dashboard_url = f"http://{settings.HOST}:{settings.PORT}"
-    logger.info(f"Dashboard available at: {dashboard_url}")
+    logger.info(f"Dashboard online and serving at: {dashboard_url}")
     
-    # Auto open browser
+    # 3. Auto open browser to dashboard
     try:
         webbrowser.open(dashboard_url)
     except Exception:
         pass
 
-    uvicorn.run("src.ui.app:app", host=settings.HOST, port=settings.PORT, reload=False, log_level="info")
+    # 4. Run FastAPI app
+    uvicorn.run("backend.app.main:app", host=settings.HOST, port=settings.PORT, reload=False, log_level="info")
 
 if __name__ == "__main__":
     main()

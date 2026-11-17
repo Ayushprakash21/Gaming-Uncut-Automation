@@ -10,7 +10,7 @@ dist/
 build/
 
 # Node
-node_modules/
+**/node_modules/
 .npm/
 
 # Gaming Uncut Automation Data
