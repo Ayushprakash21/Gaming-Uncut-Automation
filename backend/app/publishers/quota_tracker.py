@@ -152,17 +152,48 @@ def calculate_next_window(
         # Default Meta or generic rate limit rollover (24 hours)
         return now + timedelta(hours=24)
 
-def can_publish(db: Session, platform: str) -> Tuple[bool, Optional[str], Optional[datetime]]:
+def is_platform_authorized(platform: str) -> Tuple[bool, Optional[str]]:
+    """
+    Evaluates whether required account authorization exists for the platform.
+    Never permits uploads to disconnected platforms.
+    """
+    from backend.app.security.vault import vault
+
+    if platform == "youtube":
+        client_cfg = vault.get_json("google", "client_config")
+        tokens = vault.get_json("google", "oauth_tokens")
+        channel = vault.get_json("google", "verified_channel")
+        if not client_cfg:
+            return False, "Google OAuth client configuration missing. Import client secrets in Settings."
+        if not tokens:
+            return False, "YouTube user account not authorized. Connect YouTube account in Settings."
+        if not channel:
+            return False, "YouTube channel identity not verified. Connect YouTube account in Settings."
+        return True, None
+    elif platform == "instagram":
+        token = vault.get_secret("meta", "page_access_token")
+        ig_id = vault.get_secret("meta", "instagram_account_id")
+        if not token or not ig_id:
+            return False, "Instagram Business account not connected. Configure Meta Page token & IG ID in Settings."
+        return True, None
+    elif platform == "facebook":
+        token = vault.get_secret("meta", "page_access_token")
+        if not token:
+            return False, "Facebook Page not authorized. Configure Meta Page access token in Settings."
+        return True, None
+    return False, f"Unknown platform: '{platform}'"
+
+def can_publish(db: Session, platform: str, check_auth: bool = True) -> Tuple[bool, Optional[str], Optional[datetime]]:
     """
     Evaluates whether publishing to the platform is currently permitted.
     Returns: (is_allowed: bool, reason: Optional[str], next_window: Optional[datetime])
-    Ensures NO API calls are executed while a platform is paused or restricted.
+    Ensures NO API calls are executed while a platform is paused, unauthenticated, or restricted.
     """
     cfg = get_or_create_settings(db)
     state = get_or_create_quota_state(db, platform)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
-    # 1. Check if platform is actively paused
+    # 1. Check if platform is actively paused by restriction or quota
     if state.pause_until and state.pause_until > now:
         restr = state.last_restriction_type or "restriction"
         reason = (
@@ -171,7 +202,13 @@ def can_publish(db: Session, platform: str) -> Tuple[bool, Optional[str], Option
         )
         return False, reason, state.pause_until
 
-    # 2. Check user-configured platform limits
+    # 2. Check platform authorization gate (Strict Queue Safety)
+    if check_auth:
+        auth_ok, auth_reason = is_platform_authorized(platform)
+        if not auth_ok:
+            return False, f"Authorization required: {auth_reason}", None
+
+    # 3. Check user-configured platform limits
     limit_map = {
         "youtube": cfg.youtube_daily_limit,
         "instagram": cfg.instagram_daily_limit,

@@ -59,11 +59,13 @@ class PublishingManager:
             if yt_upload and yt_upload.status != "published":
                 allowed, pause_reason, next_win = can_publish(db, "youtube")
                 if not allowed:
-                    yt_upload.status = "paused_quota"
-                    yt_upload.error_message = pause_reason
                     if next_win:
+                        yt_upload.status = "paused_quota"
                         rescheduled_windows.append(next_win)
-                    logger.info(f"Skipping YouTube for Job #{job.id}: {pause_reason}")
+                    else:
+                        yt_upload.status = "paused_unauthorized"
+                    yt_upload.error_message = pause_reason
+                    logger.info(f"Safely skipping YouTube for Job #{job.id}: {pause_reason}")
                 else:
                     try:
                         yt_upload.status = "uploading"
@@ -97,11 +99,13 @@ class PublishingManager:
             if ig_upload and ig_upload.status != "published":
                 allowed, pause_reason, next_win = can_publish(db, "instagram")
                 if not allowed:
-                    ig_upload.status = "paused_quota"
-                    ig_upload.error_message = pause_reason
                     if next_win:
+                        ig_upload.status = "paused_quota"
                         rescheduled_windows.append(next_win)
-                    logger.info(f"Skipping Instagram for Job #{job.id}: {pause_reason}")
+                    else:
+                        ig_upload.status = "paused_unauthorized"
+                    ig_upload.error_message = pause_reason
+                    logger.info(f"Safely skipping Instagram for Job #{job.id}: {pause_reason}")
                 else:
                     try:
                         ig_upload.status = "uploading"
@@ -130,11 +134,13 @@ class PublishingManager:
             if fb_upload and fb_upload.status != "published":
                 allowed, pause_reason, next_win = can_publish(db, "facebook")
                 if not allowed:
-                    fb_upload.status = "paused_quota"
-                    fb_upload.error_message = pause_reason
                     if next_win:
+                        fb_upload.status = "paused_quota"
                         rescheduled_windows.append(next_win)
-                    logger.info(f"Skipping Facebook for Job #{job.id}: {pause_reason}")
+                    else:
+                        fb_upload.status = "paused_unauthorized"
+                    fb_upload.error_message = pause_reason
+                    logger.info(f"Safely skipping Facebook for Job #{job.id}: {pause_reason}")
                 else:
                     try:
                         fb_upload.status = "uploading"
@@ -170,6 +176,9 @@ class PublishingManager:
                 job.status = "scheduled_next_window"
                 job.scheduled_time = min(rescheduled_windows)
                 logger.info(f"Job #{job.id} automatically scheduled for next permitted window: {job.scheduled_time}")
+            elif any(u.status == "paused_unauthorized" for u in all_uploads):
+                job.status = "paused_unauthorized"
+                logger.info(f"Publishing Job #{job.id} safely paused: Platform authorization required.")
             else:
                 job.status = "failed"
 

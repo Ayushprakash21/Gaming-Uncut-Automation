@@ -58,7 +58,7 @@ def setup_isolated_test_environment():
     # Initialize all database tables on isolated test database
     Base.metadata.create_all(bind=engine)
 
-    # Seed isolated test vault with valid mock Google client configuration
+    # Seed isolated test vault with valid mock Google and Meta configurations for test suites
     vault.save_json("google", "client_config", {
         "installed": {
             "client_id": "test-suite-client-id.apps.googleusercontent.com",
@@ -67,6 +67,8 @@ def setup_isolated_test_environment():
         }
     })
     vault.set_secret("google", "project_id", "test-suite-project")
+    vault.set_secret("meta", "page_access_token", "test-suite-meta-token")
+    vault.set_secret("meta", "instagram_account_id", "test-suite-ig-account")
 
     yield
 
