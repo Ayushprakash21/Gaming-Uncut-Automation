@@ -100,11 +100,37 @@ export interface SystemLogItem {
   created_at: string;
 }
 
+export interface VerifiedYouTubeChannel {
+  channel_id: string;
+  title: string;
+  custom_url?: string;
+  description?: string;
+  thumbnail_url?: string;
+  subscriber_count?: string;
+  video_count?: string;
+  verified_at?: string;
+}
+
 export interface ConnectionsData {
   youtube: {
     client_configured: boolean;
     authenticated: boolean;
+    connected: boolean;
+    status: string;
+    status_label: string;
     project_id: string;
+    channel?: VerifiedYouTubeChannel | null;
+  };
+  instagram: {
+    connected: boolean;
+    status: string;
+    status_label: string;
+    account_id: string;
+  };
+  facebook: {
+    connected: boolean;
+    status: string;
+    status_label: string;
   };
   meta: {
     app_configured: boolean;
@@ -113,5 +139,7 @@ export interface ConnectionsData {
   };
   gemini: {
     api_key_configured: boolean;
+    connected: boolean;
+    status_label: string;
   };
 }

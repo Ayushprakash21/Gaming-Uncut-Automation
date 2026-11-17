@@ -627,12 +627,13 @@
 
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <!-- Google Cloud OAuth Desktop -->
+                    <!-- Google Cloud OAuth Desktop & YouTube Channel Authorization -->
                     <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
                         <div class="flex items-center space-x-2 text-purple-400 font-semibold text-sm">
                             <i class="fa-brands fa-google"></i>
-                            <span>YouTube Data API v3 (Desktop Client)</span>
+                            <span>YouTube Data API v3 & Channel Authorization</span>
                         </div>
-                        <p class="text-xs text-slate-400">Import your downloaded OAuth JSON credential file.</p>
+                        <p class="text-xs text-slate-400">Step 1: Import your downloaded Google Cloud Desktop OAuth JSON credential file.</p>
                         <div class="space-y-2">
                             <input type="text" id="google-json-path" placeholder="C:\Users\...\Downloads\client_secrets.json" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-2.5 text-xs text-slate-200 font-mono">
                             <button id="btn-import-google" onclick="importGoogleSecrets()" class="w-full bg-purple-600 hover:bg-purple-500 text-xs font-semibold py-2.5 rounded-lg transition flex items-center justify-center space-x-2 shadow-md shadow-purple-600/20">
@@ -640,6 +641,45 @@
                                 <span id="btn-import-text">Import Secrets into Secure Vault</span>
                             </button>
                             <div id="google-import-feedback" class="hidden text-xs p-2.5 rounded-lg border leading-relaxed"></div>
+                        </div>
+
+                        <!-- Step 2: Channel Authorization Action -->
+                        <div class="pt-3 border-t border-slate-800 space-y-3">
+                            <div class="flex items-center justify-between">
+                                <span class="text-xs font-bold text-slate-300">Step 2: Connect YouTube Channel</span>
+                                <span id="yt-channel-badge" class="text-[10px] px-2 py-0.5 rounded-full font-bold bg-slate-800 text-slate-400">NOT CONNECTED</span>
+                            </div>
+
+                            <!-- Channel Info Display when connected -->
+                            <div id="yt-channel-info-card" class="hidden bg-slate-950/80 border border-slate-800 rounded-xl p-3 text-xs space-y-2">
+                                <div class="flex items-center space-x-2.5">
+                                    <img id="yt-channel-thumb" src="" class="w-8 h-8 rounded-full border border-slate-700">
+                                    <div>
+                                        <div class="font-bold text-slate-100" id="yt-channel-name">Channel Title</div>
+                                        <div class="text-[10px] text-slate-400 font-mono" id="yt-channel-id">Channel ID</div>
+                                    </div>
+                                </div>
+                                <div class="flex items-center space-x-2 pt-1 border-t border-slate-800/80 text-[11px] text-slate-400">
+                                    <span id="yt-channel-subs">0 subs</span>
+                                    <span>•</span>
+                                    <span id="yt-channel-videos">0 videos</span>
+                                </div>
+                            </div>
+
+                            <div class="flex items-center gap-2">
+                                <button id="btn-connect-yt" onclick="connectYouTube()" class="flex-1 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold py-2 px-3 rounded-lg transition flex items-center justify-center space-x-1.5 shadow-md shadow-red-600/20">
+                                    <i class="fa-brands fa-youtube" id="icon-connect-yt"></i>
+                                    <span id="text-connect-yt">Connect YouTube Account</span>
+                                </button>
+                                <button id="btn-test-yt" onclick="testYouTube()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold py-2 px-3 rounded-lg transition hidden flex items-center space-x-1">
+                                    <i class="fa-solid fa-circle-check text-emerald-400"></i>
+                                    <span>Test</span>
+                                </button>
+                                <button id="btn-disconnect-yt" onclick="disconnectYouTube()" class="bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 text-xs font-semibold py-2 px-3 rounded-lg transition hidden">
+                                    Disconnect
+                                </button>
+                            </div>
+                            <div id="yt-action-feedback" class="hidden text-xs p-2.5 rounded-lg border leading-relaxed"></div>
                         </div>
                     </div>
 
@@ -1336,21 +1376,77 @@
                 const ytConn = data.youtube || {};
                 const ytEl = document.getElementById('plat-conn-youtube');
                 const ytBadge = document.getElementById('badge-conn-youtube');
-                if (ytConn.authenticated) {
-                    ytEl.innerText = 'Connected (Official Resumable Upload)';
+                
+                // Settings Step 2 elements
+                const ytChannelBadge = document.getElementById('yt-channel-badge');
+                const ytChannelInfoCard = document.getElementById('yt-channel-info-card');
+                const btnConnectYt = document.getElementById('btn-connect-yt');
+                const btnTestYt = document.getElementById('btn-test-yt');
+                const btnDisconnectYt = document.getElementById('btn-disconnect-yt');
+                
+                if (ytConn.authenticated && ytConn.channel) {
+                    ytEl.innerText = `Connected (${ytConn.channel.title || 'Official API'})`;
                     ytEl.className = 'block text-[10px] text-emerald-400 font-mono mt-0.5';
                     ytBadge.innerText = 'READY';
                     ytBadge.className = 'text-[10px] px-2 py-0.5 rounded-full font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+
+                    if (ytChannelBadge) {
+                        ytChannelBadge.innerText = 'CONNECTED';
+                        ytChannelBadge.className = 'text-[10px] px-2 py-0.5 rounded-full font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+                    }
+                    if (ytChannelInfoCard) {
+                        ytChannelInfoCard.classList.remove('hidden');
+                        document.getElementById('yt-channel-name').innerText = ytConn.channel.title || 'Connected Channel';
+                        document.getElementById('yt-channel-id').innerText = ytConn.channel.custom_url || ytConn.channel.id || '';
+                        document.getElementById('yt-channel-subs').innerText = `${Number(ytConn.channel.subscriber_count || 0).toLocaleString()} subscribers`;
+                        document.getElementById('yt-channel-videos').innerText = `${Number(ytConn.channel.video_count || 0).toLocaleString()} videos`;
+                        const thumbEl = document.getElementById('yt-channel-thumb');
+                        if (thumbEl && ytConn.channel.thumbnail_url) {
+                            thumbEl.src = ytConn.channel.thumbnail_url;
+                            thumbEl.classList.remove('hidden');
+                        }
+                    }
+                    if (btnConnectYt) {
+                        btnConnectYt.classList.add('hidden');
+                    }
+                    if (btnTestYt) btnTestYt.classList.remove('hidden');
+                    if (btnDisconnectYt) btnDisconnectYt.classList.remove('hidden');
                 } else if (ytConn.client_configured) {
                     ytEl.innerText = 'Not Connected (Channel Auth Required)';
                     ytEl.className = 'block text-[10px] text-amber-400/90 font-mono mt-0.5';
-                    ytBadge.innerText = 'NOT CONNECTED';
+                    ytBadge.innerText = 'AUTH REQUIRED';
                     ytBadge.className = 'text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30';
+
+                    if (ytChannelBadge) {
+                        ytChannelBadge.innerText = 'AUTH REQUIRED';
+                        ytChannelBadge.className = 'text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30';
+                    }
+                    if (ytChannelInfoCard) ytChannelInfoCard.classList.add('hidden');
+                    if (btnConnectYt) {
+                        btnConnectYt.classList.remove('hidden');
+                        btnConnectYt.disabled = false;
+                        document.getElementById('text-connect-yt').innerText = 'Connect YouTube Account';
+                    }
+                    if (btnTestYt) btnTestYt.classList.add('hidden');
+                    if (btnDisconnectYt) btnDisconnectYt.classList.add('hidden');
                 } else {
                     ytEl.innerText = 'Not Connected (Import client_secrets.json)';
                     ytEl.className = 'block text-[10px] text-slate-500 font-mono mt-0.5';
-                    ytBadge.innerText = 'NOT CONNECTED';
+                    ytBadge.innerText = 'NOT CONFIGURED';
                     ytBadge.className = 'text-[10px] px-2 py-0.5 rounded-full font-bold bg-slate-800 text-slate-400';
+
+                    if (ytChannelBadge) {
+                        ytChannelBadge.innerText = 'NOT CONFIGURED';
+                        ytChannelBadge.className = 'text-[10px] px-2 py-0.5 rounded-full font-bold bg-slate-800 text-slate-400';
+                    }
+                    if (ytChannelInfoCard) ytChannelInfoCard.classList.add('hidden');
+                    if (btnConnectYt) {
+                        btnConnectYt.classList.remove('hidden');
+                        btnConnectYt.disabled = true;
+                        document.getElementById('text-connect-yt').innerText = 'Complete Step 1 First';
+                    }
+                    if (btnTestYt) btnTestYt.classList.add('hidden');
+                    if (btnDisconnectYt) btnDisconnectYt.classList.add('hidden');
                 }
 
                 // Instagram
@@ -1807,6 +1903,93 @@
                 btn.classList.remove('opacity-75', 'cursor-not-allowed');
                 icon.className = 'fa-solid fa-file-shield';
                 text.innerText = 'Import Secrets into Secure Vault';
+            }
+        }
+
+        async function connectYouTube() {
+            const btn = document.getElementById('btn-connect-yt');
+            const icon = document.getElementById('icon-connect-yt');
+            const text = document.getElementById('text-connect-yt');
+            const feedback = document.getElementById('yt-action-feedback');
+
+            feedback.className = 'text-xs p-2.5 rounded-lg bg-blue-500/10 text-blue-300 border border-blue-500/30 flex items-center space-x-2';
+            feedback.innerHTML = '<i class="fa-solid fa-spinner fa-spin flex-shrink-0"></i><span>Opening browser for Google OAuth sign-in. Please authorize your channel...</span>';
+            feedback.classList.remove('hidden');
+
+            btn.disabled = true;
+            btn.classList.add('opacity-75', 'cursor-not-allowed');
+            icon.className = 'fa-solid fa-spinner fa-spin';
+            text.innerText = 'Authorizing in browser...';
+
+            try {
+                const res = await fetch('/api/settings/youtube/connect', { method: 'POST' });
+                const data = await res.json();
+
+                if (res.ok && data.success) {
+                    feedback.className = 'text-xs p-2.5 rounded-lg bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 flex items-center space-x-2';
+                    feedback.innerHTML = `<i class="fa-solid fa-circle-check text-emerald-400 flex-shrink-0"></i><span>Connected & verified: <strong>${data.channel?.title || 'YouTube Channel'}</strong>!</span>`;
+                    fetchPlatformConnections();
+                    fetchStatus();
+                } else {
+                    feedback.className = 'text-xs p-2.5 rounded-lg bg-rose-500/10 text-rose-300 border border-rose-500/30 flex items-center space-x-2';
+                    feedback.innerHTML = `<i class="fa-solid fa-circle-xmark flex-shrink-0"></i><span>${data.detail || 'Authorization failed. Check console or backend logs.'}</span>`;
+                }
+            } catch (err) {
+                feedback.className = 'text-xs p-2.5 rounded-lg bg-rose-500/10 text-rose-300 border border-rose-500/30 flex items-center space-x-2';
+                feedback.innerHTML = `<i class="fa-solid fa-triangle-exclamation flex-shrink-0"></i><span>Network error during authorization: ${err.message}</span>`;
+            } finally {
+                btn.disabled = false;
+                btn.classList.remove('opacity-75', 'cursor-not-allowed');
+                icon.className = 'fa-brands fa-youtube';
+                text.innerText = 'Connect YouTube Account';
+            }
+        }
+
+        async function testYouTube() {
+            const btn = document.getElementById('btn-test-yt');
+            const feedback = document.getElementById('yt-action-feedback');
+
+            feedback.className = 'text-xs p-2.5 rounded-lg bg-blue-500/10 text-blue-300 border border-blue-500/30 flex items-center space-x-2';
+            feedback.innerHTML = '<i class="fa-solid fa-spinner fa-spin flex-shrink-0"></i><span>Testing connection with YouTube Data API v3...</span>';
+            feedback.classList.remove('hidden');
+
+            try {
+                const res = await fetch('/api/settings/youtube/test', { method: 'POST' });
+                const data = await res.json();
+
+                if (res.ok && data.success) {
+                    feedback.className = 'text-xs p-2.5 rounded-lg bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 flex items-center space-x-2';
+                    feedback.innerHTML = `<i class="fa-solid fa-circle-check text-emerald-400 flex-shrink-0"></i><span>Connection verified! Channel: <strong>${data.channel?.title || 'YouTube Channel'}</strong> (${Number(data.channel?.subscriber_count || 0).toLocaleString()} subscribers)</span>`;
+                    fetchPlatformConnections();
+                } else {
+                    feedback.className = 'text-xs p-2.5 rounded-lg bg-rose-500/10 text-rose-300 border border-rose-500/30 flex items-center space-x-2';
+                    feedback.innerHTML = `<i class="fa-solid fa-circle-xmark flex-shrink-0"></i><span>${data.detail || 'Connection test failed.'}</span>`;
+                }
+            } catch (err) {
+                feedback.className = 'text-xs p-2.5 rounded-lg bg-rose-500/10 text-rose-300 border border-rose-500/30 flex items-center space-x-2';
+                feedback.innerHTML = `<i class="fa-solid fa-triangle-exclamation flex-shrink-0"></i><span>Test request failed: ${err.message}</span>`;
+            }
+        }
+
+        async function disconnectYouTube() {
+            if (!confirm('Disconnect YouTube account? You will need to re-authorize before publishing Shorts.')) {
+                return;
+            }
+            const feedback = document.getElementById('yt-action-feedback');
+            try {
+                const res = await fetch('/api/settings/youtube/disconnect', { method: 'POST' });
+                if (res.ok) {
+                    feedback.className = 'text-xs p-2.5 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/30 flex items-center space-x-2';
+                    feedback.innerHTML = '<i class="fa-solid fa-info-circle flex-shrink-0"></i><span>YouTube account disconnected successfully.</span>';
+                    feedback.classList.remove('hidden');
+                    fetchPlatformConnections();
+                    fetchStatus();
+                } else {
+                    const data = await res.json();
+                    alert(data.detail || 'Failed to disconnect YouTube');
+                }
+            } catch (err) {
+                alert(`Error disconnecting: ${err.message}`);
             }
         }
 

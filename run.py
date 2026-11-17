@@ -67,17 +67,24 @@ def main():
     # 2. Ingest credentials if available
     auto_detect_google_credentials()
     
-    local_ip = get_local_ip()
     local_url = f"http://localhost:{settings.PORT}"
-    network_url = f"http://{local_ip}:{settings.PORT}"
-
+    
     logger.info("==================================================================")
     logger.info("   GAMING UNCUT AUTOMATION — NO FILTER. JUST GAMEPLAY.")
-    logger.info("   Server is LIVE and accessible on your local network:")
-    logger.info(f"   -> Local Machine:   {local_url}")
-    logger.info(f"   -> Network IP URL:  {network_url}")
-    logger.info(f"   -> Standalone UI:   {network_url}/ui")
-    logger.info(f"   -> API Health:      {network_url}/api/health")
+    if settings.HOST == "0.0.0.0":
+        local_ip = get_local_ip()
+        network_url = f"http://{local_ip}:{settings.PORT}"
+        logger.info("   Server is LIVE and accessible on your local network (LAN mode):")
+        logger.info(f"   -> Local Machine:   {local_url}")
+        logger.info(f"   -> Network IP URL:  {network_url}")
+        logger.info(f"   -> Standalone UI:   {network_url}/ui")
+        logger.info(f"   -> API Health:      {network_url}/api/health")
+    else:
+        logger.info("   Server is running in SECURE LOCALHOST mode (default):")
+        logger.info(f"   -> Dashboard:       {local_url}")
+        logger.info(f"   -> Standalone UI:   {local_url}/ui")
+        logger.info(f"   -> API Health:      {local_url}/api/health")
+        logger.info("   (Set ENABLE_LAN_ACCESS=1 to allow connections from other devices)")
     logger.info("==================================================================")
     
     # 3. Auto open browser to dashboard
@@ -86,8 +93,8 @@ def main():
     except Exception:
         pass
 
-    # 4. Run FastAPI app binding to all interfaces (0.0.0.0)
-    uvicorn.run("backend.app.main:app", host="0.0.0.0", port=settings.PORT, reload=False, log_level="info")
+    # 4. Run FastAPI app binding to configured host (defaults to 127.0.0.1)
+    uvicorn.run("backend.app.main:app", host=settings.HOST, port=settings.PORT, reload=False, log_level="info")
 
 if __name__ == "__main__":
     main()

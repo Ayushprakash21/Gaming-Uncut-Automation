@@ -28,8 +28,10 @@ class Settings(BaseSettings):
     ASSETS_DIR: Path = ROOT_DIR / "assets"
     VAULT_DIR: Path = ROOT_DIR / ".vault"
     
-    # Server / Binding (0.0.0.0 to listen on all network interfaces & local IPs)
-    HOST: str = os.getenv("HOST", "0.0.0.0")
+    # Server / Binding: Default to secure localhost (127.0.0.1).
+    # To enable local network access across your Wi-Fi, set ENABLE_LAN_ACCESS=1 or HOST=0.0.0.0
+    ENABLE_LAN_ACCESS: bool = os.getenv("ENABLE_LAN_ACCESS", "0") in ("1", "true", "True")
+    HOST: str = os.getenv("HOST", "0.0.0.0" if (os.getenv("ENABLE_LAN_ACCESS", "0") in ("1", "true", "True")) else "127.0.0.1")
     PORT: int = int(os.getenv("PORT", "8765"))
     
     # Video Specifications

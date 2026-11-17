@@ -152,6 +152,37 @@ export async function importGoogleSecrets(path: string) {
   return data
 }
 
+export async function connectYouTubeAccount(): Promise<any> {
+  const res = await fetch(`${API_BASE}/settings/youtube/connect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'YouTube authorization failed.')
+  }
+  return data
+}
+
+export async function testYouTubeConnection(): Promise<any> {
+  const res = await fetch(`${API_BASE}/settings/youtube/test`, {
+    method: 'POST'
+  })
+  return res.json()
+}
+
+export async function disconnectYouTubeAccount(): Promise<any> {
+  const res = await fetch(`${API_BASE}/settings/youtube/disconnect`, {
+    method: 'POST'
+  })
+  return res.json()
+}
+
+export async function fetchYouTubeChannel(): Promise<any> {
+  const res = await fetch(`${API_BASE}/settings/youtube/channel`)
+  return res.json()
+}
+
 export async function fetchLogs(): Promise<SystemLogItem[]> {
   const res = await fetch(`${API_BASE}/logs`)
   return res.json()

@@ -1,19 +1,20 @@
 """
 Official YouTube Shorts Publishing Client via Google Data API v3.
 Handles OAuth 2.0 Desktop authorization, token persistence in vault,
-and resumable chunked video uploads with quota monitoring.
+channel verification via channels.list, and resumable chunked video uploads with quota monitoring.
 """
 
 import json
 import time
-import httplib2
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
+from datetime import datetime
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
@@ -29,32 +30,213 @@ SCOPES = [
 ]
 RETRIABLE_STATUS_CODES = [500, 502, 503, 504]
 
+
+class YouTubeAuthError(Exception):
+    """Base exception for YouTube authentication and channel verification errors."""
+    pass
+
+
 class YouTubePublishClient:
     def __init__(self):
         self._service = None
 
-    def get_service(self) -> Any:
+    def get_credentials(self) -> Optional[Credentials]:
+        """
+        Retrieves credentials from vault and automatically refreshes access token if expired.
+        Raises YouTubeAuthError if token is revoked or refresh fails.
+        """
         token_info = vault.get_json("google", "oauth_tokens")
-        client_config = vault.get_json("google", "client_config")
+        if not token_info:
+            return None
 
-        if not client_config:
-            raise ValueError("Google Client secrets not found in vault. Please import client_secrets.json first.")
-
-        creds = None
-        if token_info:
+        try:
             creds = Credentials.from_authorized_user_info(token_info, SCOPES)
+        except Exception as e:
+            logger.warning(f"Failed to deserialize Google OAuth token: {e}")
+            return None
+
+        if creds and not creds.valid:
+            if creds.expired and creds.refresh_token:
+                try:
+                    logger.info("Refreshing expired Google OAuth access token...")
+                    creds.refresh(Request())
+                    # Update vault with refreshed token
+                    token_dict = json.loads(creds.to_json())
+                    vault.save_json("google", "oauth_tokens", token_dict)
+                    logger.info("Google OAuth token successfully refreshed.")
+                except RefreshError as e:
+                    logger.error(f"Google OAuth refresh token was revoked or expired: {e}")
+                    # Clear invalid tokens from vault
+                    vault.delete_secret("google", "oauth_tokens")
+                    vault.delete_secret("google", "verified_channel")
+                    raise YouTubeAuthError(
+                        "YouTube authorization was revoked or expired. Please click 'Connect YouTube Account' to reconnect."
+                    )
+                except Exception as e:
+                    logger.error(f"Unexpected error refreshing Google OAuth token: {e}")
+                    raise YouTubeAuthError(f"Failed to refresh YouTube authorization: {e}")
+            else:
+                return None
+
+        return creds
+
+    def verify_channel(self, creds: Optional[Credentials] = None) -> Dict[str, Any]:
+        """
+        Calls YouTube Data API channels.list(part='snippet,contentDetails,statistics', mine=True)
+        to verify that the user possesses a valid, active YouTube channel.
+        Saves verified channel metadata into the secure vault.
+        """
+        if creds is None:
+            creds = self.get_credentials()
 
         if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                logger.info("Refreshing expired Google OAuth access token...")
-                creds.refresh(Request())
-                vault.save_json("google", "oauth_tokens", json.loads(creds.to_json()))
-            else:
-                logger.info("Initiating local Google OAuth authorization flow on localhost...")
-                flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-                creds = flow.run_local_server(port=0, prompt="consent", access_type="offline")
-                vault.save_json("google", "oauth_tokens", json.loads(creds.to_json()))
+            raise YouTubeAuthError("Not authorized. No valid Google OAuth credentials found.")
 
+        try:
+            service = build("youtube", "v3", credentials=creds)
+            res = service.channels().list(
+                part="snippet,contentDetails,statistics",
+                mine=True
+            ).execute()
+
+            items = res.get("items", [])
+            if not items:
+                raise YouTubeAuthError(
+                    "No YouTube channel was found for this Google account. "
+                    "Please create a YouTube channel on youtube.com, then try connecting again."
+                )
+
+            item = items[0]
+            snippet = item.get("snippet", {})
+            statistics = item.get("statistics", {})
+
+            channel_info = {
+                "channel_id": item["id"],
+                "title": snippet.get("title", "YouTube Channel"),
+                "custom_url": snippet.get("customUrl", ""),
+                "description": snippet.get("description", "")[:200],
+                "thumbnail_url": snippet.get("thumbnails", {}).get("default", {}).get("url", ""),
+                "subscriber_count": statistics.get("subscriberCount", "0"),
+                "video_count": statistics.get("videoCount", "0"),
+                "verified_at": datetime.utcnow().isoformat()
+            }
+
+            vault.save_json("google", "verified_channel", channel_info)
+            logger.info(f"Verified YouTube Channel: {channel_info['title']} ({channel_info['channel_id']})")
+            return channel_info
+
+        except HttpError as e:
+            logger.error(f"YouTube channels.list API error: {e}")
+            raise YouTubeAuthError(f"YouTube channel verification failed: {e.reason or str(e)}")
+        except Exception as e:
+            if isinstance(e, YouTubeAuthError):
+                raise
+            logger.error(f"Unexpected error during channel verification: {e}")
+            raise YouTubeAuthError(f"Could not verify YouTube channel: {e}")
+
+    def connect_account(self, open_browser: bool = True, timeout: int = 120) -> Dict[str, Any]:
+        """
+        Executes Google Desktop OAuth 2.0 InstalledAppFlow on localhost.
+        Opens the browser for user consent, stores tokens in vault,
+        and immediately verifies the authenticated YouTube channel.
+        """
+        client_config = vault.get_json("google", "client_config")
+        if not client_config:
+            raise ValueError(
+                "Google Client configuration not found in Vault. "
+                "Please import your Desktop OAuth client_secrets.json first."
+            )
+
+        try:
+            flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+            logger.info("Starting local loopback server for Google OAuth desktop authorization...")
+            
+            # Using port=0 lets the OS pick an available ephemeral port on localhost
+            creds = flow.run_local_server(
+                host="localhost",
+                port=0,
+                prompt="consent",
+                access_type="offline",
+                open_browser=open_browser,
+                timeout_seconds=timeout,
+                authorization_prompt_message="Please visit this URL to authorize Gaming Uncut: {url}",
+                success_message="Authorization complete! Your YouTube channel is connected. You may close this window."
+            )
+
+            if not creds:
+                raise YouTubeAuthError("Authorization was cancelled or no credentials returned.")
+
+            # Save tokens to vault
+            vault.save_json("google", "oauth_tokens", json.loads(creds.to_json()))
+            
+            # Verify channel immediately
+            channel_info = self.verify_channel(creds)
+            return {
+                "success": True,
+                "status": "connected",
+                "message": f"Successfully connected to YouTube channel: {channel_info['title']}",
+                "channel": channel_info
+            }
+
+        except Exception as e:
+            logger.error(f"Google Desktop OAuth authorization failed: {e}")
+            if isinstance(e, YouTubeAuthError):
+                raise
+            raise YouTubeAuthError(f"YouTube authorization failed: {e}")
+
+    def disconnect_account(self) -> Dict[str, Any]:
+        """
+        Wipes OAuth tokens and verified channel information from vault.
+        Resets YouTube connection status to Not Connected.
+        """
+        vault.delete_secret("google", "oauth_tokens")
+        vault.delete_secret("google", "verified_channel")
+        self._service = None
+        logger.info("YouTube account successfully disconnected and tokens cleared from vault.")
+        return {
+            "success": True,
+            "status": "disconnected",
+            "message": "YouTube account has been disconnected. Client secrets remain saved."
+        }
+
+    def test_connection(self) -> Dict[str, Any]:
+        """
+        Validates existing tokens by making an actual call to YouTube Data API channels.list.
+        """
+        creds = self.get_credentials()
+        if not creds:
+            return {
+                "success": False,
+                "connected": False,
+                "authenticated": False,
+                "error": "No YouTube authorization tokens found. Please connect your YouTube account."
+            }
+
+        try:
+            channel_info = self.verify_channel(creds)
+            return {
+                "success": True,
+                "connected": True,
+                "authenticated": True,
+                "channel": channel_info,
+                "message": f"Connection verified for channel: {channel_info['title']}"
+            }
+        except YouTubeAuthError as e:
+            return {
+                "success": False,
+                "connected": False,
+                "authenticated": False,
+                "error": str(e)
+            }
+
+    def get_service(self) -> Any:
+        """Returns authenticated YouTube Data API v3 service or raises YouTubeAuthError."""
+        creds = self.get_credentials()
+        if not creds or not creds.valid:
+            raise YouTubeAuthError(
+                "YouTube account is not connected or authorization expired. "
+                "Please connect your YouTube account in Settings before publishing."
+            )
         self._service = build("youtube", "v3", credentials=creds)
         return self._service
 
