@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gaming Uncut Automation Hub</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#f5f3ff',
+                            500: '#8b5cf6',
+                            600: '#7c3aed',
+                            700: '#6d28d9',
+                            900: '#4c1d95',
+                        },
+                        darkbg: '#0f172a',
+                        cardbg: '#1e293b'
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .aspect-vertical {
+            aspect-ratio: 9 / 16;
+        }
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0f172a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans flex flex-col">
+
+    <!-- Top Navigation -->
+    <header class="bg-slate-900 border-b border-slate-800 sticky top-0 z-50 px-6 py-4 flex items-center justify-between">
+        <div class="flex items-center space-x-3">
+            <div class="bg-gradient-to-tr from-purple-600 to-indigo-500 p-2.5 rounded-xl text-white shadow-lg shadow-purple-500/20">
+                <i class="fa-solid fa-gamepad text-xl"></i>
+            </div>
+            <div>
+                <h1 class="text-xl font-bold tracking-tight bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
+                    Gaming Uncut Automation
+                </h1>
+                <p class="text-xs text-slate-400">Autonomous 60s Vertical Video & Official Multi-Platform Dispatch</p>
+            </div>
+        </div>
+
+        <!-- System Badges & Mode Switch -->
+        <div class="flex items-center space-x-4">
+            <div id="mode-badge" class="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-semibold">
+                <i class="fa-solid fa-user-shield"></i>
+                <span id="mode-text">Mode: Manual Approval</span>
+            </div>
+
+            <div class="flex items-center space-x-2 text-xs bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700">
+                <span class="flex items-center space-x-1" id="yt-status">
+                    <i class="fa-brands fa-youtube text-red-500"></i>
+                    <span class="text-slate-400">YouTube</span>
+                </span>
+                <span class="text-slate-600">•</span>
+                <span class="flex items-center space-x-1" id="ig-status">
+                    <i class="fa-brands fa-instagram text-pink-500"></i>
+                    <span class="text-slate-400">Instagram</span>
+                </span>
+                <span class="text-slate-600">•</span>
+                <span class="flex items-center space-x-1" id="fb-status">
+                    <i class="fa-brands fa-facebook text-blue-500"></i>
+                    <span class="text-slate-400">Facebook</span>
+                </span>
+            </div>
+
+            <button onclick="triggerDispatch()" class="bg-purple-600 hover:bg-purple-500 transition px-3 py-1.5 rounded-lg text-xs font-medium flex items-center space-x-1.5 shadow-md shadow-purple-600/30">
+                <i class="fa-solid fa-paper-plane"></i>
+                <span>Dispatch Now</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <div class="flex-1 flex max-w-7xl w-full mx-auto p-6 gap-6">
+
+        <!-- Sidebar Tabs -->
+        <aside class="w-64 flex-shrink-0 flex flex-col space-y-2">
+            <button onclick="switchTab('review')" id="tab-btn-review" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl bg-purple-600/20 text-purple-400 border border-purple-500/30 font-medium text-sm transition">
+                <i class="fa-solid fa-film text-base w-5"></i>
+                <span>Review & Approval</span>
+                <span id="badge-pending" class="ml-auto bg-purple-500/30 text-purple-300 text-xs px-2 py-0.5 rounded-full font-bold">0</span>
+            </button>
+
+            <button onclick="switchTab('queue')" id="tab-btn-queue" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-slate-800 text-slate-400 font-medium text-sm transition">
+                <i class="fa-solid fa-list-check text-base w-5"></i>
+                <span>Publishing Queue</span>
+                <span id="badge-queued" class="ml-auto bg-slate-800 text-slate-400 text-xs px-2 py-0.5 rounded-full font-bold">0</span>
+            </button>
+
+            <button onclick="switchTab('ingest')" id="tab-btn-ingest" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-slate-800 text-slate-400 font-medium text-sm transition">
+                <i class="fa-solid fa-folder-open text-base w-5"></i>
+                <span>Raw Ingestion</span>
+            </button>
+
+            <button onclick="switchTab('settings')" id="tab-btn-settings" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-slate-800 text-slate-400 font-medium text-sm transition">
+                <i class="fa-solid fa-key text-base w-5"></i>
+                <span>Vault & Settings</span>
+            </button>
+
+            <button onclick="switchTab('logs')" id="tab-btn-logs" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-slate-800 text-slate-400 font-medium text-sm transition">
+                <i class="fa-solid fa-terminal text-base w-5"></i>
+                <span>Audit Logs</span>
+            </button>
+
+            <!-- Daily Target Box -->
+            <div class="mt-auto bg-slate-900 border border-slate-800 rounded-2xl p-4">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs text-slate-400 font-medium">Daily Target</span>
+                    <span class="text-xs font-bold text-emerald-400"><span id="stat-published">0</span> / <span id="stat-target">12</span></span>
+                </div>
+                <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                    <div id="stat-progress-bar" class="bg-gradient-to-r from-purple-500 to-emerald-400 h-full w-0 transition-all duration-500"></div>
+                </div>
+                <p class="text-[11px] text-slate-500 mt-2">Targeting 10–15 high-retention clips/day with safe quota distribution.</p>
+            </div>
+        </aside>
+
+        <!-- Dynamic Content Area -->
+        <main class="flex-1 min-w-0">
+
+            <!-- TAB 1: REVIEW & APPROVAL -->
+            <section id="tab-review" class="space-y-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-lg font-bold">Clips Awaiting Review</h2>
+                        <p class="text-xs text-slate-400">Review AI-detected clips, check video quality, edit hooks, or approve for queued dispatch.</p>
+                    </div>
+                    <div class="flex items-center space-x-3">
+                        <select id="clip-filter" onchange="loadClips()" class="bg-slate-900 border border-slate-800 rounded-lg text-xs px-3 py-1.5 text-slate-300">
+                            <option value="">All Clips</option>
+                            <option value="pending" selected>Pending Approval</option>
+                            <option value="approved">Approved</option>
+                            <option value="rejected">Rejected</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div id="clips-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <!-- Populated via JS -->
+                </div>
+            </section>
+
+            <!-- TAB 2: PUBLISHING QUEUE -->
+            <section id="tab-queue" class="hidden space-y-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-lg font-bold">Multi-Platform Dispatch Queue</h2>
+                        <p class="text-xs text-slate-400">Scheduled distribution for YouTube Shorts, Instagram Reels, and Facebook Reels.</p>
+                    </div>
+                </div>
+
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg">
+                    <table class="w-full text-left text-xs text-slate-300">
+                        <thead class="bg-slate-800/60 text-slate-400 font-semibold border-b border-slate-800">
+                            <tr>
+                                <th class="p-3.5">Clip Title</th>
+                                <th class="p-3.5">Platform</th>
+                                <th class="p-3.5">Scheduled Time</th>
+                                <th class="p-3.5">Status</th>
+                                <th class="p-3.5">Retries</th>
+                                <th class="p-3.5 text-right">Action / Link</th>
+                            </tr>
+                        </thead>
+                        <tbody id="queue-tbody" class="divide-y divide-slate-800/60">
+                            <!-- Populated via JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- TAB 3: RAW FOOTAGE & INGESTION -->
+            <section id="tab-ingest" class="hidden space-y-6">
+                <div>
+                    <h2 class="text-lg font-bold">Footage Ingestion & OBS Watcher</h2>
+                    <p class="text-xs text-slate-400">Drop long gameplay sessions here or let OBS automatically save to the watched folder.</p>
+                </div>
+
+                <!-- Dropzone -->
+                <div id="dropzone" class="border-2 border-dashed border-slate-800 hover:border-purple-500/50 transition rounded-2xl p-8 text-center cursor-pointer bg-slate-900/50">
+                    <input type="file" id="file-input" class="hidden" accept="video/mp4,video/mkv,video/mov" onchange="handleFileUpload(this.files[0])">
+                    <div class="flex flex-col items-center justify-center space-y-3">
+                        <div class="p-4 bg-purple-500/10 rounded-full text-purple-400 text-2xl">
+                            <i class="fa-solid fa-cloud-arrow-up"></i>
+                        </div>
+                        <p class="font-medium text-sm">Drag & Drop Gameplay Video or Click to Browse</p>
+                        <p class="text-xs text-slate-500">Supports MP4, MKV, MOV (OBS / Shadowplay high bitrate recordings)</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 4: VAULT & SETTINGS -->
+            <section id="tab-settings" class="hidden space-y-6">
+                <div>
+                    <h2 class="text-lg font-bold">Credential Vault & Automation Policy</h2>
+                    <p class="text-xs text-slate-400">Encrypted machine storage. Secrets are never exposed in plaintext or git commits.</p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Google Cloud OAuth Desktop -->
+                    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+                        <div class="flex items-center space-x-2 text-purple-400 font-semibold text-sm">
+                            <i class="fa-brands fa-google"></i>
+                            <span>YouTube Data API v3 (Desktop Client)</span>
+                        </div>
+                        <p class="text-xs text-slate-400">Import your downloaded OAuth JSON credential file.</p>
+                        <div class="space-y-2">
+                            <input type="text" id="google-json-path" placeholder="C:\Users\...\Downloads\client_secrets.json" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-2.5 text-xs text-slate-200">
+                            <button onclick="importGoogleSecrets()" class="w-full bg-purple-600 hover:bg-purple-500 text-xs font-semibold py-2 rounded-lg transition">
+                                Import Secrets into Secure Vault
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Meta Developer App -->
+                    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+                        <div class="flex items-center space-x-2 text-blue-400 font-semibold text-sm">
+                            <i class="fa-brands fa-meta"></i>
+                            <span>Meta Graph API (Instagram & Facebook Reels)</span>
+                        </div>
+                        <div class="space-y-2">
+                            <input type="text" id="meta-app-id" placeholder="Meta App ID" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
+                            <input type="password" id="meta-app-secret" placeholder="Meta App Secret" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
+                            <input type="password" id="meta-page-token" placeholder="Long-Lived Page Access Token" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
+                            <input type="text" id="meta-ig-id" placeholder="Instagram Business Account ID (optional)" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
+                            <button onclick="saveMetaCreds()" class="w-full bg-blue-600 hover:bg-blue-500 text-xs font-semibold py-2 rounded-lg transition">
+                                Save Meta Credentials
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Workflow Mode Toggle -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex items-center justify-between">
+                    <div>
+                        <h3 class="text-sm font-semibold">Autonomous Auto-Publish vs Human Approval</h3>
+                        <p class="text-xs text-slate-400">When enabled, clips with excitement score &ge; 75% will automatically publish without waiting for manual approval.</p>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <button onclick="setWorkflowMode('manual')" id="btn-mode-manual" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-600 text-white">Manual Review</button>
+                        <button onclick="setWorkflowMode('auto')" id="btn-mode-auto" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400">Full Auto</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 5: AUDIT LOGS -->
+            <section id="tab-logs" class="hidden space-y-6">
+                <div>
+                    <h2 class="text-lg font-bold">System Audit Logs & Diagnostics</h2>
+                    <p class="text-xs text-slate-400">Real-time traces of API responses, error codes, and encoding milestones.</p>
+                </div>
+
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 max-h-[600px] overflow-y-auto font-mono text-xs space-y-1.5" id="logs-container">
+                    <!-- Populated via JS -->
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <!-- Scripts -->
+    <script>
+        let currentTab = 'review';
+
+        function switchTab(tab) {
+            ['review', 'queue', 'ingest', 'settings', 'logs'].forEach(t => {
+                document.getElementById(`tab-${t}`).classList.add('hidden');
+                const btn = document.getElementById(`tab-btn-${t}`);
+                btn.className = 'w-full flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-slate-800 text-slate-400 font-medium text-sm transition';
+            });
+            document.getElementById(`tab-${tab}`).classList.remove('hidden');
+            const activeBtn = document.getElementById(`tab-btn-${tab}`);
+            activeBtn.className = 'w-full flex items-center space-x-3 px-4 py-3 rounded-xl bg-purple-600/20 text-purple-400 border border-purple-500/30 font-medium text-sm transition';
+            currentTab = tab;
+
+            if (tab === 'review') loadClips();
+            if (tab === 'queue') loadQueue();
+            if (tab === 'logs') loadLogs();
+        }
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                
+                document.getElementById('stat-published').innerText = data.kpis.published_today;
+                document.getElementById('stat-target').innerText = data.kpis.daily_target;
+                const pct = Math.min(100, Math.round((data.kpis.published_today / data.kpis.daily_target) * 100));
+                document.getElementById('stat-progress-bar').style.width = `${pct}%`;
+
+                document.getElementById('badge-pending').innerText = data.kpis.pending_approvals;
+                document.getElementById('badge-queued').innerText = data.kpis.queued;
+
+                // Mode text
+                const modeText = document.getElementById('mode-text');
+                const modeBadge = document.getElementById('mode-badge');
+                if (data.kpis.workflow_mode === 'auto') {
+                    modeText.innerText = 'Mode: Autonomous Auto-Publish';
+                    modeBadge.className = 'flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold';
+                } else {
+                    modeText.innerText = 'Mode: Manual Approval Required';
+                    modeBadge.className = 'flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-semibold';
+                }
+
+                // Platform indicators
+                updatePlatformStatus('yt-status', data.integrations.youtube.authenticated, 'YouTube');
+                updatePlatformStatus('ig-status', data.integrations.instagram.configured, 'Instagram');
+                updatePlatformStatus('fb-status', data.integrations.facebook.configured, 'Facebook');
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function updatePlatformStatus(elementId, isConnected, name) {
+            const el = document.getElementById(elementId);
+            if (!el) return;
+            if (isConnected) {
+                el.innerHTML = `<i class="fa-solid fa-circle-check text-emerald-400"></i><span class="text-slate-300">${name} (Ready)</span>`;
+            } else {
+                el.innerHTML = `<i class="fa-solid fa-circle-xmark text-slate-500"></i><span class="text-slate-500">${name}</span>`;
+            }
+        }
+
+        async function loadClips() {
+            const filter = document.getElementById('clip-filter').value;
+            const res = await fetch(`/api/clips${filter ? '?status=' + filter : ''}`);
+            const clips = await res.json();
+            const grid = document.getElementById('clips-grid');
+            grid.innerHTML = '';
+
+            if (clips.length === 0) {
+                grid.innerHTML = `<div class="col-span-full py-12 text-center text-slate-500 text-sm">No clips found in this category. Upload footage or wait for the OBS watcher to ingest recordings.</div>`;
+                return;
+            }
+
+            clips.forEach(clip => {
+                const card = document.createElement('div');
+                card.className = 'bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col space-y-3 p-4 shadow-lg';
+                
+                const scoreColor = clip.score >= 80 ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' : 'text-amber-400 bg-amber-500/10 border-amber-500/30';
+                
+                card.innerHTML = `
+                    <div class="relative rounded-xl overflow-hidden bg-black aspect-vertical max-h-96 w-full flex items-center justify-center">
+                        <video src="${clip.video_url}" controls class="w-full h-full object-contain"></video>
+                        <span class="absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold border ${scoreColor}">
+                            ${clip.score}% Hype
+                        </span>
+                    </div>
+
+                    <div class="flex-1 space-y-1.5">
+                        <h4 class="font-bold text-sm text-slate-100 line-clamp-1">${clip.title}</h4>
+                        <p class="text-xs text-slate-400 line-clamp-2">${clip.description || ''}</p>
+                        <div class="text-[11px] text-purple-400 font-mono">${clip.hashtags || ''}</div>
+                    </div>
+
+                    <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between">
+                        <span class="text-xs font-semibold px-2 py-0.5 rounded ${clip.approval_status === 'approved' ? 'text-emerald-400 bg-emerald-500/10' : 'text-amber-400 bg-amber-500/10'}">
+                            ${clip.approval_status.toUpperCase()}
+                        </span>
+                        
+                        <div class="flex items-center space-x-2">
+                            ${clip.approval_status !== 'approved' ? `
+                                <button onclick="approveClip(${clip.id})" class="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition">
+                                    Approve
+                                </button>
+                            ` : ''}
+                            ${clip.approval_status !== 'rejected' ? `
+                                <button onclick="rejectClip(${clip.id})" class="px-3 py-1 bg-rose-600/30 hover:bg-rose-600/50 text-rose-300 rounded-lg text-xs font-semibold transition">
+                                    Reject
+                                </button>
+                            ` : ''}
+                        </div>
+                    </div>
+                `;
+                grid.appendChild(card);
+            });
+        }
+
+        async function approveClip(id) {
+            await fetch(`/api/clips/${id}/approve`, { method: 'POST' });
+            loadClips();
+            fetchStatus();
+        }
+
+        async function rejectClip(id) {
+            await fetch(`/api/clips/${id}/reject`, { method: 'POST' });
+            loadClips();
+            fetchStatus();
+        }
+
+        async function loadQueue() {
+            const res = await fetch('/api/queue');
+            const items = await res.json();
+            const tbody = document.getElementById('queue-tbody');
+            tbody.innerHTML = '';
+
+            items.forEach(item => {
+                const tr = document.createElement('tr');
+                tr.className = 'hover:bg-slate-800/40 transition';
+                
+                const platIcon = item.platform === 'youtube_shorts' ? 'fa-brands fa-youtube text-red-500' :
+                                 item.platform === 'instagram_reels' ? 'fa-brands fa-instagram text-pink-500' :
+                                 'fa-brands fa-facebook text-blue-500';
+
+                const statusColor = item.status === 'published' ? 'text-emerald-400 bg-emerald-500/10' :
+                                    item.status === 'publishing' ? 'text-blue-400 bg-blue-500/10 animate-pulse' :
+                                    item.status === 'failed' ? 'text-rose-400 bg-rose-500/10' :
+                                    'text-slate-400 bg-slate-800';
+
+                tr.innerHTML = `
+                    <td class="p-3.5 font-medium line-clamp-1">${item.title}</td>
+                    <td class="p-3.5"><i class="${platIcon} mr-1.5"></i> ${item.platform.replace('_', ' ')}</td>
+                    <td class="p-3.5 text-slate-400">${item.scheduled_time}</td>
+                    <td class="p-3.5"><span class="px-2 py-0.5 rounded text-xs font-semibold ${statusColor}">${item.status.toUpperCase()}</span></td>
+                    <td class="p-3.5 text-slate-400">${item.attempts} / ${item.max_attempts}</td>
+                    <td class="p-3.5 text-right">
+                        ${item.external_url ? `<a href="${item.external_url}" target="_blank" class="text-purple-400 hover:underline">View Post</a>` : `<span class="text-slate-500">-</span>`}
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        async function triggerDispatch() {
+            await fetch('/api/queue/dispatch', { method: 'POST' });
+            setTimeout(() => {
+                loadQueue();
+                fetchStatus();
+            }, 1000);
+        }
+
+        async function importGoogleSecrets() {
+            const path = document.getElementById('google-json-path').value;
+            const formData = new FormData();
+            formData.append('path', path);
+            const res = await fetch('/api/settings/import-google-secrets', { method: 'POST', body: formData });
+            const data = await res.json();
+            if (res.ok) {
+                alert('Google Desktop OAuth credentials securely imported into Vault!');
+                fetchStatus();
+            } else {
+                alert('Error: ' + data.detail);
+            }
+        }
+
+        async function saveMetaCreds() {
+            const formData = new FormData();
+            formData.append('app_id', document.getElementById('meta-app-id').value);
+            formData.append('app_secret', document.getElementById('meta-app-secret').value);
+            formData.append('page_token', document.getElementById('meta-page-token').value);
+            formData.append('ig_account_id', document.getElementById('meta-ig-id').value);
+            const res = await fetch('/api/settings/save-meta-credentials', { method: 'POST', body: formData });
+            if (res.ok) {
+                alert('Meta credentials securely stored in Vault!');
+                fetchStatus();
+            } else {
+                alert('Failed to save Meta credentials.');
+            }
+        }
+
+        async function setWorkflowMode(mode) {
+            const formData = new FormData();
+            formData.append('mode', mode);
+            await fetch('/api/settings/toggle-mode', { method: 'POST', body: formData });
+            fetchStatus();
+        }
+
+        async function loadLogs() {
+            const res = await fetch('/api/logs');
+            const logs = await res.json();
+            const container = document.getElementById('logs-container');
+            container.innerHTML = '';
+            logs.forEach(l => {
+                const color = l.level === 'ERROR' ? 'text-rose-400' : l.level === 'WARNING' ? 'text-amber-400' : 'text-slate-300';
+                const row = document.createElement('div');
+                row.className = `flex space-x-2 py-0.5 ${color}`;
+                row.innerHTML = `<span class="text-slate-500">[${l.created_at}]</span><span class="font-bold">[${l.module.toUpperCase()}]</span><span>${l.message}</span>`;
+                container.appendChild(row);
+            });
+        }
+
+        // Initialize dropzone click
+        document.getElementById('dropzone').addEventListener('click', () => {
+            document.getElementById('file-input').click();
+        });
+
+        async function handleFileUpload(file) {
+            if (!file) return;
+            const formData = new FormData();
+            formData.append('file', file);
+            alert(`Uploading ${file.name}... Processing will start automatically.`);
+            await fetch('/api/footage/upload', { method: 'POST', body: formData });
+            switchTab('review');
+            fetchStatus();
+        }
+
+        // Set default path in Google secrets input if available
+        document.getElementById('google-json-path').value = 'C:\\Users\\Ayush\\Downloads\\client_secrets.json';
+
+        // Auto poll
+        fetchStatus();
+        loadClips();
+        setInterval(fetchStatus, 5000);
+    </script>
+</body>
+</html>
