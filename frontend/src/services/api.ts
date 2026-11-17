@@ -153,7 +153,7 @@ export async function importGoogleSecrets(path: string) {
 }
 
 export async function connectYouTubeAccount(): Promise<any> {
-  const res = await fetch(`${API_BASE}/settings/youtube/connect`, {
+  const res = await fetch(`${API_BASE}/settings/youtube/connect/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
   })
@@ -162,6 +162,30 @@ export async function connectYouTubeAccount(): Promise<any> {
     throw new Error(data.detail || 'YouTube authorization failed.')
   }
   return data
+}
+
+export async function startYouTubeOAuth(): Promise<any> {
+  const res = await fetch(`${API_BASE}/settings/youtube/connect/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Failed to start YouTube authorization.')
+  }
+  return data
+}
+
+export async function getYouTubeOAuthStatus(): Promise<any> {
+  const res = await fetch(`${API_BASE}/settings/youtube/connect/status`)
+  return res.json()
+}
+
+export async function cancelYouTubeOAuth(): Promise<any> {
+  const res = await fetch(`${API_BASE}/settings/youtube/connect/cancel`, {
+    method: 'POST'
+  })
+  return res.json()
 }
 
 export async function testYouTubeConnection(): Promise<any> {

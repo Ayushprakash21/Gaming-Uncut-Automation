@@ -134,61 +134,21 @@ class YouTubePublishClient:
             logger.error(f"Unexpected error during channel verification: {e}")
             raise YouTubeAuthError(f"Could not verify YouTube channel: {e}")
 
-    def connect_account(self, open_browser: bool = True, timeout: int = 120) -> Dict[str, Any]:
+    def connect_account(self, open_browser: bool = True, timeout: int = 180) -> Dict[str, Any]:
         """
-        Executes Google Desktop OAuth 2.0 InstalledAppFlow on localhost.
-        Opens the browser for user consent, stores tokens in vault,
-        and immediately verifies the authenticated YouTube channel.
+        Starts Google Desktop OAuth 2.0 InstalledAppFlow on localhost via oauth_manager.
+        Returns immediately with authorization URL and live session state.
         """
-        client_config = vault.get_json("google", "client_config")
-        if not client_config:
-            raise ValueError(
-                "Google Client configuration not found in Vault. "
-                "Please import your Desktop OAuth client_secrets.json first."
-            )
-
-        try:
-            flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-            logger.info("Starting local loopback server for Google OAuth desktop authorization...")
-            
-            # Using port=0 lets the OS pick an available ephemeral port on localhost
-            creds = flow.run_local_server(
-                host="localhost",
-                port=0,
-                prompt="consent",
-                access_type="offline",
-                open_browser=open_browser,
-                timeout_seconds=timeout,
-                authorization_prompt_message="Please visit this URL to authorize Gaming Uncut: {url}",
-                success_message="Authorization complete! Your YouTube channel is connected. You may close this window."
-            )
-
-            if not creds:
-                raise YouTubeAuthError("Authorization was cancelled or no credentials returned.")
-
-            # Save tokens to vault
-            vault.save_json("google", "oauth_tokens", json.loads(creds.to_json()))
-            
-            # Verify channel immediately
-            channel_info = self.verify_channel(creds)
-            return {
-                "success": True,
-                "status": "connected",
-                "message": f"Successfully connected to YouTube channel: {channel_info['title']}",
-                "channel": channel_info
-            }
-
-        except Exception as e:
-            logger.error(f"Google Desktop OAuth authorization failed: {e}")
-            if isinstance(e, YouTubeAuthError):
-                raise
-            raise YouTubeAuthError(f"YouTube authorization failed: {e}")
+        from backend.app.publishers.youtube.oauth_manager import oauth_manager
+        return oauth_manager.start_authorization(open_browser=open_browser, timeout_seconds=timeout)
 
     def disconnect_account(self) -> Dict[str, Any]:
         """
         Wipes OAuth tokens and verified channel information from vault.
         Resets YouTube connection status to Not Connected.
         """
+        from backend.app.publishers.youtube.oauth_manager import oauth_manager
+        oauth_manager.cancel_authorization()
         vault.delete_secret("google", "oauth_tokens")
         vault.delete_secret("google", "verified_channel")
         self._service = None

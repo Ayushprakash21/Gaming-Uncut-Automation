@@ -63,7 +63,10 @@ def setup_isolated_test_environment():
         "installed": {
             "client_id": "test-suite-client-id.apps.googleusercontent.com",
             "project_id": "test-suite-project",
-            "client_secret": "TEST_SUITE_CLIENT_SECRET"
+            "client_secret": "TEST_SUITE_CLIENT_SECRET",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": ["http://localhost"]
         }
     })
     vault.set_secret("google", "project_id", "test-suite-project")

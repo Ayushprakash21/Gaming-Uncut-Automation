@@ -671,20 +671,56 @@ def get_connections():
     }
 
 # Dedicated YouTube OAuth Endpoints
+@router.post("/settings/youtube/connect/start")
+def start_youtube_oauth(open_browser: bool = True):
+    """
+    Initiates Google's official Desktop OAuth 2.0 flow:
+    - Binds an ephemeral port on 127.0.0.1 loopback
+    - Generates authorization URL with CSRF state protection
+    - Spawns background callback server
+    - Launches default Windows browser
+    - Returns immediately with auth_url and session metadata
+    """
+    from backend.app.publishers.youtube.oauth_manager import oauth_manager
+    try:
+        result = oauth_manager.start_authorization(open_browser=open_browser)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to start YouTube OAuth: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start OAuth flow: {e}")
+
+@router.get("/settings/youtube/connect/status")
+def get_youtube_oauth_status():
+    """
+    Returns live progress and state of the YouTube OAuth authorization flow:
+    idle | waiting_for_consent | verifying_channel | connected | failed | cancelled | timed_out
+    """
+    from backend.app.publishers.youtube.oauth_manager import oauth_manager
+    return oauth_manager.get_status()
+
+@router.post("/settings/youtube/connect/cancel")
+def cancel_youtube_oauth():
+    """
+    Cancels any active YouTube OAuth session and cleanly shuts down the loopback listener.
+    """
+    from backend.app.publishers.youtube.oauth_manager import oauth_manager
+    return oauth_manager.cancel_authorization()
+
 @router.post("/settings/youtube/connect")
 def connect_youtube_account(open_browser: bool = True, db: Session = Depends(get_db)):
     """
-    Initiates Google's official Desktop OAuth 2.0 InstalledAppFlow on localhost.
-    Opens the default browser for Google user consent, stores credentials securely,
-    and calls channels.list to verify channel identity.
+    Initiates Google Desktop OAuth 2.0 InstalledAppFlow on localhost.
+    Starts background callback server and returns authorization details immediately.
     """
+    from backend.app.publishers.youtube.oauth_manager import oauth_manager
     try:
-        result = youtube_client.connect_account(open_browser=open_browser)
-        channel = result.get("channel", {})
+        result = oauth_manager.start_authorization(open_browser=open_browser)
         log_entry = SystemLog(
             module="youtube_oauth",
             level="INFO",
-            message=f"YouTube channel successfully authorized & verified: '{channel.get('title')}' (ID: {channel.get('channel_id')})."
+            message="YouTube Desktop OAuth authorization session initiated."
         )
         db.add(log_entry)
         db.commit()

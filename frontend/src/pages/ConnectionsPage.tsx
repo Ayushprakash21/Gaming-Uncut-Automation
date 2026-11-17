@@ -1,16 +1,38 @@
 import React, { useEffect, useState } from 'react'
-import { Share2, Youtube, Instagram, Facebook, Sparkles, Shield, KeyRound, CheckCircle2, AlertCircle, Loader2, FileCheck, Sliders } from 'lucide-react'
+import {
+  Share2,
+  Youtube,
+  Instagram,
+  Facebook,
+  Sparkles,
+  Shield,
+  KeyRound,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
+  FileCheck,
+  Sliders,
+  ExternalLink,
+  Copy,
+  Check,
+  RotateCcw,
+  X
+} from 'lucide-react'
 import {
   fetchConnections,
   updateConnections,
   importGoogleSecrets,
   fetchSystemLimits,
   updateSystemLimits,
-  connectYouTubeAccount,
+  startYouTubeOAuth,
+  getYouTubeOAuthStatus,
+  cancelYouTubeOAuth,
   testYouTubeConnection,
   disconnectYouTubeAccount
 } from '../services/api'
 import { ConnectionsData, SystemLimits } from '../types'
+
+type OAuthStage = 'idle' | 'opening' | 'waiting_for_consent' | 'verifying_channel' | 'connected' | 'failed' | 'cancelled' | 'timed_out'
 
 export const ConnectionsPage: React.FC = () => {
   const [connections, setConnections] = useState<ConnectionsData | null>(null)
@@ -19,7 +41,11 @@ export const ConnectionsPage: React.FC = () => {
   const [googleMsg, setGoogleMsg] = useState('')
   const [googleErr, setGoogleErr] = useState('')
 
-  const [connectingYt, setConnectingYt] = useState(false)
+  const [oauthStage, setOauthStage] = useState<OAuthStage>('idle')
+  const [authUrl, setAuthUrl] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [copied, setCopied] = useState(false)
+
   const [testingYt, setTestingYt] = useState(false)
   const [disconnectingYt, setDisconnectingYt] = useState(false)
   const [ytMsg, setYtMsg] = useState('')
@@ -59,6 +85,42 @@ export const ConnectionsPage: React.FC = () => {
     load()
   }, [])
 
+  // Poll OAuth status when in waiting_for_consent or verifying_channel
+  useEffect(() => {
+    if (oauthStage !== 'waiting_for_consent' && oauthStage !== 'verifying_channel') {
+      return
+    }
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await getYouTubeOAuthStatus()
+        if (res.status === 'verifying_channel') {
+          setOauthStage('verifying_channel')
+        } else if (res.status === 'connected') {
+          setOauthStage('connected')
+          setYtMsg(`✓ Successfully authorized & verified YouTube channel: "${res.channel?.title || 'YouTube Channel'}" (ID: ${res.channel?.channel_id})`)
+          setYtErr('')
+          load()
+        } else if (res.status === 'failed') {
+          setOauthStage('failed')
+          setAuthError(res.error || 'YouTube authorization failed.')
+        } else if (res.status === 'cancelled') {
+          setOauthStage('cancelled')
+          setAuthError(res.error || 'Authorization was cancelled.')
+        } else if (res.status === 'timed_out') {
+          setOauthStage('timed_out')
+          setAuthError('Authorization timed out waiting for Google consent. Please retry.')
+        } else if (res.status === 'waiting_for_consent' && res.auth_url) {
+          setAuthUrl(res.auth_url)
+        }
+      } catch (e) {
+        // network glitch, continue polling
+      }
+    }, 1500)
+
+    return () => clearInterval(interval)
+  }, [oauthStage])
+
   const handleImportGoogle = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!googlePath.trim()) {
@@ -84,17 +146,36 @@ export const ConnectionsPage: React.FC = () => {
   }
 
   const handleConnectYouTube = async () => {
-    setConnectingYt(true)
+    setOauthStage('opening')
+    setAuthError('')
     setYtMsg('')
     setYtErr('')
     try {
-      const res = await connectYouTubeAccount()
-      setYtMsg(`✓ Successfully authorized & verified YouTube channel: "${res.channel?.title || 'YouTube Channel'}" (ID: ${res.channel?.channel_id})`)
-      load()
+      const res = await startYouTubeOAuth()
+      if (res.auth_url) {
+        setAuthUrl(res.auth_url)
+      }
+      setOauthStage('waiting_for_consent')
     } catch (err: any) {
-      setYtErr(err.message || 'YouTube OAuth connection failed.')
-    } finally {
-      setConnectingYt(false)
+      setOauthStage('failed')
+      setAuthError(err.message || 'Failed to initiate YouTube authorization.')
+    }
+  }
+
+  const handleCancelOAuth = async () => {
+    try {
+      await cancelYouTubeOAuth()
+    } catch (e) {}
+    setOauthStage('idle')
+    setAuthUrl('')
+    setAuthError('')
+  }
+
+  const handleCopyAuthUrl = () => {
+    if (authUrl) {
+      navigator.clipboard.writeText(authUrl)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
     }
   }
 
@@ -407,6 +488,135 @@ export const ConnectionsPage: React.FC = () => {
               </button>
             </div>
           </div>
+        ) : oauthStage === 'opening' ? (
+          <div className="bg-[#0a0d14] border border-gaming-border rounded-xl p-5 space-y-3">
+            <div className="flex items-center space-x-3 text-purple-400">
+              <Loader2 className="w-5 h-5 animate-spin" />
+              <span className="text-xs font-bold">Initializing Local Authorization Server & Google Consent...</span>
+            </div>
+            <p className="text-xs text-slate-400">
+              Binding local loopback port on localhost and generating cryptographic CSRF state.
+            </p>
+          </div>
+        ) : oauthStage === 'waiting_for_consent' ? (
+          <div className="bg-[#0a0d14] border border-amber-500/30 rounded-xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2 text-amber-400 text-xs font-bold">
+                <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+                <span>Waiting for Google Authorization in Browser...</span>
+              </div>
+              <button
+                type="button"
+                onClick={handleCancelOAuth}
+                className="text-slate-400 hover:text-slate-200 text-xs flex items-center space-x-1"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Cancel</span>
+              </button>
+            </div>
+
+            {/* Progress Step Indicator */}
+            <div className="flex items-center space-x-2 text-[11px]">
+              <span className="px-2 py-0.5 rounded font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                1. Google Consent
+              </span>
+              <span className="text-slate-600">→</span>
+              <span className="px-2 py-0.5 rounded font-medium bg-slate-800 text-slate-500">
+                2. Channel Verification
+              </span>
+              <span className="text-slate-600">→</span>
+              <span className="px-2 py-0.5 rounded font-medium bg-slate-800 text-slate-500">
+                3. Connected
+              </span>
+            </div>
+
+            <p className="text-xs text-slate-300">
+              We attempted to launch Google's official consent screen in your default browser. If a new tab did not open automatically, click the button below to complete authorization:
+            </p>
+
+            <div className="flex flex-wrap items-center gap-3 pt-1">
+              {authUrl && (
+                <a
+                  href={authUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="bg-red-600 hover:bg-red-500 text-white font-bold text-xs px-5 py-2.5 rounded-xl transition flex items-center space-x-2 shadow-lg shadow-red-600/20"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  <span>Open Google Authorization in Browser ↗</span>
+                </a>
+              )}
+              {authUrl && (
+                <button
+                  type="button"
+                  onClick={handleCopyAuthUrl}
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-4 py-2.5 rounded-xl transition flex items-center space-x-2"
+                >
+                  {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                  <span>{copied ? 'Link Copied!' : 'Copy Auth Link'}</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleCancelOAuth}
+                className="bg-slate-800/60 hover:bg-slate-800 text-slate-400 hover:text-slate-200 text-xs font-semibold px-4 py-2.5 rounded-xl transition"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : oauthStage === 'verifying_channel' ? (
+          <div className="bg-[#0a0d14] border border-purple-500/30 rounded-xl p-5 space-y-3">
+            <div className="flex items-center space-x-3 text-purple-400">
+              <Loader2 className="w-5 h-5 animate-spin" />
+              <span className="text-xs font-bold">Google Consent Received! Verifying YouTube Channel...</span>
+            </div>
+            <div className="flex items-center space-x-2 text-[11px]">
+              <span className="px-2 py-0.5 rounded font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                ✓ 1. Consent Granted
+              </span>
+              <span className="text-slate-600">→</span>
+              <span className="px-2 py-0.5 rounded font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30 animate-pulse">
+                2. Channel Verification
+              </span>
+              <span className="text-slate-600">→</span>
+              <span className="px-2 py-0.5 rounded font-medium bg-slate-800 text-slate-500">
+                3. Connected
+              </span>
+            </div>
+            <p className="text-xs text-slate-400">
+              Exchanging authorization code for tokens and querying YouTube Data API channels.list(mine=true) to confirm channel access.
+            </p>
+          </div>
+        ) : oauthStage === 'failed' || oauthStage === 'cancelled' || oauthStage === 'timed_out' ? (
+          <div className="bg-[#0a0d14] border border-rose-500/30 rounded-xl p-5 space-y-3">
+            <div className="flex items-center space-x-2 text-rose-400">
+              <AlertCircle className="w-5 h-5 flex-shrink-0" />
+              <span className="text-xs font-bold">
+                {oauthStage === 'timed_out' ? 'Authorization Timed Out' : oauthStage === 'cancelled' ? 'Authorization Cancelled' : 'YouTube Authorization Failed'}
+              </span>
+            </div>
+            <p className="text-xs text-rose-300/90 leading-relaxed font-mono">
+              {authError || 'An error occurred during Google OAuth authorization.'}
+            </p>
+            <div className="flex items-center space-x-3 pt-2">
+              <button
+                type="button"
+                onClick={handleConnectYouTube}
+                className="bg-red-600 hover:bg-red-500 text-white font-bold text-xs px-5 py-2 rounded-xl transition flex items-center space-x-2"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Retry YouTube Authorization</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setOauthStage('idle')}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold px-4 py-2 rounded-xl transition"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
         ) : (
           <div className="space-y-3">
             <p className="text-xs text-slate-400">
@@ -417,20 +627,11 @@ export const ConnectionsPage: React.FC = () => {
             <button
               type="button"
               onClick={handleConnectYouTube}
-              disabled={connectingYt || !connections?.youtube.client_configured}
+              disabled={!connections?.youtube.client_configured}
               className="bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white font-bold text-xs px-6 py-2.5 rounded-xl transition flex items-center space-x-2 shadow-lg shadow-red-600/20"
             >
-              {connectingYt ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Waiting for Google Authorization in Browser...</span>
-                </>
-              ) : (
-                <>
-                  <Youtube className="w-4 h-4" />
-                  <span>Connect YouTube Account</span>
-                </>
-              )}
+              <Youtube className="w-4 h-4" />
+              <span>Connect YouTube Account</span>
             </button>
           </div>
         )}
