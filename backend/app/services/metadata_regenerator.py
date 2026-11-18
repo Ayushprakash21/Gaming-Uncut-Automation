@@ -135,6 +135,13 @@ def regenerate_clip_metadata(
     }
     _, quality_score, report = quality_validator.validate_metadata(meta_dict, db=db, exclude_clip_id=clip_id)
 
+    # Regenerate platform-specific SEO packages
+    try:
+        from backend.app.metadata.seo_engine import seo_engine
+        seo_engine.generate_clip_seo(clip_id=clip_id, db=db, bypass_cache=True)
+    except Exception as seo_err:
+        logger.warning(f"SEO regeneration warning for Clip #{clip_id}: {seo_err}")
+
     return {
         "clip_id": clip_id,
         "status": "success",

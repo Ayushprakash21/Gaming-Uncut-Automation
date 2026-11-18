@@ -9,6 +9,7 @@ import { ContentLibraryPage } from './pages/ContentLibraryPage'
 import { PublishingQueuePage } from './pages/PublishingQueuePage'
 import { ConnectionsPage } from './pages/ConnectionsPage'
 import { LogsPage } from './pages/LogsPage'
+import { SeoGrowthPage } from './pages/SeoGrowthPage'
 import { fetchOverview } from './services/api'
 import { OverviewData } from './types'
 
@@ -60,6 +61,7 @@ export const App: React.FC = () => {
           )}
           {currentTab === 'queue' && <QueuePage />}
           {currentTab === 'published' && <PublishingQueuePage />}
+          {currentTab === 'seo' && <SeoGrowthPage />}
           {currentTab === 'library' && <ContentLibraryPage />}
           {currentTab === 'scheduler' && <PublishingQueuePage />}
           {currentTab === 'analytics' && (

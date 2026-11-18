@@ -11,7 +11,8 @@ import {
   Share2,
   Sliders,
   Terminal,
-  Compass
+  Compass,
+  TrendingUp
 } from 'lucide-react'
 
 interface SidebarProps {
@@ -41,6 +42,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'discovery', label: 'Video Discovery', icon: Compass, highlight: true },
     { id: 'queue', label: 'Processing Queue', icon: ListOrdered },
     { id: 'published', label: 'Published Videos', icon: CheckCircle2 },
+    { id: 'seo', label: 'AI SEO & Growth', icon: TrendingUp },
     { id: 'library', label: 'Content Library', icon: FileVideo },
     { id: 'scheduler', label: 'Scheduler', icon: CalendarDays },
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },

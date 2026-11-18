@@ -547,3 +547,92 @@ export async function resumeDiscoverySchedule(): Promise<any> {
   return data
 }
 
+// =========================================================================
+// AI SEO & Growth Intelligence Engine Client
+// =========================================================================
+
+export async function fetchSeoDashboard(): Promise<any> {
+  const res = await fetch(`${API_BASE}/seo/dashboard`)
+  if (!res.ok) throw new Error('Failed to fetch SEO dashboard.')
+  return res.json()
+}
+
+export async function fetchClipSeo(clipId: number): Promise<any> {
+  const res = await fetch(`${API_BASE}/seo/clips/${clipId}`)
+  if (!res.ok) throw new Error(`Failed to fetch SEO metadata for Clip #${clipId}.`)
+  return res.json()
+}
+
+export async function generateClipSeo(
+  clipId: number,
+  data?: { platforms?: string[]; bypass_cache?: boolean; custom_keywords?: string[] }
+): Promise<any> {
+  const res = await fetch(`${API_BASE}/seo/clips/${clipId}/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data || {})
+  })
+  const json = await res.json()
+  if (!res.ok) throw new Error(json.detail || 'Failed to generate SEO metadata.')
+  return json
+}
+
+export async function approveClipSeo(clipId: number, platform: string = 'all'): Promise<any> {
+  const res = await fetch(`${API_BASE}/seo/clips/${clipId}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ platform })
+  })
+  const json = await res.json()
+  if (!res.ok) throw new Error(json.detail || 'Failed to approve SEO metadata.')
+  return json
+}
+
+export async function bulkGenerateSeo(data: {
+  clip_ids?: number[];
+  platforms?: string[];
+  bypass_cache?: boolean;
+}): Promise<any> {
+  const res = await fetch(`${API_BASE}/seo/bulk/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  })
+  const json = await res.json()
+  if (!res.ok) throw new Error(json.detail || 'Failed to execute bulk SEO generation.')
+  return json
+}
+
+export async function bulkApproveSeo(data: { clip_ids: number[]; platform?: string }): Promise<any> {
+  const res = await fetch(`${API_BASE}/seo/bulk/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  })
+  const json = await res.json()
+  if (!res.ok) throw new Error(json.detail || 'Failed to execute bulk SEO approval.')
+  return json
+}
+
+export async function researchKeywords(gameName: string, eventType: string = ''): Promise<any> {
+  const params = new URLSearchParams({ game_name: gameName, event_type: eventType })
+  const res = await fetch(`${API_BASE}/seo/keywords/research?${params}`)
+  if (!res.ok) throw new Error('Failed to research keywords.')
+  return res.json()
+}
+
+export async function fetchGrowthIntelligence(): Promise<any> {
+  const res = await fetch(`${API_BASE}/seo/growth/intelligence`)
+  if (!res.ok) throw new Error('Failed to fetch growth intelligence.')
+  return res.json()
+}
+
+export async function computeGrowthInsights(): Promise<any> {
+  const res = await fetch(`${API_BASE}/seo/growth/compute-insights`, {
+    method: 'POST'
+  })
+  const json = await res.json()
+  if (!res.ok) throw new Error(json.detail || 'Failed to compute growth insights.')
+  return json
+}
+

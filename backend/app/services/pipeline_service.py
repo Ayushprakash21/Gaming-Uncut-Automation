@@ -637,6 +637,18 @@ class PipelineService:
                     analysis_fingerprint=ai_metadata.get("analysis_fingerprint")
                 )
                 db.add(meta_record)
+                db.commit()
+
+                # Generate Platform-Specific SEO & Growth Intelligence Package
+                try:
+                    from backend.app.metadata.seo_engine import seo_engine
+                    seo_engine.generate_clip_seo(
+                        clip_id=clip_id,
+                        db=db,
+                        target_platforms=platforms or ["youtube", "instagram", "facebook"]
+                    )
+                except Exception as seo_err:
+                    logger.warning(f"Automated SEO generation warning for Clip #{clip_id}: {seo_err}")
 
                 # FINAL ACCEPTANCE CRITERIA: A video must not be auto-published if AI analysis is incomplete, heuristic, unconfirmed, OR if user-supplied game name conflicts with visual evidence
                 game_mismatch = bool(ai_metadata.get("game_mismatch_flag", False))

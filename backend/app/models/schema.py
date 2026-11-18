@@ -108,6 +108,7 @@ class GeneratedClip(Base):
     highlight = relationship("DetectedHighlight", back_populates="clips")
     metadata_rel = relationship("ClipMetadata", back_populates="clip", uselist=False, cascade="all, delete-orphan")
     publishing_jobs = relationship("PublishingJob", back_populates="clip", cascade="all, delete-orphan")
+    seo_metadata = relationship("ClipSeoMetadata", back_populates="clip", cascade="all, delete-orphan")
 
 class ClipMetadata(Base):
     __tablename__ = "clip_metadata"
@@ -362,3 +363,75 @@ class DiscoveredVideo(Base):
     processing_job = relationship("ProcessingJob")
     discovery_search = relationship("DiscoverySearch", back_populates="discovered_videos")
     discovery_job = relationship("DiscoveryJob", back_populates="discovered_videos")
+
+class ClipSeoMetadata(Base):
+    __tablename__ = "clip_seo_metadata"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    clip_id = Column(Integer, ForeignKey("generated_clips.id", ondelete="CASCADE"), nullable=False, index=True)
+    platform = Column(String(50), nullable=False)  # youtube, instagram, facebook
+    
+    # Platform-specific titles & hooks
+    recommended_title = Column(String(255), nullable=True)
+    candidate_titles_json = Column(Text, nullable=True)  # JSON list of title or caption alternatives
+    recommended_caption = Column(Text, nullable=True)
+    description = Column(Text, nullable=True)
+    
+    # SEO Keyword Targeting
+    primary_keyword = Column(String(100), nullable=True)
+    secondary_keywords_json = Column(Text, nullable=True)  # JSON list
+    tags_json = Column(Text, nullable=True)  # JSON list of tags
+    hashtags_json = Column(Text, nullable=True)  # JSON list of hashtags
+    search_phrases_json = Column(Text, nullable=True)  # JSON list of game search queries
+    gameplay_event_keywords_json = Column(Text, nullable=True)  # JSON list of in-game event keywords
+    
+    # Visual & Engagement Optimization
+    thumbnail_hook_text = Column(String(150), nullable=True)
+    opening_hook = Column(Text, nullable=True)
+    search_intent = Column(String(50), nullable=True)  # entertainment, clutch_skill, how_to, cinematic
+    cta = Column(Text, nullable=True)
+    onscreen_text = Column(Text, nullable=True)
+    topic_suggestions_json = Column(Text, nullable=True)
+    
+    # SEO Quality Scoring (0-100)
+    seo_score = Column(Float, default=0.0)
+    score_breakdown_json = Column(Text, nullable=True)  # JSON object of 7 dimensions
+    warnings_json = Column(Text, nullable=True)  # JSON list of warnings
+    recommendations_json = Column(Text, nullable=True)  # JSON list of suggested improvements
+    
+    # Operational Status
+    approval_status = Column(String(50), default="pending")  # pending, approved, rejected
+    ai_provider = Column(String(50), default="local")  # ollama, gemini, heuristic
+    ai_model = Column(String(100), nullable=True)
+    version = Column(Integer, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    clip = relationship("GeneratedClip", back_populates="seo_metadata")
+
+class KeywordResearchRecord(Base):
+    __tablename__ = "keyword_research_records"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    keyword = Column(String(200), nullable=False, index=True)
+    game_name = Column(String(150), nullable=True, index=True)
+    platform = Column(String(50), default="youtube")
+    source = Column(String(50), nullable=False)  # youtube_api, youtube_autocomplete, trends, historical_db, ai_estimate
+    is_measured = Column(Boolean, default=False)  # True only if measured from authorized API
+    search_volume_score = Column(Float, nullable=True)  # Relative scale 0-100 or metric
+    competition_score = Column(Float, nullable=True)
+    trend_direction = Column(String(20), default="stable")  # rising, stable, declining
+    related_queries_json = Column(Text, nullable=True)
+    retrieved_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
+class SeoGrowthInsight(Base):
+    __tablename__ = "seo_growth_insights"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    category = Column(String(50), nullable=False)  # topic, hook, title_pattern, game, timing
+    dimension_name = Column(String(150), nullable=False)
+    platform = Column(String(50), default="all")
+    performance_score = Column(Float, default=0.0)
+    sample_size = Column(Integer, default=0)
+    insight_summary = Column(Text, nullable=False)
+    recommendation = Column(Text, nullable=True)
+    is_statistically_significant = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)

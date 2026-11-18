@@ -1605,3 +1605,298 @@ def resume_discovery_schedule(db: Session = Depends(get_db)):
     from backend.app.discovery.service import discovery_service
     sched = discovery_service.resume_schedule(db)
     return {"status": "active", "is_active": sched.is_active, "next_scan_at": sched.next_scan_at.isoformat() if sched.next_scan_at else None}
+
+# =========================================================================
+# AI SEO & Growth Intelligence Engine Endpoints
+# =========================================================================
+
+class SeoGenerateRequest(BaseModel):
+    platforms: Optional[List[str]] = None
+    bypass_cache: bool = False
+    custom_keywords: Optional[List[str]] = None
+
+class SeoApproveRequest(BaseModel):
+    platform: Optional[str] = "all"
+
+class SeoBulkGenerateRequest(BaseModel):
+    clip_ids: Optional[List[int]] = None
+    platforms: Optional[List[str]] = None
+    bypass_cache: bool = True
+
+class SeoBulkApproveRequest(BaseModel):
+    clip_ids: List[int]
+    platform: Optional[str] = "all"
+
+@router.get("/seo/dashboard")
+def get_seo_dashboard(db: Session = Depends(get_db)):
+    """Returns executive metrics, KPIs, platform breakdown, and growth insights."""
+    from backend.app.analytics.growth_intelligence import growth_intelligence_service
+    return growth_intelligence_service.get_dashboard_summary(db)
+
+@router.get("/seo/clips/{clip_id}")
+def get_clip_seo(clip_id: int, db: Session = Depends(get_db)):
+    """Retrieves platform-specific SEO packages for a clip; generates if missing."""
+    from backend.app.models.schema import ClipSeoMetadata, GeneratedClip
+    from backend.app.metadata.seo_engine import seo_engine
+
+    clip = db.query(GeneratedClip).filter_by(id=clip_id).first()
+    if not clip:
+        raise HTTPException(status_code=404, detail=f"Clip #{clip_id} not found.")
+
+    records = db.query(ClipSeoMetadata).filter_by(clip_id=clip_id).all()
+    if not records or len(records) < 3:
+        # Generate on the fly
+        res = seo_engine.generate_clip_seo(clip_id=clip_id, db=db)
+        records = db.query(ClipSeoMetadata).filter_by(clip_id=clip_id).all()
+
+    platforms_payload = {}
+    for r in records:
+        platforms_payload[r.platform] = {
+            "platform": r.platform,
+            "recommended_title": r.recommended_title,
+            "candidate_titles": json.loads(r.candidate_titles_json or "[]"),
+            "recommended_caption": r.recommended_caption,
+            "description": r.description,
+            "primary_keyword": r.primary_keyword,
+            "secondary_keywords": json.loads(r.secondary_keywords_json or "[]"),
+            "tags": json.loads(r.tags_json or "[]"),
+            "hashtags": json.loads(r.hashtags_json or "[]"),
+            "search_phrases": json.loads(r.search_phrases_json or "[]"),
+            "gameplay_event_keywords": json.loads(r.gameplay_event_keywords_json or "[]"),
+            "thumbnail_hook_text": r.thumbnail_hook_text,
+            "opening_hook": r.opening_hook,
+            "search_intent": r.search_intent,
+            "cta": r.cta,
+            "onscreen_text": r.onscreen_text,
+            "topic_suggestions": json.loads(r.topic_suggestions_json or "[]"),
+            "seo_score": r.seo_score,
+            "score_breakdown": json.loads(r.score_breakdown_json or "{}"),
+            "warnings": json.loads(r.warnings_json or "[]"),
+            "recommendations": json.loads(r.recommendations_json or "[]"),
+            "approval_status": r.approval_status,
+            "ai_provider": r.ai_provider,
+            "ai_model": r.ai_model,
+            "version": r.version,
+            "updated_at": r.updated_at
+        }
+
+    meta = clip.metadata_rel
+    return {
+        "clip_id": clip_id,
+        "video_url": f"/media/output/{Path(clip.output_path).name}" if clip.output_path else None,
+        "thumbnail_url": f"/media/thumbnails/{Path(clip.thumbnail_path).name}" if clip.thumbnail_path else None,
+        "game_name": meta.detected_game if meta else "Unknown Game",
+        "user_game_name": getattr(meta, "user_game_name", None) if meta else None,
+        "game_mismatch_flag": bool(getattr(meta, "game_mismatch_flag", False)) if meta else False,
+        "platforms": platforms_payload
+    }
+
+@router.post("/seo/clips/{clip_id}/generate")
+def generate_clip_seo_endpoint(clip_id: int, req: SeoGenerateRequest, db: Session = Depends(get_db)):
+    """Triggers generation or regeneration of platform-specific SEO metadata for a clip."""
+    from backend.app.metadata.seo_engine import seo_engine
+    try:
+        res = seo_engine.generate_clip_seo(
+            clip_id=clip_id,
+            db=db,
+            target_platforms=req.platforms,
+            bypass_cache=req.bypass_cache,
+            custom_keywords=req.custom_keywords
+        )
+        return {
+            "status": "success",
+            "clip_id": clip_id,
+            "message": "Platform-specific SEO packages generated successfully.",
+            **res
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"SEO generation failed: {e}")
+
+@router.post("/seo/clips/{clip_id}/approve")
+def approve_clip_seo(clip_id: int, req: SeoApproveRequest, db: Session = Depends(get_db)):
+    """Approves SEO metadata and syncs directly with ClipMetadata for publishing."""
+    from backend.app.models.schema import ClipSeoMetadata, GeneratedClip, ClipMetadata
+    clip = db.query(GeneratedClip).filter_by(id=clip_id).first()
+    if not clip:
+        raise HTTPException(status_code=404, detail=f"Clip #{clip_id} not found.")
+
+    meta = clip.metadata_rel
+    target_plats = ["youtube", "instagram", "facebook"] if (req.platform == "all" or not req.platform) else [req.platform.lower()]
+
+    approved_count = 0
+    for plat in target_plats:
+        seo_rec = db.query(ClipSeoMetadata).filter_by(clip_id=clip_id, platform=plat).first()
+        if seo_rec:
+            seo_rec.approval_status = "approved"
+            approved_count += 1
+
+            # Sync to ClipMetadata so publishing publishers use the approved package
+            if meta:
+                if plat == "youtube":
+                    if seo_rec.recommended_title:
+                        meta.youtube_title = seo_rec.recommended_title[:100]
+                    if seo_rec.description:
+                        meta.youtube_desc = seo_rec.description
+                elif plat == "instagram":
+                    if seo_rec.recommended_caption:
+                        meta.instagram_caption = seo_rec.recommended_caption
+                elif plat == "facebook":
+                    if seo_rec.description or seo_rec.recommended_caption:
+                        meta.facebook_caption = seo_rec.description or seo_rec.recommended_caption
+
+    db.commit()
+    return {
+        "status": "approved",
+        "clip_id": clip_id,
+        "platforms_approved": target_plats,
+        "count": approved_count,
+        "synced_to_publishing": True,
+        "message": "SEO metadata approved and synchronized with publishing engine."
+    }
+
+@router.post("/seo/bulk/generate")
+def bulk_generate_seo(req: SeoBulkGenerateRequest, db: Session = Depends(get_db)):
+    """Batch generates SEO metadata packages across multiple clips."""
+    from backend.app.models.schema import GeneratedClip
+    from backend.app.metadata.seo_engine import seo_engine
+
+    query = db.query(GeneratedClip).order_by(GeneratedClip.id.desc())
+    if req.clip_ids:
+        query = query.filter(GeneratedClip.id.in_(req.clip_ids))
+    else:
+        query = query.limit(20)
+
+    clips = query.all()
+    results = []
+    errors = []
+
+    for c in clips:
+        try:
+            res = seo_engine.generate_clip_seo(
+                clip_id=c.id,
+                db=db,
+                target_platforms=req.platforms,
+                bypass_cache=req.bypass_cache
+            )
+            results.append({"clip_id": c.id, "status": "generated"})
+        except Exception as e:
+            errors.append({"clip_id": c.id, "error": str(e)})
+
+    return {
+        "status": "completed",
+        "total_requested": len(req.clip_ids) if req.clip_ids else len(clips),
+        "generated_count": len(results),
+        "failed_count": len(errors),
+        "results": results,
+        "errors": errors
+    }
+
+@router.post("/seo/bulk/approve")
+def bulk_approve_seo(req: SeoBulkApproveRequest, db: Session = Depends(get_db)):
+    """Batch approves SEO metadata packages across multiple clips."""
+    from backend.app.models.schema import ClipSeoMetadata, GeneratedClip
+    if not req.clip_ids:
+        raise HTTPException(status_code=400, detail="clip_ids array is required.")
+
+    target_plats = ["youtube", "instagram", "facebook"] if (req.platform == "all" or not req.platform) else [req.platform.lower()]
+    total_approved = 0
+
+    for cid in req.clip_ids:
+        clip = db.query(GeneratedClip).filter_by(id=cid).first()
+        if not clip:
+            continue
+        meta = clip.metadata_rel
+
+        for plat in target_plats:
+            seo_rec = db.query(ClipSeoMetadata).filter_by(clip_id=cid, platform=plat).first()
+            if seo_rec:
+                seo_rec.approval_status = "approved"
+                total_approved += 1
+
+                if meta:
+                    if plat == "youtube":
+                        if seo_rec.recommended_title:
+                            meta.youtube_title = seo_rec.recommended_title[:100]
+                        if seo_rec.description:
+                            meta.youtube_desc = seo_rec.description
+                    elif plat == "instagram":
+                        if seo_rec.recommended_caption:
+                            meta.instagram_caption = seo_rec.recommended_caption
+                    elif plat == "facebook":
+                        if seo_rec.description or seo_rec.recommended_caption:
+                            meta.facebook_caption = seo_rec.description or seo_rec.recommended_caption
+
+    db.commit()
+    return {
+        "status": "completed",
+        "approved_count": total_approved,
+        "approved_records": total_approved,
+        "clips_count": len(req.clip_ids),
+        "message": f"Successfully approved {total_approved} SEO platform entries."
+    }
+
+@router.get("/seo/keywords/research")
+def research_keywords_endpoint(game_name: str, event_type: str = "", db: Session = Depends(get_db)):
+    """Performs live keyword research and returns measured vs estimated phrases."""
+    from backend.app.metadata.keyword_research import keyword_research_service
+    res = keyword_research_service.research_keywords(game_name=game_name, event_type=event_type, db=db)
+    return res
+
+@router.get("/seo/growth/intelligence")
+def get_growth_intelligence(db: Session = Depends(get_db)):
+    """Returns AI growth insights and historical performance patterns."""
+    from backend.app.analytics.growth_intelligence import growth_intelligence_service
+    summary = growth_intelligence_service.get_dashboard_summary(db)
+    return {
+        "insights": summary.get("growth_insights", []),
+        "top_keywords": summary.get("top_keywords", []),
+        "best_games": summary.get("best_games", [])
+    }
+
+@router.post("/seo/growth/compute-insights")
+def trigger_compute_insights(db: Session = Depends(get_db)):
+    """Computes fresh continuous learning growth insights from historical data."""
+    from backend.app.analytics.growth_intelligence import growth_intelligence_service
+    insights = growth_intelligence_service.compute_continuous_learning_insights(db)
+    return {
+        "status": "completed",
+        "insights_generated": len(insights),
+        "message": "Continuous learning feedback loop executed successfully."
+    }
+
+@router.get("/seo/export")
+def export_seo_metadata(format: str = "json", db: Session = Depends(get_db)):
+    """Exports all generated SEO metadata records in JSON or CSV format."""
+    from backend.app.models.schema import ClipSeoMetadata, GeneratedClip, ClipMetadata
+    from fastapi.responses import PlainTextResponse
+
+    records = db.query(ClipSeoMetadata).all()
+    export_items = []
+    for r in records:
+        clip = r.clip
+        meta = clip.metadata_rel if clip else None
+        export_items.append({
+            "clip_id": r.clip_id,
+            "platform": r.platform,
+            "game_name": meta.detected_game if meta else "Unknown Game",
+            "recommended_title": r.recommended_title or "",
+            "title_or_caption": r.recommended_title or r.recommended_caption,
+            "description": r.description,
+            "primary_keyword": r.primary_keyword,
+            "seo_score": r.seo_score,
+            "approval_status": r.approval_status,
+            "ai_provider": r.ai_provider,
+            "updated_at": r.updated_at.isoformat() if r.updated_at else ""
+        })
+
+    if format.lower() == "csv":
+        import io
+        import csv
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=["clip_id", "platform", "game_name", "recommended_title", "title_or_caption", "description", "primary_keyword", "seo_score", "approval_status", "ai_provider", "updated_at"])
+        writer.writeheader()
+        for item in export_items:
+            writer.writerow(item)
+        return PlainTextResponse(output.getvalue(), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=gaming_uncut_seo_export.csv"})
+
+    return export_items
