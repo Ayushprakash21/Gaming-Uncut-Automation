@@ -100,6 +100,53 @@ def parse_instagram_error(
             return ""
         return re.sub(r'(EAAB[a-zA-Z0-9_-]+|EAAQ[a-zA-Z0-9_-]+|IGAA[a-zA-Z0-9_-]+|IGQV[a-zA-Z0-9_-]+)', '[REDACTED_TOKEN]', str(text))
 
+    # Handle Meta rupload debug_info payload format:
+    # {"debug_info": {"retriable": false, "type": "ProcessingFailedError", "message": "..."}}
+    if isinstance(res_data, dict) and "debug_info" in res_data:
+        debug_info = res_data["debug_info"]
+        msg = debug_info.get("message", default_msg)
+        err_type = debug_info.get("type", "ProcessingFailedError")
+        retriable = debug_info.get("retriable", False)
+
+        # Handle nested JSON message strings like '{"success":false,"error":{"message":"The ig container is not in the status..."}}'
+        if isinstance(msg, str) and msg.strip().startswith("{") and msg.strip().endswith("}"):
+            try:
+                nested = json.loads(msg)
+                if isinstance(nested, dict):
+                    if "error" in nested and isinstance(nested["error"], dict):
+                        msg = nested["error"].get("message", msg)
+                    elif "message" in nested:
+                        msg = nested.get("message", msg)
+            except Exception:
+                pass
+
+        safe_msg = redact(msg)
+
+        if err_type == "NotAuthorizedError" or "not authorized" in safe_msg.lower():
+            user_msg = "Meta Access Token is not authorized or has expired for Instagram upload. Please check token permissions in Settings."
+            return InstagramTokenExpiredError(
+                safe_msg, code=190, error_type=err_type, user_message=user_msg, http_status=http_status
+            )
+
+        if "not in the status" in safe_msg.lower():
+            user_msg = f"Instagram container is not in a valid upload status: {safe_msg}. Container session expired or failed."
+            return InstagramUploadFailedError(
+                safe_msg, code=400, error_type=err_type, user_message=user_msg, http_status=http_status
+            )
+
+        if err_type == "ProcessingFailedError" or "processing failed" in safe_msg.lower():
+            user_msg = (
+                f"Instagram binary upload rejected by Meta edge ingest ({safe_msg}). "
+                "Ensure video adheres to Meta Reels specs (AAC audio <= 48kHz, H.264 CFR, 9:16 portrait, <= 60s, <= 60MB)."
+            )
+            return InstagramProcessingFailedError(
+                safe_msg, code=400, error_type=err_type, user_message=user_msg, http_status=http_status
+            )
+
+        return InstagramUploadFailedError(
+            safe_msg, code=400, error_type=err_type, user_message=safe_msg, http_status=http_status
+        )
+
     if isinstance(res_data, dict) and "error" in res_data:
         err = res_data["error"]
         msg = err.get("message", default_msg)
@@ -330,11 +377,13 @@ class InstagramPublishClient:
 
         container_id = str(init_res["id"])
         upload_url = init_res.get("uri")
-        logger.info(f"Stage 1 complete: Container created. ID: {container_id}")
+        if not upload_url and not video_url:
+            upload_url = f"https://rupload.facebook.com/ig-api-upload/{API_VERSION}/{container_id}"
+        logger.info(f"Stage 1 complete: Container created. ID: {container_id}, Upload URL: {upload_url}")
         log_instagram_audit(
             "INFO",
             f"Instagram Reel container created: {container_id}",
-            {"stage": "create_container", "container_id": container_id, "upload_type": "url" if video_url else "resumable"}
+            {"stage": "create_container", "container_id": container_id, "upload_type": "url" if video_url else "resumable", "upload_url": upload_url}
         )
         return {"container_id": container_id, "upload_url": upload_url}
 
@@ -350,6 +399,7 @@ class InstagramPublishClient:
     ) -> bool:
         """
         Stage 2: Streams video binary to Meta's rupload endpoint with byte offsets and bounded retries.
+        Queries server-side offset prior to retrying and handles non-retriable rejections cleanly.
         """
         if not video_path.exists():
             raise FileNotFoundError(f"Video file missing: {video_path}")
@@ -358,19 +408,51 @@ class InstagramPublishClient:
         if file_size <= 0:
             raise ValueError(f"Video file is empty: {video_path}")
 
-        headers = {
-            "Authorization": f"OAuth {token}",
-            "offset": "0",
-            "file_size": str(file_size),
-            "Content-Type": "application/octet-stream"
-        }
-
         logger.info(f"Stage 2: Transferring binary ({file_size} bytes) to Instagram upload endpoint")
         last_error = None
 
         for attempt in range(1, max_retries + 1):
+            current_offset = 0
+
+            # On retries, query the acknowledged byte offset from Meta's rupload server
+            if attempt > 1:
+                try:
+                    chk_res = requests.get(
+                        upload_url,
+                        headers={"Authorization": f"OAuth {token}"},
+                        timeout=15
+                    )
+                    if chk_res.status_code == 200:
+                        chk_data = chk_res.json()
+                        current_offset = int(chk_data.get("offset", 0))
+                        logger.info(f"Ruploader acknowledged byte offset: {current_offset}/{file_size}")
+                        if current_offset >= file_size:
+                            logger.info("Stage 2 complete: Binary transfer verified complete on server.")
+                            return True
+                    else:
+                        chk_json = chk_res.json() if chk_res.text.strip().startswith("{") else chk_res.text
+                        offset_err = parse_instagram_error(chk_json, f"Offset check returned HTTP {chk_res.status_code}", http_status=chk_res.status_code)
+                        if isinstance(offset_err, (InstagramTokenExpiredError, InstagramPermissionError)):
+                            raise offset_err
+                        if "not in the status" in str(offset_err).lower():
+                            logger.error(f"Container session invalid for upload: {offset_err.user_message}")
+                            raise offset_err
+                except (InstagramTokenExpiredError, InstagramPermissionError, InstagramUploadFailedError, InstagramProcessingFailedError):
+                    raise
+                except Exception as e:
+                    logger.warning(f"Could not verify server offset before attempt {attempt}: {e}")
+
+            headers = {
+                "Authorization": f"OAuth {token}",
+                "offset": str(current_offset),
+                "file_size": str(file_size),
+                "Content-Type": "application/octet-stream"
+            }
+
             try:
                 with open(video_path, "rb") as f:
+                    if current_offset > 0:
+                        f.seek(current_offset)
                     stream_res = requests.post(upload_url, headers=headers, data=f, timeout=300)
 
                 if stream_res.status_code in (200, 201):
@@ -383,13 +465,28 @@ class InstagramPublishClient:
                     return True
 
                 # Parse Meta response on non-200
+                err_json = None
                 try:
                     err_json = stream_res.json()
-                    last_error = parse_instagram_error(err_json, f"HTTP {stream_res.status_code} during Instagram binary transfer")
+                    last_error = parse_instagram_error(
+                        err_json,
+                        f"HTTP {stream_res.status_code} during Instagram binary transfer",
+                        http_status=stream_res.status_code
+                    )
                 except Exception:
                     last_error = InstagramUploadFailedError(
-                        f"Instagram binary upload returned HTTP {stream_res.status_code}: {stream_res.text[:200]}"
+                        f"Instagram binary upload returned HTTP {stream_res.status_code}: {stream_res.text[:200]}",
+                        http_status=stream_res.status_code
                     )
+
+                # Stop retrying if the error is non-retriable
+                if isinstance(last_error, (InstagramTokenExpiredError, InstagramPermissionError)):
+                    logger.error(f"Fatal auth error during binary transfer: {last_error.user_message}")
+                    raise last_error
+
+                if isinstance(err_json, dict) and err_json.get("debug_info", {}).get("retriable") is False:
+                    logger.error(f"Meta server returned non-retriable error: {last_error.user_message}")
+                    break
 
             except (requests.ConnectionError, requests.Timeout) as e:
                 last_error = InstagramUploadFailedError(f"Network error during Instagram binary transfer: {e}")
@@ -402,7 +499,7 @@ class InstagramPublishClient:
 
         log_instagram_audit(
             "ERROR",
-            f"Instagram binary transfer failed after {max_retries} attempts: {last_error}",
+            f"Instagram binary transfer failed: {last_error.user_message if last_error else 'Unknown'}",
             {"stage": "transfer_binary", "error": str(last_error)}
         )
         raise last_error or InstagramUploadFailedError("Instagram video binary transfer failed after retries.")

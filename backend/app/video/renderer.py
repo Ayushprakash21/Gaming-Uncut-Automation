@@ -159,9 +159,13 @@ class VideoRenderer:
             cmd.extend(["-af", "loudnorm=I=-16:LRA=11:TP=-1.5"])
 
         # Mandatory Shorts Profile Flags: 1080x1920 9:16 H.264, AAC audio, yuv420p, +faststart
+        # Enforce 48kHz stereo AAC and -shortest for strict YouTube Shorts and Meta/Instagram Reels compliance
         cmd.extend([
             "-c:a", "aac",
             "-b:a", "192k",
+            "-ar", "48000",
+            "-ac", "2",
+            "-shortest",
             "-r", str(settings.TARGET_FPS),
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",

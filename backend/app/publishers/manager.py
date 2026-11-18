@@ -410,7 +410,8 @@ class PublishingManager:
                             error_code="NETWORK_TIMEOUT", user_message=msg
                         )
                     except Exception as e:
-                        code = str(getattr(e, "code", "UPLOAD_FAILED"))
+                        raw_code = getattr(e, "code", None)
+                        code = str(raw_code) if raw_code is not None else "UPLOAD_FAILED"
                         msg = getattr(e, "user_message", str(e))
                         ig_upload.status = "failed"
                         ig_upload.error_code = code

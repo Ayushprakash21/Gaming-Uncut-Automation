@@ -147,6 +147,52 @@ def test_parse_instagram_error_redaction():
     assert "[REDACTED_TOKEN]" in str(err)
 
 
+def test_parse_instagram_error_ruploader_processing_failed():
+    """Validates that rupload ProcessingFailedError payloads are parsed with actionable specs guidance."""
+    payload = {
+        "debug_info": {
+            "retriable": False,
+            "type": "ProcessingFailedError",
+            "message": "Request processing failed"
+        }
+    }
+    err = parse_instagram_error(payload, http_status=400)
+    assert isinstance(err, InstagramProcessingFailedError)
+    assert err.code == 400
+    assert "rejected by Meta edge ingest" in err.user_message
+    assert "48kHz" in err.user_message
+
+
+def test_parse_instagram_error_ruploader_nested_container_invalid():
+    """Validates that nested error JSON strings in debug_info.message are extracted and parsed."""
+    payload = {
+        "debug_info": {
+            "retriable": False,
+            "type": "ProcessingFailedError",
+            "message": '{"success":false,"error":{"message":"The ig container is not in the status to upload a video"}}'
+        }
+    }
+    err = parse_instagram_error(payload, http_status=400)
+    assert isinstance(err, InstagramUploadFailedError)
+    assert "not in a valid upload status" in err.user_message
+    assert "The ig container is not in the status" in err.user_message
+
+
+def test_parse_instagram_error_ruploader_not_authorized():
+    """Validates that ruploader NotAuthorizedError is typed as InstagramTokenExpiredError."""
+    payload = {
+        "debug_info": {
+            "retriable": False,
+            "type": "NotAuthorizedError",
+            "message": "User not authorized to perform this request"
+        }
+    }
+    err = parse_instagram_error(payload, http_status=400)
+    assert isinstance(err, InstagramTokenExpiredError)
+    assert err.code == 190
+    assert "Meta Access Token is not authorized or has expired" in err.user_message
+
+
 # ============================================================
 # 2. URL Accessibility Validation Tests
 # ============================================================
@@ -424,6 +470,77 @@ def test_binary_transfer_failure_never_publishes(dummy_video):
 
     assert "binary upload returned http 502" in str(exc_info.value).lower() or "transfer failed" in str(exc_info.value).lower()
     assert publish_called is False
+
+
+def test_transfer_binary_fails_fast_on_non_retriable_rejection(dummy_video):
+    """If Meta returns non-retriable: false (e.g. ProcessingFailedError), transfer_binary must stop retrying immediately."""
+    ig = InstagramPublishClient()
+    token = "MOCK_VALID_TOKEN"
+    upload_url = "https://rupload.facebook.com/ig-api-upload/v21.0/test_container"
+
+    post_count = 0
+
+    def mock_post(url, *args, **kwargs):
+        nonlocal post_count
+        post_count += 1
+        mock_res = MagicMock()
+        mock_res.status_code = 400
+        mock_res.json.return_value = {
+            "debug_info": {
+                "retriable": False,
+                "type": "ProcessingFailedError",
+                "message": "Request processing failed"
+            }
+        }
+        return mock_res
+
+    with patch("requests.post", side_effect=mock_post), patch("time.sleep", return_value=None):
+        with pytest.raises(InstagramProcessingFailedError):
+            ig.transfer_binary(upload_url, dummy_video, token, max_retries=3)
+
+    assert post_count == 1, f"Expected exactly 1 POST attempt on non-retriable failure, got {post_count}"
+
+
+def test_transfer_binary_resumes_from_acknowledged_offset(dummy_video):
+    """If initial POST fails, retry queries GET upload_url and resumes from acknowledged byte offset."""
+    ig = InstagramPublishClient()
+    token = "MOCK_VALID_TOKEN"
+    upload_url = "https://rupload.facebook.com/ig-api-upload/v21.0/test_container"
+
+    post_headers_seen = []
+    attempt = 0
+
+    def mock_post(url, *args, **kwargs):
+        nonlocal attempt
+        attempt += 1
+        headers = kwargs.get("headers", {})
+        post_headers_seen.append(dict(headers))
+        mock_res = MagicMock()
+        if attempt == 1:
+            mock_res.status_code = 500
+            mock_res.text = "Internal Server Error"
+            mock_res.json.side_effect = ValueError("Invalid JSON")
+            return mock_res
+        else:
+            mock_res.status_code = 200
+            mock_res.json.return_value = {"success": True}
+            return mock_res
+
+    def mock_get(url, *args, **kwargs):
+        mock_res = MagicMock()
+        mock_res.status_code = 200
+        mock_res.json.return_value = {"offset": 2048}
+        return mock_res
+
+    with patch("requests.post", side_effect=mock_post), \
+         patch("requests.get", side_effect=mock_get), \
+         patch("time.sleep", return_value=None):
+        success = ig.transfer_binary(upload_url, dummy_video, token, max_retries=2)
+
+    assert success is True
+    assert len(post_headers_seen) == 2
+    assert post_headers_seen[0]["offset"] == "0"
+    assert post_headers_seen[1]["offset"] == "2048"
 
 
 # ============================================================
