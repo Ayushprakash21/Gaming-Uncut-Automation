@@ -8,7 +8,7 @@ import json
 import time
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Callable
 from datetime import datetime
 
 from google.oauth2.credentials import Credentials
@@ -211,7 +211,8 @@ class YouTubePublishClient:
         title: str,
         description: str,
         tags: list[str],
-        privacy_status: str = "public"
+        privacy_status: str = "public",
+        on_video_id_created: Optional[Callable[[str], None]] = None
     ) -> Dict[str, Any]:
         if not video_path.exists():
             raise FileNotFoundError(f"Video file missing: {video_path}")
@@ -301,6 +302,11 @@ class YouTubePublishClient:
                 time.sleep(2 ** retry)
 
         video_id = response.get("id")
+        if on_video_id_created and video_id:
+            try:
+                on_video_id_created(video_id)
+            except Exception as e:
+                logger.debug(f"YouTube on_video_id_created notice: {e}")
         shorts_url = f"https://www.youtube.com/shorts/{video_id}"
         watch_url = f"https://www.youtube.com/watch?v={video_id}"
         logger.info(f"Published YouTube Short: {shorts_url}")

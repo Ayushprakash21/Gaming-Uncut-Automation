@@ -154,10 +154,14 @@ class PublishingJob(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     clip_id = Column(Integer, ForeignKey("generated_clips.id", ondelete="CASCADE"), nullable=False)
     scheduled_time = Column(DateTime, nullable=False)
-    status = Column(String(50), default="pending")  # pending, publishing, published, failed, paused, cancelled
+    status = Column(String(50), default="QUEUED")  # QUEUED, CLAIMED, UPLOADING, PROCESSING, PUBLISHED, FAILED, UNKNOWN, PAUSED
     attempts = Column(Integer, default=0)
     max_attempts = Column(Integer, default=5)
     approval_status = Column(String(50), default="approved")  # approved, auto_approved, pending_review, rejected
+    worker_id = Column(String(100), nullable=True)  # Worker lease identifier for atomic claim
+    locked_at = Column(DateTime, nullable=True)  # Timestamp lease was acquired
+    lock_expires_at = Column(DateTime, nullable=True)  # Timestamp lease expires
+    allow_republish = Column(Boolean, default=False)  # User explicit republish override
     created_at = Column(DateTime, default=datetime.utcnow)
 
     clip = relationship("GeneratedClip", back_populates="publishing_jobs")
@@ -168,16 +172,43 @@ class PlatformUpload(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     publishing_job_id = Column(Integer, ForeignKey("publishing_jobs.id", ondelete="CASCADE"), nullable=False)
     platform = Column(String(50), nullable=False)  # youtube, instagram, facebook
+    account_id = Column(String(100), nullable=True)  # Page ID, IG Account ID, YouTube Channel ID
+    destination = Column(String(50), default="reels")  # reels, shorts
+    idempotency_key = Column(String(255), nullable=True, index=True)  # clip_id:platform:account_id:destination
     external_post_id = Column(String(255), nullable=True)
     external_url = Column(Text, nullable=True)
-    status = Column(String(50), default="pending")  # pending, uploading, processing, published, failed
+    status = Column(String(50), default="QUEUED")  # QUEUED, CLAIMED, UPLOADING, PROCESSING, PUBLISHED, FAILED, UNKNOWN, PAUSED
     error_message = Column(Text, nullable=True)
     error_code = Column(String(50), nullable=True)
     attempts = Column(Integer, default=0)
+    last_attempt_at = Column(DateTime, nullable=True)
     uploaded_at = Column(DateTime, nullable=True)
 
     publishing_job = relationship("PublishingJob", back_populates="uploads")
     analytics = relationship("PublishingAnalytics", back_populates="upload", cascade="all, delete-orphan")
+
+class PublishingIdempotencyRecord(Base):
+    """
+    Enforces persistent database-level idempotency for active and completed social media publications.
+    Guarantees the exact same clip is never published multiple times to the same platform and account.
+    """
+    __tablename__ = "publishing_idempotency_records"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    idempotency_key = Column(String(255), nullable=False, unique=True, index=True)
+    clip_id = Column(Integer, ForeignKey("generated_clips.id", ondelete="CASCADE"), nullable=False, index=True)
+    platform = Column(String(50), nullable=False, index=True)
+    account_id = Column(String(100), nullable=False)
+    destination = Column(String(50), nullable=False, default="reels")
+    publishing_job_id = Column(Integer, ForeignKey("publishing_jobs.id", ondelete="SET NULL"), nullable=True)
+    platform_upload_id = Column(Integer, ForeignKey("platform_uploads.id", ondelete="SET NULL"), nullable=True)
+    status = Column(String(50), nullable=False, default="CLAIMED")  # CLAIMED, UPLOADING, PROCESSING, PUBLISHED, FAILED, UNKNOWN, PAUSED
+    external_post_id = Column(String(255), nullable=True)
+    external_url = Column(Text, nullable=True)
+    worker_id = Column(String(100), nullable=True)
+    locked_at = Column(DateTime, nullable=True)
+    lock_expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class PublishingAnalytics(Base):
     __tablename__ = "publishing_analytics"

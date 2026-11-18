@@ -104,6 +104,7 @@ export interface GeneratedClipItem {
 export interface PublishingQueueItem {
   id: number;
   job_id: number;
+  job_status?: string;
   platform: 'youtube' | 'instagram' | 'facebook';
   status: string;
   approval_status?: string;

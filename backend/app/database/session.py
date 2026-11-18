@@ -49,6 +49,26 @@ def ensure_schema_compatibility(db_engine):
             with db_engine.connect() as conn:
                 if "error_code" not in p_columns:
                     conn.execute(text("ALTER TABLE platform_uploads ADD COLUMN error_code VARCHAR(50)"))
+                if "account_id" not in p_columns:
+                    conn.execute(text("ALTER TABLE platform_uploads ADD COLUMN account_id VARCHAR(100)"))
+                if "destination" not in p_columns:
+                    conn.execute(text("ALTER TABLE platform_uploads ADD COLUMN destination VARCHAR(50) DEFAULT 'reels'"))
+                if "idempotency_key" not in p_columns:
+                    conn.execute(text("ALTER TABLE platform_uploads ADD COLUMN idempotency_key VARCHAR(255)"))
+                if "last_attempt_at" not in p_columns:
+                    conn.execute(text("ALTER TABLE platform_uploads ADD COLUMN last_attempt_at DATETIME"))
+                conn.commit()
+        if "publishing_jobs" in inspector.get_table_names():
+            pj_cols = [c["name"] for c in inspector.get_columns("publishing_jobs")]
+            with db_engine.connect() as conn:
+                if "worker_id" not in pj_cols:
+                    conn.execute(text("ALTER TABLE publishing_jobs ADD COLUMN worker_id VARCHAR(100)"))
+                if "locked_at" not in pj_cols:
+                    conn.execute(text("ALTER TABLE publishing_jobs ADD COLUMN locked_at DATETIME"))
+                if "lock_expires_at" not in pj_cols:
+                    conn.execute(text("ALTER TABLE publishing_jobs ADD COLUMN lock_expires_at DATETIME"))
+                if "allow_republish" not in pj_cols:
+                    conn.execute(text("ALTER TABLE publishing_jobs ADD COLUMN allow_republish BOOLEAN DEFAULT 0"))
                 conn.commit()
         if "clip_metadata" in inspector.get_table_names():
             cm_cols = [c["name"] for c in inspector.get_columns("clip_metadata")]
@@ -96,7 +116,8 @@ def ensure_schema_compatibility(db_engine):
                 if "evidence_url" not in sa_cols:
                     conn.execute(text("ALTER TABLE source_authorizations ADD COLUMN evidence_url TEXT"))
                 conn.commit()
-        # Ensure any newly declared tables are created
+        # Ensure all models are registered on metadata before create_all
+        import backend.app.models.schema  # noqa: F401
         Base.metadata.create_all(bind=db_engine)
     except Exception as e:
         import logging

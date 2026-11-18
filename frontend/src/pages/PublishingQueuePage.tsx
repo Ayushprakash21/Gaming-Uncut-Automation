@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { CheckCircle2, AlertCircle, Clock, ExternalLink, RotateCw, Youtube, Instagram, Facebook, Eye, ShieldAlert, Sparkles } from 'lucide-react'
+import { CheckCircle2, AlertCircle, Clock, ExternalLink, RotateCw, Youtube, Instagram, Facebook, Eye, ShieldAlert, Sparkles, RefreshCw, AlertTriangle } from 'lucide-react'
 import { fetchPublishingQueue, dispatchPublishingJob } from '../services/api'
 import { PublishingQueueItem } from '../types'
 
@@ -8,6 +8,8 @@ export const PublishingQueuePage: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [expandedItemId, setExpandedItemId] = useState<number | null>(null)
   const [dispatching, setDispatching] = useState<Record<number, boolean>>({})
+  const [notice, setNotice] = useState<{ message: string; type: 'info' | 'error' } | null>(null)
+  const [republishModal, setRepublishModal] = useState<{ jobId: number; title: string; platform: string } | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -25,11 +27,31 @@ export const PublishingQueuePage: React.FC = () => {
     return () => clearInterval(interval)
   }, [])
 
-  const handleForceDispatch = async (jobId: number) => {
+  const isJobInFlight = (jobId: number) => {
+    if (dispatching[jobId]) return true
+    return items.some((i) => {
+      if (i.job_id !== jobId) return false
+      const s = (i.status || '').toLowerCase()
+      const js = (i.job_status || '').toLowerCase()
+      const inFlightStatuses = [
+        'claimed', 'uploading', 'processing', 'publishing',
+        'video_transferring', 'upload_initialized', 'transfer_completed',
+        'facebook_processing', 'instagram_processing'
+      ]
+      return inFlightStatuses.includes(s) || ['claimed', 'uploading', 'processing', 'publishing'].includes(js)
+    })
+  }
+
+  const handleForceDispatch = async (jobId: number, allowRepublish: boolean = false) => {
     if (dispatching[jobId]) return
     setDispatching((prev) => ({ ...prev, [jobId]: true }))
+    setNotice(null)
     try {
-      await dispatchPublishingJob(jobId)
+      await dispatchPublishingJob(jobId, allowRepublish)
+      setNotice({ message: `Publishing initiated for Job #${jobId}`, type: 'info' })
+    } catch (err: any) {
+      const msg = err?.data?.detail || err?.message || 'Publishing dispatch failed.'
+      setNotice({ message: String(msg), type: 'error' })
     } finally {
       setTimeout(() => {
         setDispatching((prev) => ({ ...prev, [jobId]: false }))
@@ -61,9 +83,12 @@ export const PublishingQueuePage: React.FC = () => {
       )
     }
 
-    switch (status) {
+    const s = (status || '').toLowerCase()
+    switch (s) {
       case 'published':
         return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">Published</span>
+      case 'claimed':
+        return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 animate-pulse">Claimed</span>
       case 'upload_initialized':
         return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">Session Started</span>
       case 'video_transferring':
@@ -72,17 +97,22 @@ export const PublishingQueuePage: React.FC = () => {
       case 'transfer_completed':
         return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-blue-500/10 text-blue-300 border border-blue-500/30">Transfer Completed</span>
       case 'facebook_processing':
-        return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-amber-500/10 text-amber-300 border border-amber-500/30 animate-pulse">Meta Processing</span>
+      case 'instagram_processing':
+      case 'processing':
+        return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-amber-500/10 text-amber-300 border border-amber-500/30 animate-pulse">Processing</span>
       case 'publishing':
         return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 animate-pulse">Publishing</span>
       case 'paused_quota':
+      case 'paused':
         return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-amber-500/10 text-amber-400 border border-amber-500/30">Paused (Quota/Limit)</span>
       case 'paused_unauthorized':
         return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-slate-800 text-slate-400 border border-slate-700">Unauthorized</span>
+      case 'unknown':
+        return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-yellow-500/10 text-yellow-300 border border-yellow-500/30">Reconciling (Unknown)</span>
       case 'failed':
         return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/30">Failed</span>
       default:
-        return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-slate-800 text-slate-400">{status}</span>
+        return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-slate-800 text-slate-400 border border-slate-700">{status}</span>
     }
   }
 
@@ -106,6 +136,68 @@ export const PublishingQueuePage: React.FC = () => {
           <span>Refresh</span>
         </button>
       </div>
+
+      {/* Notice Banner */}
+      {notice && (
+        <div className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
+          notice.type === 'error'
+            ? 'bg-rose-950/40 border-rose-800/60 text-rose-300'
+            : 'bg-emerald-950/40 border-emerald-800/60 text-emerald-300'
+        }`}>
+          <div className="flex items-center space-x-2">
+            {notice.type === 'error' ? (
+              <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+            )}
+            <span>{notice.message}</span>
+          </div>
+          <button
+            onClick={() => setNotice(null)}
+            className="text-slate-400 hover:text-slate-200 text-xs px-2 py-0.5"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Republish Confirmation Modal */}
+      {republishModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
+          <div className="bg-[#111827] border border-amber-500/40 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center space-x-3 text-amber-400">
+              <AlertTriangle className="w-6 h-6 flex-shrink-0" />
+              <h3 className="text-base font-bold text-slate-100">Confirm Republish</h3>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              This clip has already been marked as published to <strong>{republishModal.platform}</strong>.
+              Republishing will initiate a new upload session and create a duplicate post on the platform.
+            </p>
+            <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 text-xs text-slate-300 font-medium">
+              "{republishModal.title}"
+            </div>
+            <div className="flex items-center justify-end space-x-2 pt-2">
+              <button
+                onClick={() => setRepublishModal(null)}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const target = republishModal
+                  setRepublishModal(null)
+                  handleForceDispatch(target.jobId, true)
+                }}
+                className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-white transition flex items-center space-x-1.5"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Confirm & Republish</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="bg-[#111827] border border-gaming-border rounded-2xl overflow-hidden shadow-xl">
         {items.length === 0 ? (
@@ -203,27 +295,45 @@ export const PublishingQueuePage: React.FC = () => {
                       </td>
                       <td className="p-3.5 text-right">
                         {item.external_url ? (
-                          <a
-                            href={item.external_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center space-x-1 text-purple-400 hover:text-purple-300 font-semibold"
-                          >
-                            <span>View Post</span>
-                            <ExternalLink className="w-3.5 h-3.5" />
-                          </a>
+                          <div className="flex items-center justify-end space-x-2">
+                            <a
+                              href={item.external_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center space-x-1 text-purple-400 hover:text-purple-300 font-semibold"
+                            >
+                              <span>View Post</span>
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </a>
+                            <button
+                              onClick={() => setRepublishModal({ jobId: item.job_id, title: item.title, platform: item.platform })}
+                              disabled={isJobInFlight(item.job_id)}
+                              className="text-[10px] text-slate-500 hover:text-slate-300 underline disabled:opacity-40"
+                              title="Force republish this video"
+                            >
+                              Republish
+                            </button>
+                          </div>
                         ) : (
                           <button
-                            onClick={() => handleForceDispatch(item.job_id)}
-                            disabled={['video_transferring', 'uploading', 'instagram_processing', 'upload_initialized', 'transfer_completed', 'publishing'].includes(item.status) || !!dispatching[item.job_id]}
+                            onClick={() => {
+                              if (isPublished) {
+                                setRepublishModal({ jobId: item.job_id, title: item.title, platform: item.platform })
+                              } else {
+                                handleForceDispatch(item.job_id)
+                              }
+                            }}
+                            disabled={isJobInFlight(item.job_id)}
                             className={`text-[11px] font-semibold px-2.5 py-1 rounded shadow transition ${
-                              ['video_transferring', 'uploading', 'instagram_processing', 'upload_initialized', 'transfer_completed', 'publishing'].includes(item.status) || !!dispatching[item.job_id]
-                                ? 'bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-700'
+                              isJobInFlight(item.job_id)
+                                ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
                                 : 'bg-purple-600 hover:bg-purple-500 text-white'
                             }`}
                           >
-                            {!!dispatching[item.job_id] || ['video_transferring', 'uploading', 'instagram_processing', 'upload_initialized', 'transfer_completed', 'publishing'].includes(item.status)
+                            {isJobInFlight(item.job_id)
                               ? 'Publishing...'
+                              : isPublished
+                              ? 'Republish'
                               : isReviewRequired
                               ? 'Approve & Publish'
                               : 'Publish Now'}

@@ -784,6 +784,7 @@ class InstagramPublishClient:
         caption: str = "",
         video_url: Optional[str] = None,
         stage_callback: Optional[Callable[[str], None]] = None,
+        on_container_created: Optional[Callable[[str], None]] = None,
         poll_interval_sec: int = 5,
         max_poll_checks: int = 60,
         max_retries: int = 3
@@ -820,6 +821,12 @@ class InstagramPublishClient:
             container_data = self.create_media_container(ig_id, token, caption, video_url=video_url)
             container_id = container_data["container_id"]
             upload_url = container_data.get("upload_url")
+
+            if on_container_created:
+                try:
+                    on_container_created(container_id)
+                except Exception as e:
+                    logger.debug(f"on_container_created callback notice: {e}")
 
             # Stage 2: Binary Streaming (if resumable)
             if upload_url:

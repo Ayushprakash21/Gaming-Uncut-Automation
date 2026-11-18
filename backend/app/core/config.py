@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     
     # Quality & Automation Defaults
     DEFAULT_PUBLISH_MODE: str = "auto"  # "auto" (quality-gated auto-publish) | "approval" (manual approval)
+    AUTO_PUBLISHING_ENABLED: bool = os.getenv("AUTO_PUBLISHING_ENABLED", "0") in ("1", "true", "True")  # Immediate safety: paused by default
     MIN_QUALITY_SCORE: float = 75.0
     DAILY_TARGET_CLIPS: int = 15  # Default target 15 videos/day
     DEFAULT_GENERATION_TARGET: int = 15

@@ -207,8 +207,12 @@ export async function fetchPublishingQueue(): Promise<PublishingQueueItem[]> {
   return safeFetch<PublishingQueueItem[]>(`${API_BASE}/publishing/queue`)
 }
 
-export async function dispatchPublishingJob(jobId: number) {
-  return safeFetch(`${API_BASE}/publishing/dispatch/${jobId}`, { method: 'POST' })
+export async function dispatchPublishingJob(jobId: number, allowRepublish: boolean = false) {
+  return safeFetch(`${API_BASE}/publishing/dispatch/${jobId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ allow_republish: allowRepublish })
+  })
 }
 
 export async function fetchConnections(): Promise<ConnectionsData> {

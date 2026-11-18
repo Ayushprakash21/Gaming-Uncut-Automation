@@ -78,6 +78,10 @@ class UpdateClipMetadataRequest(BaseModel):
 class AddToQueueRequest(BaseModel):
     platforms: Optional[List[str]] = ["youtube", "instagram", "facebook"]
     scheduled_time: Optional[datetime] = None
+    allow_republish: Optional[bool] = False
+
+class DispatchRequest(BaseModel):
+    allow_republish: Optional[bool] = False
 
 class ConnectionUpdateRequest(BaseModel):
     gemini_api_key: Optional[str] = None
@@ -712,13 +716,14 @@ def batch_regenerate_metadata_endpoint(req: BatchRegenerateMetadataRequest, db: 
 
 @router.post("/clips/{clip_id}/queue")
 def add_clip_to_queue(clip_id: int, req: AddToQueueRequest, db: Session = Depends(get_db)):
-    """Adds a generated Reel to the multi-platform publishing queue with Manual Review default."""
+    """Adds a generated Reel to the multi-platform publishing queue with idempotency protection."""
     clip = db.query(GeneratedClip).filter_by(id=clip_id).first()
     if not clip:
         raise HTTPException(status_code=404, detail="Clip not found.")
 
     sched_time = req.scheduled_time or datetime.utcnow()
     platforms = req.platforms or ["youtube", "instagram", "facebook"]
+    allow_republish = bool(req.allow_republish)
 
     # Check if publishing job already exists for this clip
     pub_job = db.query(PublishingJob).filter_by(clip_id=clip_id).first()
@@ -727,14 +732,23 @@ def add_clip_to_queue(clip_id: int, req: AddToQueueRequest, db: Session = Depend
             clip_id=clip_id,
             scheduled_time=sched_time,
             status="pending",
-            approval_status="pending_review"
+            approval_status="pending_review",
+            allow_republish=allow_republish
         )
         db.add(pub_job)
         db.flush()
     else:
-        pub_job.status = "pending"
-        pub_job.approval_status = "pending_review"
-        pub_job.scheduled_time = sched_time
+        # Protect existing job from being reset if already published or in-flight unless allow_republish is explicitly True
+        is_published = pub_job.status in ["published", "PUBLISHED"]
+        is_in_flight = pub_job.status in ["publishing", "CLAIMED", "UPLOADING", "PROCESSING"] and pub_job.lock_expires_at and pub_job.lock_expires_at > datetime.utcnow()
+        if is_in_flight and not allow_republish:
+            raise HTTPException(status_code=409, detail=f"Job #{pub_job.id} for Clip #{clip_id} is currently in-flight.")
+
+        if not is_published or allow_republish:
+            pub_job.status = "pending"
+            pub_job.approval_status = "pending_review"
+            pub_job.scheduled_time = sched_time
+            pub_job.allow_republish = allow_republish
 
     # Add or update platform upload targets
     for plat in platforms:
@@ -749,7 +763,14 @@ def add_clip_to_queue(clip_id: int, req: AddToQueueRequest, db: Session = Depend
             )
             db.add(upload)
         else:
-            existing_upload.status = "pending"
+            # If already published, DO NOT reset to pending unless allow_republish is True
+            if existing_upload.status in ["published", "PUBLISHED"]:
+                if allow_republish:
+                    existing_upload.status = "pending"
+                    existing_upload.error_message = None
+                    existing_upload.error_code = None
+            elif existing_upload.status not in ["claiming", "uploading", "processing", "transferring_video"]:
+                existing_upload.status = "pending"
 
     db.commit()
     return {
@@ -790,6 +811,7 @@ def list_publishing_queue(db: Session = Depends(get_db)):
         results.append({
             "id": u.id,
             "job_id": u.publishing_job_id,
+            "job_status": job.status if job else None,
             "platform": u.platform,
             "status": u.status,
             "external_url": u.external_url,
@@ -802,8 +824,38 @@ def list_publishing_queue(db: Session = Depends(get_db)):
     return results
 
 @router.post("/publishing/dispatch/{job_id}")
-def force_dispatch(job_id: int, background_tasks: BackgroundTasks):
-    background_tasks.add_task(publishing_manager.execute_job, job_id)
+def force_dispatch(
+    job_id: int,
+    background_tasks: BackgroundTasks,
+    req: Optional[DispatchRequest] = None,
+    db: Session = Depends(get_db)
+):
+    pub_job = db.query(PublishingJob).filter_by(id=job_id).first()
+    if not pub_job:
+        raise HTTPException(status_code=404, detail=f"Publishing job #{job_id} not found.")
+
+    allow_rep = req.allow_republish if req else False
+    now = datetime.utcnow()
+
+    # Check if job is currently claimed/in-flight with an active lease
+    if pub_job.status in ["CLAIMED", "UPLOADING", "PROCESSING", "publishing"] and pub_job.lock_expires_at and pub_job.lock_expires_at > now:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Publishing job #{job_id} is currently in-flight (status: {pub_job.status}). Concurrent dispatch prevented."
+        )
+
+    # Check if job already finished publishing
+    if pub_job.status in ["published", "PUBLISHED"] and not allow_rep:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Publishing job #{job_id} has already been published. Enable republish to run again."
+        )
+
+    if allow_rep:
+        pub_job.allow_republish = True
+        db.commit()
+
+    background_tasks.add_task(publishing_manager.execute_job, job_id, allow_rep)
     return {"status": "started", "message": f"Dispatch initiated for job #{job_id}"}
 
 # 8. Platform Connections & Settings

@@ -506,7 +506,8 @@ class FacebookPublishClient:
         self,
         video_path: Path,
         description: str,
-        stage_callback: Optional[Callable[[str], None]] = None
+        stage_callback: Optional[Callable[[str], None]] = None,
+        on_video_id_created: Optional[Callable[[str], None]] = None
     ) -> Dict[str, Any]:
         """
         Executes the full Facebook Reels upload lifecycle:
@@ -531,6 +532,12 @@ class FacebookPublishClient:
         session = self.start_upload_session(page_id, page_token)
         video_id = session["video_id"]
         upload_url = session["upload_url"]
+
+        if on_video_id_created:
+            try:
+                on_video_id_created(video_id)
+            except Exception as e:
+                logger.debug(f"on_video_id_created callback notice: {e}")
 
         # Phase 2: TRANSFER
         if stage_callback:

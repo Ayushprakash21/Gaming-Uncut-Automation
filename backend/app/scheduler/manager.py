@@ -5,6 +5,7 @@ Monitors daily quota consumption and staggers publishing across peak windows.
 """
 
 import logging
+import threading
 from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
@@ -16,24 +17,43 @@ from backend.app.publishers.manager import publishing_manager
 
 logger = logging.getLogger("gaming_uncut.scheduler")
 
+_publishing_tick_lock = threading.Lock()
+
 def run_process_due_publishing_jobs():
-    """Scans for approved publishing jobs where scheduled_time <= NOW(). Top-level function for clean APScheduler serialization."""
-    now = datetime.utcnow()
-    with SessionLocal() as db:
-        due_jobs = db.query(PublishingJob).filter(
-            PublishingJob.status.in_(["pending", "scheduled_next_window"]),
-            PublishingJob.approval_status.in_(["approved", "auto_approved"]),
-            PublishingJob.scheduled_time <= now
-        ).order_by(PublishingJob.scheduled_time.asc()).limit(3).all()
+    """
+    Scans for approved publishing jobs where scheduled_time <= NOW().
+    Uses a non-blocking thread lock to ensure concurrent scheduler ticks never process the same queue items.
+    Respects the auto-publishing safety switch.
+    """
+    if not _publishing_tick_lock.acquire(blocking=False):
+        logger.info("[Scheduler] Previous publishing tick still running. Skipping concurrent tick.")
+        return
 
-        job_ids = [j.id for j in due_jobs]
+    try:
+        # Check safety switch
+        auto_pub_enabled = getattr(settings, "AUTO_PUBLISHING_ENABLED", False)
+        if not auto_pub_enabled:
+            # Automatic scheduler publishing is paused for safety
+            return
 
-    for j_id in job_ids:
-        try:
-            logger.info(f"Executing scheduled publication for job #{j_id}...")
-            publishing_manager.execute_job(j_id)
-        except Exception as e:
-            logger.error(f"Scheduled publish error on job #{j_id}: {e}")
+        now = datetime.utcnow()
+        with SessionLocal() as db:
+            due_jobs = db.query(PublishingJob).filter(
+                PublishingJob.status.in_(["pending", "scheduled_next_window", "QUEUED"]),
+                PublishingJob.approval_status.in_(["approved", "auto_approved"]),
+                PublishingJob.scheduled_time <= now
+            ).order_by(PublishingJob.scheduled_time.asc()).limit(3).all()
+
+            job_ids = [j.id for j in due_jobs]
+
+        for j_id in job_ids:
+            try:
+                logger.info(f"[Scheduler] Executing scheduled publication for job #{j_id}...")
+                publishing_manager.execute_job(j_id)
+            except Exception as e:
+                logger.error(f"[Scheduler] Scheduled publish error on job #{j_id}: {e}")
+    finally:
+        _publishing_tick_lock.release()
 
 def run_stalled_jobs_watchdog():
     """Periodically scans for stalled/zombie processing jobs whose worker heartbeat has lapsed."""
@@ -100,12 +120,25 @@ class TaskScheduler:
             logger.warning(f"Crash recovery warning: {e}")
 
         with SessionLocal() as db:
+            # Safe crash recovery: NEVER blindly reset active publishing jobs to pending,
+            # which causes duplicate publications upon reboot! Mark as UNKNOWN for audit & reconciliation.
             interrupted_pub = db.query(PublishingJob).filter(
-                PublishingJob.status == "publishing"
+                PublishingJob.status.in_(["publishing", "CLAIMED", "UPLOADING", "PROCESSING"])
             ).all()
             for pjob in interrupted_pub:
-                logger.warning(f"Recovering interrupted publishing job #{pjob.id}. Resetting to pending.")
-                pjob.status = "pending"
+                logger.warning(f"[Crash Recovery] Interrupted publishing job #{pjob.id} detected. Marking as UNKNOWN to prevent duplicate publishing.")
+                pjob.status = "UNKNOWN"
+                pjob.locked_at = None
+                pjob.lock_expires_at = None
+                pjob.worker_id = None
+                
+                # Log audit record
+                log = SystemLog(
+                    level="WARNING",
+                    module="crash_recovery",
+                    message=f"Publishing job #{pjob.id} was in-flight during crash/restart. Marked UNKNOWN for reconciliation."
+                )
+                db.add(log)
 
             try:
                 from backend.app.models.schema import DiscoveryJob, DiscoverySchedule
