@@ -606,3 +606,7 @@ export async function computeGrowthInsights(): Promise<any> {
   })
 }
 
+export async function fetchSystemDiagnostics(): Promise<any> {
+  return safeFetch(`${API_BASE}/diagnostics/system`)
+}
+

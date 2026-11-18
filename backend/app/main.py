@@ -18,6 +18,8 @@ from backend.app.database.session import engine, Base, ensure_schema_compatibili
 from backend.app.api.router import router as api_router
 from backend.app.scheduler.manager import task_scheduler
 from backend.app.services.pipeline_service import pipeline_service
+from backend.app.video.worker import video_worker
+from backend.app.video.ffmpeg_executor import cleanup_orphaned_ffmpeg_processes
 
 logger = logging.getLogger("gaming_uncut.api")
 
@@ -204,13 +206,18 @@ else:
 
 @app.on_event("startup")
 def on_startup():
+    video_worker.start()
     task_scheduler.start()
     try:
         pipeline_service.detect_and_recover_stalled_jobs()
     except Exception as e:
-        import logging
-        logging.getLogger("gaming_uncut").warning(f"Startup stalled job recovery notice: {e}")
+        logger.warning(f"Startup stalled job recovery notice: {e}")
+    try:
+        cleanup_orphaned_ffmpeg_processes()
+    except Exception as e:
+        logger.debug(f"Startup orphan cleanup notice: {e}")
 
 @app.on_event("shutdown")
 def on_shutdown():
+    video_worker.stop()
     task_scheduler.shutdown()

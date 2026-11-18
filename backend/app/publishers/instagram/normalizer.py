@@ -28,6 +28,8 @@ from backend.app.publishers.instagram.validator import (
     InstagramValidationResult,
     MAX_FILE_SIZE_BYTES,
 )
+from backend.app.video.ffmpeg_executor import safe_run_ffmpeg
+from backend.app.video.worker import render_concurrency_lock
 
 logger = logging.getLogger("gaming_uncut.instagram_normalizer")
 
@@ -51,7 +53,7 @@ class InstagramVideoNormalizer:
         self,
         output_dir: Optional[Path] = None,
         default_policy: str = "crop",  # "crop" (smart center action crop) | "blur" (blurred background)
-        preset: str = "fast",
+        preset: str = "veryfast",
         target_bitrate_mbps: float = 4.0,
         max_file_size_mb: float = 55.0,  # Safe ceiling under Meta's 60MB limit
     ):
@@ -74,8 +76,12 @@ class InstagramVideoNormalizer:
             "-show_streams",
             str(input_path),
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        probe = json.loads(res.stdout)
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=15.0)
+            probe = json.loads(res.stdout)
+        except Exception as e:
+            logger.error(f"Failed to probe video file {input_path}: {e}")
+            raise ValueError(f"Corrupt or unreadable video file {input_path}: {e}")
         fmt = probe.get("format", {})
         streams = probe.get("streams", [])
         v_stream = next((s for s in streams if s.get("codec_type") == "video"), None)
@@ -256,16 +262,24 @@ class InstagramVideoNormalizer:
             f"(target={target_duration:.1f}s, -b:v={b_v}, policy={policy})"
         )
 
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        if res.returncode != 0:
-            err_msg = res.stderr[-500:] if res.stderr else "Unknown FFmpeg error"
-            raise InstagramNormalizationError(
-                f"FFmpeg normalization failed (exit code {res.returncode}): {err_msg}"
+        with render_concurrency_lock():
+            exec_res = safe_run_ffmpeg(
+                cmd=cmd,
+                timeout=300.0,
+                threads=2,
+                output_path=output_path,
+                min_output_bytes=1024,
+                log_name="ig_normalizer"
             )
 
-        if not output_path.exists() or output_path.stat().st_size == 0:
+        if not exec_res.success:
+            if output_path.exists():
+                try:
+                    output_path.unlink()
+                except Exception:
+                    pass
             raise InstagramNormalizationError(
-                f"Normalized output file was not created or is empty: {output_path}"
+                f"FFmpeg normalization failed (exit code {exec_res.returncode}): {exec_res.error_message}"
             )
 
         # Post-render FFprobe verification

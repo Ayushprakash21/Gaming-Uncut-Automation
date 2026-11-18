@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import {
   Film,
   CheckCircle2,
@@ -9,9 +9,14 @@ import {
   Facebook,
   Sparkles,
   TrendingUp,
-  Cpu
+  Cpu,
+  Activity,
+  ShieldCheck,
+  ShieldAlert,
+  HardDrive
 } from 'lucide-react'
 import { OverviewData } from '../types'
+import { fetchSystemDiagnostics } from '../services/api'
 
 interface OverviewPageProps {
   data: OverviewData | null
@@ -19,6 +24,25 @@ interface OverviewPageProps {
 }
 
 export const OverviewPage: React.FC<OverviewPageProps> = ({ data, onNavigate }) => {
+  const [diag, setDiag] = useState<any>(null)
+
+  useEffect(() => {
+    let mounted = true
+    const loadDiag = async () => {
+      try {
+        const res = await fetchSystemDiagnostics()
+        if (mounted && res) setDiag(res)
+      } catch {
+        // quiet poll
+      }
+    }
+    loadDiag()
+    const timer = setInterval(loadDiag, 5000)
+    return () => {
+      mounted = false
+      clearInterval(timer)
+    }
+  }, [])
   const kpis = data?.kpis || {
     total_videos_processed: 0,
     total_clips_generated: 0,
@@ -199,6 +223,117 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ data, onNavigate }) 
         <span className="text-[11px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded font-semibold font-mono">
           CUDA ACCELERATED
         </span>
+      </div>
+
+      {/* Production Server & Worker Diagnostics */}
+      <div className="bg-[#111827] border border-gaming-border rounded-xl p-5 space-y-4">
+        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <div className="flex items-center space-x-2">
+            <Activity className="w-4 h-4 text-purple-400" />
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200">Server & Video Worker Diagnostics</h3>
+          </div>
+          <div className="flex items-center space-x-2">
+            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+              API {diag?.api_server?.status?.toUpperCase() || 'ONLINE'}
+            </span>
+            <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+              diag?.worker?.status === 'paused_memory'
+                ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+                : 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30'
+            }`}>
+              WORKER: {(diag?.worker?.status || 'IDLE').toUpperCase()}
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+          {/* Active Render Concurrency */}
+          <div className="bg-slate-900/60 border border-slate-800 rounded-lg p-3 space-y-1">
+            <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Active Renders</span>
+            <div className="text-lg font-bold font-mono text-slate-100 flex items-center justify-between">
+              <span>{diag?.worker?.active_renders ?? 0} <span className="text-xs text-slate-500">/ 1 max</span></span>
+              <span className={`text-[9px] px-1.5 py-0.5 rounded ${
+                (diag?.worker?.active_renders || 0) > 0 ? 'bg-amber-500/20 text-amber-300' : 'bg-slate-800 text-slate-400'
+              }`}>
+                {(diag?.worker?.active_renders || 0) > 0 ? 'RENDERING' : 'IDLE'}
+              </span>
+            </div>
+            <p className="text-[10px] text-slate-500">Strict bounded FFmpeg semaphore</p>
+          </div>
+
+          {/* Queued Jobs */}
+          <div className="bg-slate-900/60 border border-slate-800 rounded-lg p-3 space-y-1">
+            <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Queued Pipeline Jobs</span>
+            <div className="text-lg font-bold font-mono text-slate-100 flex items-center justify-between">
+              <span>{diag?.worker?.queued_jobs ?? 0}</span>
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">IN SQLITE</span>
+            </div>
+            <p className="text-[10px] text-slate-500">Sequential managed execution</p>
+          </div>
+
+          {/* RAM Usage & Pressure */}
+          <div className="bg-slate-900/60 border border-slate-800 rounded-lg p-3 space-y-1">
+            <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Memory (RAM)</span>
+            <div className="text-lg font-bold font-mono text-slate-100 flex items-center justify-between">
+              <span>{diag?.system_resources?.ram?.used_pct ?? 0}%</span>
+              <span className={`text-[9px] px-1.5 py-0.5 rounded ${
+                diag?.system_resources?.ram?.is_critical ? 'bg-rose-500/20 text-rose-300' : 'bg-emerald-500/20 text-emerald-300'
+              }`}>
+                {diag?.system_resources?.ram?.is_critical ? 'PRESSURE' : 'OPTIMAL'}
+              </span>
+            </div>
+            <p className="text-[10px] text-slate-500">
+              {diag?.system_resources?.ram?.available_mb ?? '—'} MB free / {diag?.system_resources?.ram?.total_mb ?? '—'} MB
+            </p>
+          </div>
+
+          {/* CPU Usage */}
+          <div className="bg-slate-900/60 border border-slate-800 rounded-lg p-3 space-y-1">
+            <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">CPU Usage</span>
+            <div className="text-lg font-bold font-mono text-slate-100 flex items-center justify-between">
+              <span>{diag?.system_resources?.cpu?.used_pct ?? 0}%</span>
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">THREADS: 2</span>
+            </div>
+            <p className="text-[10px] text-slate-500">CPU-isolated render profile</p>
+          </div>
+        </div>
+
+        {/* FFmpeg Error & Recovery Status */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs pt-1">
+          {/* Last FFmpeg Error */}
+          <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3 space-y-1.5">
+            <div className="flex items-center space-x-2">
+              {diag?.last_ffmpeg_error ? (
+                <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+              ) : (
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+              )}
+              <span className="text-[11px] font-bold text-slate-300">FFmpeg Crash Protection</span>
+            </div>
+            {diag?.last_ffmpeg_error ? (
+              <div className="text-[10px] text-amber-300/90 font-mono bg-amber-950/20 p-2 rounded border border-amber-500/20">
+                <div>Job #{diag.last_ffmpeg_error.job_id || 'N/A'} (Exit code: {diag.last_ffmpeg_error.hex_code})</div>
+                <div className="truncate text-slate-400 mt-0.5">{diag.last_ffmpeg_error.error_message}</div>
+              </div>
+            ) : (
+              <p className="text-[11px] text-slate-400">
+                Zero active FFmpeg crashes. Subprocesses safely bounded with automatic 300s timeouts.
+              </p>
+            )}
+          </div>
+
+          {/* Recovery Status */}
+          <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3 space-y-1.5">
+            <div className="flex items-center space-x-2">
+              <CheckCircle2 className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="text-[11px] font-bold text-slate-300">Restart & Zombie Recovery</span>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Stalled jobs recovered: <span className="font-mono text-cyan-300 font-bold">{diag?.recovery_status?.stalled_jobs_recovered ?? 0}</span>.
+              Publishing idempotency strictly locks against duplicate social media uploads on reboot.
+            </p>
+          </div>
+        </div>
       </div>
     </div>
   )

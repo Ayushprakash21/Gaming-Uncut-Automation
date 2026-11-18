@@ -16,6 +16,8 @@ import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
 from backend.app.core.config import settings
+from backend.app.video.ffmpeg_executor import safe_run_ffmpeg
+from backend.app.video.worker import render_concurrency_lock
 
 logger = logging.getLogger("gaming_uncut.renderer")
 
@@ -52,7 +54,7 @@ class VideoRenderer:
             str(video_path)
         ]
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            res = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=15.0)
             data = json.loads(res.stdout)
             streams = data.get("streams", [])
             v_stream = next((s for s in streams if s.get("codec_type") == "video"), {})
@@ -154,9 +156,9 @@ class VideoRenderer:
         ]
 
         if self.encoder == "h264_nvenc":
-            cmd.extend(["-preset", "p5", "-b:v", "3.5M", "-maxrate", "5M", "-bufsize", "7M", "-g", str(int(settings.TARGET_FPS)), "-bf", "0"])
+            cmd.extend(["-preset", "p4", "-b:v", "3.5M", "-maxrate", "5M", "-bufsize", "7M", "-g", str(int(settings.TARGET_FPS)), "-bf", "0"])
         else:
-            cmd.extend(["-preset", "fast", "-b:v", "3.5M", "-maxrate", "5M", "-bufsize", "7M", "-g", str(int(settings.TARGET_FPS)), "-bf", "0"])
+            cmd.extend(["-preset", "veryfast", "-b:v", "3.5M", "-maxrate", "5M", "-bufsize", "7M", "-g", str(int(settings.TARGET_FPS)), "-bf", "0"])
 
         # Audio loudness normalization
         if normalize_audio:
@@ -179,17 +181,20 @@ class VideoRenderer:
         ])
 
         logger.info(f"Rendering YouTube Shorts (1080x1920, 9:16, {capped_duration}s, {template}) with {self.encoder}: {output_path.name}")
-        if job_id:
-            from backend.app.services.pipeline_service import pipeline_service
-            pipeline_service.run_cancellable_subprocess(
+        with render_concurrency_lock():
+            exec_res = safe_run_ffmpeg(
                 cmd=cmd,
+                timeout=300.0,
                 job_id=job_id,
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE
+                threads=2,
+                output_path=output_path,
+                min_output_bytes=1024,
+                log_name=f"render_{job_id or 'standalone'}"
             )
-        else:
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+        if not exec_res.success:
+            raise RuntimeError(f"Video rendering failed (exit code {exec_res.returncode}): {exec_res.error_message}")
+
         return output_path
 
     def extract_thumbnail(self, video_path: Path, output_thumb: Path, timestamp_sec: float = 2.0, job_id: Optional[int] = None) -> Path:
@@ -202,17 +207,17 @@ class VideoRenderer:
             "-q:v", "2",
             str(output_thumb)
         ]
-        if job_id:
-            from backend.app.services.pipeline_service import pipeline_service
-            pipeline_service.run_cancellable_subprocess(
-                cmd=cmd,
-                job_id=job_id,
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-        else:
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        exec_res = safe_run_ffmpeg(
+            cmd=cmd,
+            timeout=30.0,
+            job_id=job_id,
+            threads=2,
+            output_path=output_thumb,
+            min_output_bytes=100,
+            log_name="thumbnail"
+        )
+        if not exec_res.success:
+            logger.warning(f"Thumbnail extraction warning for {video_path.name}: {exec_res.error_message}")
         return output_thumb
 
 video_renderer = VideoRenderer()

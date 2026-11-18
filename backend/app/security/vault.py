@@ -90,15 +90,15 @@ class SecureVault:
     def save_json(self, service: str, key: str, data: Dict[str, Any]) -> bool:
         return self.set_secret(service, key, json.dumps(data))
 
-    def get_json(self, service: str, key: str) -> Optional[Dict[str, Any]]:
+    def get_json(self, service: str, key: str, default: Optional[Any] = None) -> Optional[Any]:
         val = self.get_secret(service, key)
         if not val:
-            return None
+            return default
         try:
             return json.loads(val)
         except Exception as e:
             logger.error(f"JSON parse error for {service}:{key}: {e}")
-            return None
+            return default
 
     def _update_meta(self, service: str, key: str, is_set: bool):
         try:

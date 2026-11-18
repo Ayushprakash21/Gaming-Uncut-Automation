@@ -99,6 +99,8 @@ class BatchRegenerateMetadataRequest(BaseModel):
 # 1. Health & System Info
 @router.get("/health")
 def get_health():
+    from backend.app.video.worker import get_diagnostics_snapshot
+    diag = get_diagnostics_snapshot()
     return {
         "status": "healthy",
         "app": settings.APP_NAME,
@@ -106,11 +108,23 @@ def get_health():
         "tagline": settings.TAGLINE,
         "version": settings.VERSION,
         "hardware": {
-            "gpu": "NVIDIA GeForce GTX 1650",
-            "nvenc_enabled": settings.USE_NVENC,
+            "gpu": diag["system_resources"]["gpu"]["name"] or "NVIDIA GeForce GTX 1650",
+            "nvenc_enabled": diag["system_resources"]["gpu"]["nvenc_enabled"] if diag["system_resources"]["gpu"]["name"] != "N/A" else settings.USE_NVENC,
             "target_resolution": f"{settings.TARGET_WIDTH}x{settings.TARGET_HEIGHT}"
-        }
+        },
+        "worker": diag["worker"],
+        "system_resources": diag["system_resources"],
+        "last_ffmpeg_error": diag["last_ffmpeg_error"],
+        "last_worker_crash": diag["last_worker_crash"],
+        "recovery_status": diag["recovery_status"]
     }
+
+@router.get("/diagnostics/system")
+@router.get("/system/diagnostics")
+def get_system_diagnostics():
+    """Returns comprehensive real-time diagnostics: worker, memory, CPU, active renders, and crash telemetry."""
+    from backend.app.video.worker import get_diagnostics_snapshot
+    return get_diagnostics_snapshot()
 
 # 2. Overview Dashboard Stats
 @router.get("/status")

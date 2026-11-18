@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 from backend.app.core.config import settings
+from backend.app.video.ffmpeg_executor import safe_run_ffmpeg
 
 logger = logging.getLogger("gaming_uncut.frame_extractor")
 
@@ -23,7 +24,7 @@ def get_video_duration(video_path: Path) -> float:
         str(video_path)
     ]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=10.0)
         return float(res.stdout.strip())
     except Exception as e:
         logger.warning(f"Failed to probe duration for {video_path}: {e}")
@@ -112,18 +113,24 @@ def extract_multimodal_frames(
             str(frame_file)
         ]
 
-        try:
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-            if frame_file.exists() and frame_file.stat().st_size > 0:
-                frame_bytes = frame_file.read_bytes()
-                extracted_frames.append({
-                    "timestamp": ts,
-                    "path": frame_file,
-                    "role": role,
-                    "bytes": frame_bytes
-                })
-        except Exception as e:
-            logger.warning(f"Error extracting frame at {ts}s: {e}")
+        exec_res = safe_run_ffmpeg(
+            cmd=cmd,
+            timeout=20.0,
+            threads=1,
+            output_path=frame_file,
+            min_output_bytes=100,
+            log_name="frame_extract"
+        )
+        if exec_res.success and frame_file.exists() and frame_file.stat().st_size > 0:
+            frame_bytes = frame_file.read_bytes()
+            extracted_frames.append({
+                "timestamp": ts,
+                "path": frame_file,
+                "role": role,
+                "bytes": frame_bytes
+            })
+        else:
+            logger.warning(f"Error extracting frame at {ts}s: {exec_res.error_message}")
 
     logger.info(f"Extracted {len(extracted_frames)} multimodal analysis frames from {video_path.name}")
     return extracted_frames

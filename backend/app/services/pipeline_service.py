@@ -31,6 +31,13 @@ from backend.app.captions.builder import generate_animated_ass
 from backend.app.video.renderer import video_renderer
 from backend.app.video.validator import quality_validator
 from backend.app.publishers.manager import publishing_manager
+from backend.app.video.worker import (
+    analysis_concurrency_lock,
+    render_concurrency_lock,
+    record_recovery_event,
+    record_ffmpeg_error,
+    video_worker
+)
 
 logger = logging.getLogger("gaming_uncut.pipeline")
 
@@ -197,6 +204,7 @@ class PipelineService:
                     out, err = proc.communicate(timeout=0.25)
                     ret = proc.returncode
                     if check and ret != 0:
+                        record_ffmpeg_error(job_id=job_id, exit_code=ret, error_message=f"Subprocess {cmd[0]} returned {ret}", stderr=err or "")
                         raise subprocess.CalledProcessError(ret, cmd, output=out, stderr=err)
                     return subprocess.CompletedProcess(cmd, ret, out, err)
                 except subprocess.TimeoutExpired:
@@ -231,6 +239,7 @@ class PipelineService:
                     recovered += 1
             if recovered > 0:
                 db.commit()
+                record_recovery_event(recovered)
         return recovered
 
     def _update_job_stage(self, job_id: int, stage_idx: int, stage_name: str, progress_pct: int, status: str = "processing"):
@@ -438,31 +447,32 @@ class PipelineService:
                     db_job.source_video_id = source_video.id
                     db.commit()
 
-            # Stage 3: AI video analysis (Granular, resilient sub-stages)
-            self._update_job_stage(job_id, 2, "AI video analysis: audio extraction", 30)
-            self.check_cancellation(job_id)
-            temp_wav = job_temp_dir / f"audio_{job_id}.wav"
-            extract_pcm_wav(video_path, temp_wav, job_id=job_id)
+            # Stage 3: AI video analysis (Granular, resilient sub-stages with concurrency bound)
+            with analysis_concurrency_lock():
+                self._update_job_stage(job_id, 2, "AI video analysis: audio extraction", 30)
+                self.check_cancellation(job_id)
+                temp_wav = job_temp_dir / f"audio_{job_id}.wav"
+                extract_pcm_wav(video_path, temp_wav, job_id=job_id)
 
-            self._update_job_stage(job_id, 2, "AI video analysis: audio peak detection", 33)
-            audio_peaks = calculate_loudness_peaks(temp_wav)
+                self._update_job_stage(job_id, 2, "AI video analysis: audio peak detection", 33)
+                audio_peaks = calculate_loudness_peaks(temp_wav)
 
-            self._update_job_stage(job_id, 2, "AI video analysis: scene transition detection", 36)
-            scene_cuts = detect_scene_cuts(video_path, timeout_seconds=35.0)
+                self._update_job_stage(job_id, 2, "AI video analysis: scene transition detection", 36)
+                scene_cuts = detect_scene_cuts(video_path, timeout_seconds=35.0)
 
-            self._update_job_stage(job_id, 2, "AI video analysis: speech signal transcription", 38)
-            transcript_text, words_data = transcribe_audio_words(temp_wav, timeout_seconds=35.0)
+                self._update_job_stage(job_id, 2, "AI video analysis: speech signal transcription", 38)
+                transcript_text, words_data = transcribe_audio_words(temp_wav, timeout_seconds=35.0)
 
-            # Stage 4: Highlight detection
-            self._update_job_stage(job_id, 3, "Highlight detection: analyzing gameplay telemetry", 42)
-            highlights_data = gemini_provider.analyze_gameplay_highlights(
-                transcript_text=transcript_text,
-                scene_timestamps=scene_cuts,
-                audio_peaks=audio_peaks,
-                video_duration=source_video.duration,
-                source_title=source_video.title,
-                game_name=user_game
-            )
+                # Stage 4: Highlight detection
+                self._update_job_stage(job_id, 3, "Highlight detection: analyzing gameplay telemetry", 42)
+                highlights_data = gemini_provider.analyze_gameplay_highlights(
+                    transcript_text=transcript_text,
+                    scene_timestamps=scene_cuts,
+                    audio_peaks=audio_peaks,
+                    video_duration=source_video.duration,
+                    source_title=source_video.title,
+                    game_name=user_game
+                )
 
             if not highlights_data:
                 raise ValueError("Could not find suitable gameplay moments in source footage.")
@@ -754,13 +764,18 @@ class PipelineService:
                     else:
                         db_job.status = "failed"
                         db_job.error_message = str(e)
+                        db_job.completed_at = datetime.utcnow()
                     db.commit()
                     try:
                         from backend.app.discovery.service import discovery_service
                         discovery_service.sync_pipeline_status(db, job_id, 0, "Error", db_job.status)
                     except Exception:
                         pass
-            raise
+            return {
+                "status": "failed",
+                "job_id": job_id,
+                "error": str(e)
+            }
 
         finally:
             self.terminate_job_subprocesses(job_id)

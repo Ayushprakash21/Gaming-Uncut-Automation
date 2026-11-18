@@ -6,6 +6,8 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+from backend.app.video.ffmpeg_executor import safe_run_ffmpeg
+
 logger = logging.getLogger("gaming_uncut.audio_analyzer")
 
 def extract_pcm_wav(video_path: Path, output_wav: Path, job_id: Optional[int] = None) -> Path:
@@ -37,18 +39,17 @@ def extract_pcm_wav(video_path: Path, output_wav: Path, job_id: Optional[int] = 
         str(output_wav)
     ]
 
-    if job_id:
-        from backend.app.services.pipeline_service import pipeline_service
-        pipeline_service.run_cancellable_subprocess(cmd=cmd, job_id=job_id, check=True)
-    else:
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if res.returncode != 0:
-            err_msg = res.stderr.strip() if res.stderr else f"FFmpeg exited with code {res.returncode}"
-            logger.error(f"FFmpeg audio extraction error (code {res.returncode}): {err_msg}")
-            raise RuntimeError(f"FFmpeg audio extraction failed (exit code {res.returncode}): {err_msg}")
-
-    if not output_wav.exists() or output_wav.stat().st_size == 0:
-        raise FileNotFoundError(f"FFmpeg audio extraction completed but output WAV is empty or missing: '{output_wav}'")
+    exec_res = safe_run_ffmpeg(
+        cmd=cmd,
+        timeout=90.0,
+        job_id=job_id,
+        threads=2,
+        output_path=output_wav,
+        min_output_bytes=100,
+        log_name="audio_extract"
+    )
+    if not exec_res.success:
+        raise RuntimeError(f"FFmpeg audio extraction failed (exit code {exec_res.returncode}): {exec_res.error_message}")
 
     return output_wav
 
