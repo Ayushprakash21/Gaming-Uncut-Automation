@@ -140,3 +140,7 @@ def mock_external_publishers(monkeypatch):
     monkeypatch.setattr(youtube_client, "upload_short", mock_yt_upload)
     monkeypatch.setattr(instagram_client, "publish_reel", mock_ig_upload)
     monkeypatch.setattr(facebook_client, "publish_reel", mock_fb_upload)
+    from backend.app.publishers.meta_token_manager import meta_token_manager
+    monkeypatch.setattr(meta_token_manager, "inspect_health", lambda *args, **kwargs: {
+        "configured": True, "is_valid": True, "is_expired": False, "is_user_token": True, "expires_at": None
+    })

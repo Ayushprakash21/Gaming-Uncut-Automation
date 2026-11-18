@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { CheckCircle2, AlertCircle, Clock, ExternalLink, RotateCw, Youtube, Instagram, Facebook, Eye, ShieldAlert, Sparkles, RefreshCw, AlertTriangle } from 'lucide-react'
 import { fetchPublishingQueue, dispatchPublishingJob } from '../services/api'
 import { PublishingQueueItem } from '../types'
+import { formatDateTimeIST } from '../utils/timezone'
 
 export const PublishingQueuePage: React.FC = () => {
   const [items, setItems] = useState<PublishingQueueItem[]>([])
@@ -213,7 +214,7 @@ export const PublishingQueuePage: React.FC = () => {
                 <th className="p-3.5">Platform</th>
                 <th className="p-3.5">Status</th>
                 <th className="p-3.5">Attempts</th>
-                <th className="p-3.5">Scheduled / Uploaded</th>
+                <th className="p-3.5">Scheduled / Uploaded (IST)</th>
                 <th className="p-3.5 text-right">Action / Link</th>
               </tr>
             </thead>
@@ -308,7 +309,11 @@ export const PublishingQueuePage: React.FC = () => {
                       </td>
                       <td className="p-3.5 text-slate-400 font-mono">{item.attempts}</td>
                       <td className="p-3.5 text-slate-400 font-mono text-[11px]">
-                        {item.uploaded_at ? new Date(item.uploaded_at).toLocaleString() : 'Pending'}
+                        {item.uploaded_at
+                          ? formatDateTimeIST(item.uploaded_at, { compact: true })
+                          : item.scheduled_time
+                          ? formatDateTimeIST(item.scheduled_time, { compact: true })
+                          : 'Pending'}
                       </td>
                       <td className="p-3.5 text-right">
                         {item.external_url ? (

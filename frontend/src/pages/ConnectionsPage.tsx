@@ -43,6 +43,7 @@ import {
   refreshMetaToken
 } from '../services/api'
 import { ConnectionsData, SystemLimits, MetaTokenHealth } from '../types'
+import { formatDateTimeIST } from '../utils/timezone'
 
 type OAuthStage = 'idle' | 'opening' | 'waiting_for_consent' | 'verifying_channel' | 'connected' | 'failed' | 'cancelled' | 'timed_out'
 
@@ -946,11 +947,11 @@ export const ConnectionsPage: React.FC = () => {
               {metaHealth?.is_permanent
                 ? 'Never Expires (Permanent)'
                 : metaHealth?.expires_at_iso
-                ? new Date(metaHealth.expires_at_iso).toLocaleDateString()
+                ? formatDateTimeIST(metaHealth.expires_at_iso)
                 : 'No expiration timestamp'}
             </p>
             <p className="text-[10px] text-slate-500 font-mono truncate">
-              Last Check: {metaHealth?.last_verified_at ? new Date(metaHealth.last_verified_at).toLocaleTimeString() : 'Pending'}
+              Last Check (IST): {metaHealth?.last_verified_at ? formatDateTimeIST(metaHealth.last_verified_at) : 'Pending'}
             </p>
           </div>
         </div>

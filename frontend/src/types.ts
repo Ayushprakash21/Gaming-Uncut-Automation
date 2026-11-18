@@ -63,6 +63,7 @@ export interface ProcessingJobItem {
   started_at?: string;
   completed_at?: string;
   cancelled_at?: string;
+  created_at?: string;
   detected_game?: string;
   game_confidence?: number;
   gameplay_event?: string;

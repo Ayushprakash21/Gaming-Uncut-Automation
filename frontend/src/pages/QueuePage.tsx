@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { RotateCw, CheckCircle2, Clock, AlertTriangle, ListOrdered, Film, RefreshCw, XCircle, Trash2 } from 'lucide-react'
 import { fetchJobs, retryJob, cancelJob, dismissJob } from '../services/api'
 import { ProcessingJobItem } from '../types'
+import { formatDateTimeIST } from '../utils/timezone'
 
 export const QueuePage: React.FC = () => {
   const [jobs, setJobs] = useState<ProcessingJobItem[]>([])
@@ -217,7 +218,7 @@ export const QueuePage: React.FC = () => {
                       <div className="text-[10px] text-slate-500 font-mono">
                         {job.cancelled_at || job.completed_at ? (
                           <span>
-                            Cancelled: {new Date(job.cancelled_at || job.completed_at || '').toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                            Cancelled: {formatDateTimeIST(job.cancelled_at || job.completed_at)}
                           </span>
                         ) : (
                           <span>Cancelled</span>

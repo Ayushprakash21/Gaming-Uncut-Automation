@@ -39,6 +39,7 @@ from backend.app.publishers.quota_tracker import record_upload_success
 logger = logging.getLogger("gaming_uncut.instagram.reconciler")
 
 _reconciliation_lock = threading.Lock()
+_rate_limit_paused_until: Optional[datetime] = None
 
 
 class InstagramReconciler:
@@ -49,6 +50,13 @@ class InstagramReconciler:
         Scans for in-flight / unknown / reconciling Instagram uploads.
         Non-blocking lock ensures only one worker thread monitors containers concurrently.
         """
+        global _rate_limit_paused_until
+        now_check = datetime.utcnow()
+        if _rate_limit_paused_until and now_check < _rate_limit_paused_until:
+            cooldown_rem = int((_rate_limit_paused_until - now_check).total_seconds())
+            logger.info(f"[InstagramReconciler] Meta rate limit cooldown active ({cooldown_rem}s remaining). Skipping tick.")
+            return []
+
         if not _reconciliation_lock.acquire(blocking=False):
             logger.debug("[InstagramReconciler] Previous reconciliation run in progress. Skipping tick.")
             return []
@@ -105,6 +113,11 @@ class InstagramReconciler:
                     results.append(res_outcome)
                 except Exception as e:
                     safe_msg = redact_token(str(e))
+                    upload.last_attempt_at = now
+                    if "limit reached" in safe_msg.lower() or "ratelimit" in safe_msg.lower() or "(#4)" in safe_msg or "(#17)" in safe_msg or "(#32)" in safe_msg:
+                        _rate_limit_paused_until = now + timedelta(minutes=15)
+                        logger.warning(f"[InstagramReconciler] Meta API rate limit hit: {safe_msg}. Backing off reconciliation for 15 minutes.")
+                        break
                     logger.error(f"[InstagramReconciler] Error reconciling container {container_id}: {safe_msg}")
 
             db.commit()

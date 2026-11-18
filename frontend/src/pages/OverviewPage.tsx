@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { OverviewData } from '../types'
 import { fetchSystemDiagnostics } from '../services/api'
+import { formatDateTimeIST } from '../utils/timezone'
 
 interface OverviewPageProps {
   data: OverviewData | null
@@ -312,7 +313,12 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ data, onNavigate }) 
             </div>
             {diag?.last_ffmpeg_error ? (
               <div className="text-[10px] text-amber-300/90 font-mono bg-amber-950/20 p-2 rounded border border-amber-500/20">
-                <div>Job #{diag.last_ffmpeg_error.job_id || 'N/A'} (Exit code: {diag.last_ffmpeg_error.hex_code})</div>
+                <div className="flex items-center justify-between">
+                  <span>Job #{diag.last_ffmpeg_error.job_id || 'N/A'} (Exit code: {diag.last_ffmpeg_error.hex_code})</span>
+                  {diag.last_ffmpeg_error.timestamp && (
+                    <span className="text-[9px] text-slate-500">{formatDateTimeIST(diag.last_ffmpeg_error.timestamp)}</span>
+                  )}
+                </div>
                 <div className="truncate text-slate-400 mt-0.5">{diag.last_ffmpeg_error.error_message}</div>
               </div>
             ) : (

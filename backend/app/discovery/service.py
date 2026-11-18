@@ -35,6 +35,7 @@ from backend.app.discovery.client import (
     YouTubeDiscoveryConfigError
 )
 from backend.app.publishers.quota_tracker import YouTubeQuotaExceededError, get_or_create_quota_state
+from backend.app.utils.timezone import format_datetime_ist
 
 logger = logging.getLogger("gaming_uncut.discovery.service")
 
@@ -756,7 +757,7 @@ class DiscoveryService:
         if quota_state.api_quota_exceeded and quota_state.pause_until and quota_state.pause_until > now:
             schedule.last_scan_status = "paused_quota"
             db.commit()
-            logger.warning(f"Skipping scheduled discovery: YouTube API quota paused until {quota_state.pause_until} UTC.")
+            logger.warning(f"Skipping scheduled discovery: YouTube API quota paused until {format_datetime_ist(quota_state.pause_until)}.")
             return None
 
         # Active monitored sources

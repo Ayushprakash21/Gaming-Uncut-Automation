@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from backend.app.core.config import settings
 from backend.app.database.session import SessionLocal
 from backend.app.models.schema import SystemSettings, PlatformQuotaState, PlatformUpload, PublishingJob, SystemLog
+from backend.app.utils.timezone import format_datetime_ist
 
 logger = logging.getLogger("gaming_uncut.quota_tracker")
 
@@ -214,7 +215,7 @@ def can_publish(db: Session, platform: str, check_auth: bool = True) -> Tuple[bo
     if state.pause_until and state.pause_until > now:
         restr = state.last_restriction_type or "restriction"
         reason = (
-            f"Publishing on {platform} is paused until {state.pause_until.strftime('%Y-%m-%d %H:%M UTC')} "
+            f"Publishing on {platform} is paused until {format_datetime_ist(state.pause_until)} "
             f"due to {restr} ({state.last_restriction_reason or 'Active platform restriction'})."
         )
         return False, reason, state.pause_until
@@ -281,7 +282,7 @@ def record_platform_restriction(
     if state.pause_until and state.pause_until > now and state.last_restriction_type == restriction_type:
         logger.info(
             f"Duplicate restriction suppressed for {platform} [{restriction_type}]. "
-            f"Already paused until {state.pause_until.strftime('%Y-%m-%d %H:%M UTC')}."
+            f"Already paused until {format_datetime_ist(state.pause_until)}."
         )
         return state.pause_until
 
@@ -302,7 +303,7 @@ def record_platform_restriction(
     log = SystemLog(
         module="publishing_quota",
         level="WARNING",
-        message=f"{platform.upper()} restriction detected [{restriction_type}]: {reason}. Publishing paused until {next_window.strftime('%Y-%m-%d %H:%M UTC')}."
+        message=f"{platform.upper()} restriction detected [{restriction_type}]: {reason}. Publishing paused until {format_datetime_ist(next_window)}."
     )
     db.add(log)
     db.commit()

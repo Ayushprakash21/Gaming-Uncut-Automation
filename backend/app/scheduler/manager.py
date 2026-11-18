@@ -14,6 +14,7 @@ from backend.app.core.config import settings
 from backend.app.database.session import SessionLocal, engine
 from backend.app.models.schema import PublishingJob, ProcessingJob, SystemLog
 from backend.app.publishers.manager import publishing_manager
+from backend.app.utils.timezone import IST_TIMEZONE
 
 logger = logging.getLogger("gaming_uncut.scheduler")
 
@@ -86,7 +87,7 @@ class TaskScheduler:
         jobstores = {
             "default": SQLAlchemyJobStore(engine=engine)
         }
-        self.scheduler = BackgroundScheduler(jobstores=jobstores)
+        self.scheduler = BackgroundScheduler(jobstores=jobstores, timezone=IST_TIMEZONE)
 
     def start(self):
         self.recover_interrupted_jobs()

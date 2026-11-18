@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { Terminal, RotateCw, AlertTriangle, AlertCircle, Info, Search, ChevronDown, ChevronRight } from 'lucide-react'
 import { fetchLogs } from '../services/api'
 import { SystemLogItem } from '../types'
+import { formatDateTimeIST } from '../utils/timezone'
 
 export const LogsPage: React.FC = () => {
   const [logs, setLogs] = useState<SystemLogItem[]>([])
@@ -150,7 +151,7 @@ export const LogsPage: React.FC = () => {
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-start space-x-2 leading-relaxed flex-1">
                     <span className="text-slate-500 flex-shrink-0 select-none">
-                      [{new Date(l.created_at).toLocaleTimeString()}]
+                      [{formatDateTimeIST(l.created_at, { compact: true })}]
                     </span>
                     <span
                       className={`font-bold flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] ${

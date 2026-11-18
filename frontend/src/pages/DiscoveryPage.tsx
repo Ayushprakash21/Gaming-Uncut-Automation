@@ -55,6 +55,7 @@ import {
   DiscoveryChannelItem,
   DiscoveryScheduleData
 } from '../types'
+import { formatDateTimeIST } from '../utils/timezone'
 
 interface DiscoveryPageProps {
   onNavigate?: (tab: string) => void
@@ -598,7 +599,7 @@ export const DiscoveryPage: React.FC<DiscoveryPageProps> = ({ onNavigate }) => {
               </div>
               <span className="text-slate-600">|</span>
               <span className="text-[11px] text-slate-400">
-                Next: {schedule.next_scan_at ? new Date(schedule.next_scan_at).toLocaleTimeString() : 'N/A'}
+                Next: {schedule.next_scan_at ? formatDateTimeIST(schedule.next_scan_at) : 'N/A'}
               </span>
             </div>
           )}
@@ -1223,15 +1224,15 @@ export const DiscoveryPage: React.FC<DiscoveryPageProps> = ({ onNavigate }) => {
                 </span>
               </div>
               <div className="bg-[#121826] p-3 rounded-xl border border-gaming-border">
-                <span className="text-[11px] text-slate-400 block">Last Scan Time</span>
+                <span className="text-[11px] text-slate-400 block">Last Scan Time (IST)</span>
                 <span className="text-sm font-bold text-slate-200 font-mono">
-                  {schedule?.last_scan_at ? new Date(schedule.last_scan_at).toLocaleTimeString() : 'Never'}
+                  {schedule?.last_scan_at ? formatDateTimeIST(schedule.last_scan_at) : 'Never'}
                 </span>
               </div>
               <div className="bg-[#121826] p-3 rounded-xl border border-gaming-border">
-                <span className="text-[11px] text-slate-400 block">Next Scan Time</span>
+                <span className="text-[11px] text-slate-400 block">Next Scan Time (IST)</span>
                 <span className="text-sm font-bold text-cyan-400 font-mono">
-                  {schedule?.next_scan_at ? new Date(schedule.next_scan_at).toLocaleTimeString() : 'N/A'}
+                  {schedule?.next_scan_at ? formatDateTimeIST(schedule.next_scan_at) : 'N/A'}
                 </span>
               </div>
             </div>

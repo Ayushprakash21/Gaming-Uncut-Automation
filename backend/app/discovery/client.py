@@ -24,6 +24,7 @@ from backend.app.publishers.quota_tracker import (
     YouTubeQuotaExceededError
 )
 from backend.app.models.schema import SystemLog, PlatformQuotaState
+from backend.app.utils.timezone import format_datetime_ist
 
 logger = logging.getLogger("gaming_uncut.discovery.client")
 
@@ -98,7 +99,7 @@ class YouTubeDiscoveryClient:
 
         if quota_state.api_quota_exceeded and quota_state.pause_until and quota_state.pause_until > now:
             raise YouTubeQuotaExceededError(
-                f"YouTube API quota exhausted. Discovery requests paused until {quota_state.pause_until.isoformat()} UTC."
+                f"YouTube API quota exhausted. Discovery requests paused until {format_datetime_ist(quota_state.pause_until)}."
             )
 
         quota_state.quota_units_used += units
@@ -297,7 +298,7 @@ class YouTubeDiscoveryClient:
             log = SystemLog(
                 module="youtube_discovery",
                 level="WARNING",
-                message="YouTube Data API daily quota limit exceeded. Discovery scheduled scans paused until tomorrow 00:00 UTC.",
+                message=f"YouTube Data API daily quota limit exceeded. Discovery scheduled scans paused until {format_datetime_ist(tomorrow_midnight)}.",
                 metadata_json=json.dumps({"http_status": 403, "reason": "quotaExceeded", "pause_until": tomorrow_midnight.isoformat()}),
                 created_at=now.replace(tzinfo=None)
             )
@@ -305,7 +306,7 @@ class YouTubeDiscoveryClient:
             db.commit()
 
             raise YouTubeQuotaExceededError(
-                f"YouTube Data API v3 daily quota exceeded. Discovery paused until {tomorrow_midnight.isoformat()} UTC."
+                f"YouTube Data API v3 daily quota exceeded. Discovery paused until {format_datetime_ist(tomorrow_midnight)}."
             )
 
         err_msg = f"YouTube Data API error (HTTP {status}): {content_str[:300]}"
