@@ -20,6 +20,7 @@ from backend.app.security.vault import vault
 from backend.app.publishers.quota_tracker import FacebookRateLimitError as BaseFacebookRateLimitError
 from backend.app.database.session import SessionLocal
 from backend.app.models.schema import SystemLog
+from backend.app.publishers.meta_transport import meta_transport, redact_meta_secrets
 
 logger = logging.getLogger("gaming_uncut.facebook")
 API_VERSION = "v21.0"
@@ -244,25 +245,25 @@ class FacebookPublishClient:
         """Attempts to discover Page ID from /me/accounts or Page token."""
         try:
             # 1. First check /me/accounts (if token is a User token that manages pages)
-            accounts_res = requests.get(
+            accounts_res = meta_transport.get(
                 f"{GRAPH_URL}/me/accounts",
-                params={"fields": "id,name,access_token", "access_token": token},
-                timeout=10
+                headers={"Authorization": f"Bearer {token}"},
+                params={"fields": "id,name,access_token"}
             ).json()
             data = accounts_res.get("data", [])
             if data and "id" in data[0]:
                 return str(data[0]["id"])
 
             # 2. Check /me with fields id,name,category (only Page tokens return category on /me)
-            res = requests.get(
+            res = meta_transport.get(
                 f"{GRAPH_URL}/me",
-                params={"fields": "id,name,category", "access_token": token},
-                timeout=10
+                headers={"Authorization": f"Bearer {token}"},
+                params={"fields": "id,name,category"}
             ).json()
             if "category" in res and "id" in res:
                 return str(res["id"])
         except Exception as e:
-            logger.debug(f"Auto-discovery of Page ID failed: {e}")
+            logger.debug(f"Auto-discovery of Page ID failed: {redact_meta_secrets(str(e))}")
         return None
 
     def verify_page(self, page_id: str, token: str) -> Dict[str, Any]:
@@ -283,14 +284,15 @@ class FacebookPublishClient:
         logger.info(f"Verifying Facebook Page ID '{page_id}' via GET {url}")
 
         try:
-            res = requests.get(
+            res = meta_transport.get(
                 url,
-                params={"fields": "id,name,category,access_token", "access_token": token},
-                timeout=10
+                headers={"Authorization": f"Bearer {token}"},
+                params={"fields": "id,name,category,access_token"}
             )
             data = res.json()
         except requests.RequestException as e:
-            raise FacebookUploadFailedError(f"Network error verifying Facebook Page ID '{page_id}': {e}")
+            safe_err = redact_meta_secrets(str(e))
+            raise FacebookUploadFailedError(f"Network error verifying Facebook Page ID '{page_id}': {safe_err}")
 
         if "error" in data:
             raise parse_meta_error(data, f"Verification failed for Facebook Page ID '{page_id}'", http_status=res.status_code)
@@ -321,14 +323,16 @@ class FacebookPublishClient:
         """
         logger.info(f"Phase 1: Initializing Facebook Reel session for Page ID '{page_id}'")
         try:
-            res = requests.post(
+            res = meta_transport.post(
                 f"{GRAPH_URL}/{page_id}/video_reels",
-                data={"upload_phase": "start", "access_token": token},
-                timeout=30
+                headers={"Authorization": f"OAuth {token}"},
+                data={"upload_phase": "start"},
+                timeout=(meta_transport.connect_timeout, 30.0)
             )
             data = res.json()
         except requests.RequestException as e:
-            raise FacebookUploadFailedError(f"Network error starting Facebook Reel upload: {e}")
+            safe_err = redact_meta_secrets(str(e))
+            raise FacebookUploadFailedError(f"Network error starting Facebook Reel upload: {safe_err}")
 
         if "error" in data or "video_id" not in data or "upload_url" not in data:
             raise parse_meta_error(data, "Facebook Reel session initialization failed")
@@ -372,11 +376,11 @@ class FacebookPublishClient:
         for attempt in range(1, max_retries + 1):
             try:
                 with ProgressReader(video_path, on_progress) as reader:
-                    res = requests.post(
+                    res = meta_transport.post(
                         upload_url,
                         headers=headers,
                         data=reader,
-                        timeout=300
+                        timeout=(meta_transport.connect_timeout, 300.0)
                     )
 
                 if res.status_code in (200, 201):
@@ -396,8 +400,9 @@ class FacebookPublishClient:
                     )
 
             except (requests.ConnectionError, requests.Timeout) as e:
-                last_error = FacebookUploadFailedError(f"Transient network error during binary transfer: {e}")
-                logger.warning(f"Binary transfer attempt {attempt}/{max_retries} failed: {e}")
+                safe_err = redact_meta_secrets(str(e))
+                last_error = FacebookUploadFailedError(f"Transient network error during binary transfer: {safe_err}")
+                logger.warning(f"Binary transfer attempt {attempt}/{max_retries} failed: {safe_err}")
 
             if attempt < max_retries:
                 backoff_sec = 2 ** attempt
@@ -421,20 +426,21 @@ class FacebookPublishClient:
         """
         logger.info(f"Phase 3: Finalizing Facebook Reel publication for Video ID {video_id}")
         try:
-            res = requests.post(
+            res = meta_transport.post(
                 f"{GRAPH_URL}/{page_id}/video_reels",
+                headers={"Authorization": f"OAuth {token}"},
                 data={
                     "upload_phase": "finish",
                     "video_id": video_id,
                     "video_state": "PUBLISHED",
-                    "description": description,
-                    "access_token": token
+                    "description": description
                 },
-                timeout=30
+                timeout=(meta_transport.connect_timeout, 30.0)
             )
             data = res.json()
         except requests.RequestException as e:
-            raise FacebookUploadFailedError(f"Network error finalizing Facebook Reel publication: {e}")
+            safe_err = redact_meta_secrets(str(e))
+            raise FacebookUploadFailedError(f"Network error finalizing Facebook Reel publication: {safe_err}")
 
         if not data.get("success"):
             raise parse_meta_error(data, "Facebook Reel publication finalization failed")
@@ -460,17 +466,16 @@ class FacebookPublishClient:
 
         while time.time() - start_time < max_wait_sec:
             try:
-                res = requests.get(
+                res = meta_transport.get(
                     f"{GRAPH_URL}/{video_id}",
-                    params={
-                        "fields": "id,status,published,description",
-                        "access_token": token
-                    },
-                    timeout=15
+                    headers={"Authorization": f"Bearer {token}"},
+                    params={"fields": "id,status,published,description"},
+                    timeout=(meta_transport.connect_timeout, 15.0)
                 )
                 data = res.json()
             except requests.RequestException as e:
-                logger.warning(f"Error querying processing status for {video_id}: {e}")
+                safe_err = redact_meta_secrets(str(e))
+                logger.warning(f"Error querying processing status for {video_id}: {safe_err}")
                 time.sleep(poll_interval)
                 continue
 
@@ -659,10 +664,10 @@ class FacebookPublishClient:
 
         # Step 2: Check granted permissions via /me/permissions
         try:
-            perm_res = requests.get(
+            perm_res = meta_transport.get(
                 f"{GRAPH_URL}/me/permissions",
-                params={"access_token": token},
-                timeout=10
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=(meta_transport.connect_timeout, 10.0)
             ).json()
             data = perm_res.get("data", [])
             granted = [p["permission"] for p in data if p.get("status") == "granted"]

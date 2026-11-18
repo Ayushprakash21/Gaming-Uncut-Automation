@@ -403,16 +403,16 @@ class IdempotencyManager:
         if plat == "facebook":
             if target_id:
                 try:
-                    import requests
+                    from backend.app.publishers.meta_transport import meta_transport
                     from backend.app.publishers.meta_token_manager import meta_token_manager
                     creds = meta_token_manager.get_facebook_credentials()
                     token = creds.get("token")
                     if token:
-                        res = requests.get(
+                        res = meta_transport.get(
                             f"https://graph.facebook.com/v21.0/{target_id}",
                             headers={"Authorization": f"Bearer {token}"},
                             params={"fields": "id,status,published,permalink_url"},
-                            timeout=10
+                            timeout=(meta_transport.connect_timeout, 15.0)
                         )
                         if res.status_code == 200:
                             data = res.json()
@@ -433,7 +433,7 @@ class IdempotencyManager:
 
         elif plat == "instagram":
             try:
-                import requests
+                from backend.app.publishers.meta_transport import meta_transport
                 from backend.app.publishers.meta_token_manager import meta_token_manager
                 creds = meta_token_manager.get_instagram_credentials()
                 token = creds.get("token")
@@ -443,11 +443,11 @@ class IdempotencyManager:
                     headers = {"Authorization": f"Bearer {token}"}
                     # 1. Check if target_id is an already published media object
                     try:
-                        res = requests.get(
+                        res = meta_transport.get(
                             f"https://graph.facebook.com/v21.0/{target_id}",
                             headers=headers,
                             params={"fields": "id,permalink,media_type,shortcode"},
-                            timeout=10
+                            timeout=(meta_transport.connect_timeout, 15.0)
                         )
                         if res.status_code == 200 and "permalink" in res.json():
                             m_data = res.json()
@@ -464,11 +464,11 @@ class IdempotencyManager:
 
                     # 2. Check if target_id is an Instagram container
                     try:
-                        c_res = requests.get(
+                        c_res = meta_transport.get(
                             f"https://graph.facebook.com/v21.0/{target_id}",
                             headers=headers,
                             params={"fields": "status_code,status"},
-                            timeout=10
+                            timeout=(meta_transport.connect_timeout, 15.0)
                         )
                         if c_res.status_code == 200:
                             c_data = c_res.json()

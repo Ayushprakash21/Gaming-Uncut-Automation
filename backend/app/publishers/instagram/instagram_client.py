@@ -31,6 +31,7 @@ from backend.app.security.vault import vault
 from backend.app.publishers.quota_tracker import InstagramRateLimitError as BaseInstagramRateLimitError
 from backend.app.database.session import SessionLocal
 from backend.app.models.schema import SystemLog
+from backend.app.publishers.meta_transport import meta_transport, redact_meta_secrets
 
 logger = logging.getLogger("gaming_uncut.instagram")
 API_VERSION = "v21.0"
@@ -97,7 +98,7 @@ class InstagramProcessingTimeoutError(InstagramAPIError):
     """Raised when container processing times out waiting for FINISHED status."""
     pass
 
-class InstagramContainerProcessingInProgress(InstagramAPIError):
+class InstagramContainerProcessingInProgress(InstagramProcessingTimeoutError):
     """
     Raised when an Instagram container is confirmed actively transcoding / processing
     on Meta servers, but has not yet reached FINISHED state within the inline monitoring window.
@@ -106,7 +107,7 @@ class InstagramContainerProcessingInProgress(InstagramAPIError):
     def __init__(self, container_id: str, status_data: Dict[str, Any], checks: int = 0, waited_sec: float = 0.0):
         status_text = status_data.get("status", "Media is still being processed.")
         status_code = status_data.get("status_code", "IN_PROGRESS")
-        msg = f"Instagram container {container_id} is {status_code} ({status_text}) after {checks} checks ({waited_sec:.1f}s)."
+        msg = f"Instagram container {container_id} timed out waiting for completion: status is {status_code} ({status_text}) after {checks} checks ({waited_sec:.1f}s)."
         super().__init__(msg, code=None, subcode=None, error_type="ProcessingInProgress", user_message=msg)
         self.container_id = container_id
         self.status_data = status_data
@@ -344,21 +345,21 @@ class InstagramPublishClient:
             headers = {"Authorization": f"Bearer {token}"}
             # 1. Check from configured page_id
             if page_id and page_id != "me":
-                res = requests.get(
+                res = meta_transport.get(
                     f"{GRAPH_URL}/{page_id}",
                     headers=headers,
                     params={"fields": "instagram_business_account"},
-                    timeout=10
+                    timeout=(meta_transport.connect_timeout, 10.0)
                 ).json()
                 if "instagram_business_account" in res and "id" in res["instagram_business_account"]:
                     return str(res["instagram_business_account"]["id"])
 
             # 2. Check from /me/accounts
-            accounts = requests.get(
+            accounts = meta_transport.get(
                 f"{GRAPH_URL}/me/accounts",
                 headers=headers,
                 params={"fields": "id,name,instagram_business_account"},
-                timeout=10
+                timeout=(meta_transport.connect_timeout, 10.0)
             ).json().get("data", [])
 
             for p in accounts:
@@ -409,7 +410,12 @@ class InstagramPublishClient:
         init_res = None
         for attempt in range(1, 4):
             try:
-                res = requests.post(f"{GRAPH_URL}/{ig_id}/media", headers=headers, data=data, timeout=30)
+                res = meta_transport.post(
+                    f"{GRAPH_URL}/{ig_id}/media",
+                    headers=headers,
+                    data=data,
+                    timeout=(meta_transport.connect_timeout, 30.0)
+                )
                 init_res = res.json()
                 break
             except requests.RequestException as e:
@@ -529,10 +535,11 @@ class InstagramPublishClient:
         # Helper to query rupload server acknowledged offset
         def get_server_offset() -> Optional[int]:
             try:
-                chk = requests.get(
+                chk = meta_transport.get(
                     upload_url,
                     headers={"Authorization": f"OAuth {token}"},
-                    timeout=15
+                    timeout=(meta_transport.connect_timeout, 15.0),
+                    max_retries=2
                 )
                 if chk.status_code == 200:
                     data = chk.json()
@@ -571,11 +578,11 @@ class InstagramPublishClient:
 
                     try:
                         t0 = time.time()
-                        stream_res = requests.post(
+                        stream_res = meta_transport.post(
                             upload_url,
                             headers=headers,
                             data=chunk_data,
-                            timeout=60
+                            timeout=(meta_transport.connect_timeout, 60.0)
                         )
                         dur = time.time() - t0
 
@@ -616,7 +623,13 @@ class InstagramPublishClient:
                                 http_status=stream_res.status_code
                             )
 
-                        if isinstance(last_error, (InstagramTokenExpiredError, InstagramPermissionError)):
+                        is_non_retriable = False
+                        if err_json and isinstance(err_json, dict):
+                            debug_info = err_json.get("debug_info", {})
+                            if debug_info.get("retriable") is False:
+                                is_non_retriable = True
+
+                        if is_non_retriable or isinstance(last_error, (InstagramTokenExpiredError, InstagramPermissionError, InstagramProcessingFailedError)):
                             raise last_error
 
                         logger.warning(
@@ -705,11 +718,12 @@ class InstagramPublishClient:
         copyright_status = None
         if include_copyright:
             try:
-                res = requests.get(
+                res = meta_transport.get(
                     status_url,
                     headers=headers,
                     params={"fields": "id,status_code,status,copyright_check_status"},
-                    timeout=15
+                    timeout=(meta_transport.connect_timeout, 15.0),
+                    max_retries=2
                 )
                 if res.status_code == 200:
                     data = res.json()
@@ -725,11 +739,12 @@ class InstagramPublishClient:
         # 2. Fallback or primary query for status_code,status
         if data is None or "status_code" not in data:
             try:
-                res = requests.get(
+                res = meta_transport.get(
                     status_url,
                     headers=headers,
                     params={"fields": "id,status_code,status"},
-                    timeout=15
+                    timeout=(meta_transport.connect_timeout, 15.0),
+                    max_retries=3
                 )
                 data = res.json()
             except requests.RequestException as e:
@@ -876,11 +891,11 @@ class InstagramPublishClient:
         pub_res = None
         for attempt in range(1, 3):
             try:
-                res = requests.post(
+                res = meta_transport.post(
                     f"{GRAPH_URL}/{ig_id}/media_publish",
                     headers=headers,
                     data={"creation_id": container_id},
-                    timeout=45
+                    timeout=(meta_transport.connect_timeout, 45.0)
                 )
                 pub_res = res.json()
                 break
@@ -923,11 +938,11 @@ class InstagramPublishClient:
         logger.info(f"Stage 5: Verifying published Instagram media object for Media ID {media_id}")
         headers = {"Authorization": f"Bearer {token}"}
         try:
-            res = requests.get(
+            res = meta_transport.get(
                 f"{GRAPH_URL}/{media_id}",
                 headers=headers,
                 params={"fields": "id,media_type,permalink,shortcode,timestamp"},
-                timeout=15
+                timeout=(meta_transport.connect_timeout, 15.0)
             )
             data = res.json()
             if "id" in data:
@@ -1085,11 +1100,11 @@ class InstagramPublishClient:
         headers = {"Authorization": f"Bearer {token}"}
         try:
             # 1. Test /me token validity
-            me_res = requests.get(
+            me_res = meta_transport.get(
                 f"{GRAPH_URL}/me",
                 headers=headers,
                 params={"fields": "id,name"},
-                timeout=10
+                timeout=(meta_transport.connect_timeout, 10.0)
             ).json()
 
             if "error" in me_res:
@@ -1106,10 +1121,10 @@ class InstagramPublishClient:
                 }
 
             # 2. Check permissions
-            perms_res = requests.get(
+            perms_res = meta_transport.get(
                 f"{GRAPH_URL}/me/permissions",
                 headers=headers,
-                timeout=10
+                timeout=(meta_transport.connect_timeout, 10.0)
             ).json()
 
             granted = [
@@ -1126,11 +1141,11 @@ class InstagramPublishClient:
             ig_name = None
             ig_username = None
             if ig_id:
-                ig_res = requests.get(
+                ig_res = meta_transport.get(
                     f"{GRAPH_URL}/{ig_id}",
                     headers=headers,
                     params={"fields": "id,name,username"},
-                    timeout=10
+                    timeout=(meta_transport.connect_timeout, 10.0)
                 ).json()
                 if "id" in ig_res:
                     ig_name = ig_res.get("name")

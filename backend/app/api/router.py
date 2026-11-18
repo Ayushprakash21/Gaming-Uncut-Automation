@@ -129,6 +129,16 @@ def get_system_diagnostics():
     from backend.app.video.worker import get_diagnostics_snapshot
     return get_diagnostics_snapshot()
 
+@router.get("/diagnostics/meta-connectivity")
+def get_meta_connectivity(host: str = "graph.facebook.com"):
+    """
+    Harmless real-time network connectivity diagnostic to Meta Graph API edge servers.
+    Verifies DNS resolution, TCP port 443 handshake latency, TLS handshake, and HTTP response.
+    Never exposes credentials or tokens.
+    """
+    from backend.app.publishers.meta_transport import check_meta_connectivity
+    return check_meta_connectivity(target_host=host)
+
 # 2. Overview Dashboard Stats
 @router.get("/status")
 @router.get("/overview")
@@ -904,6 +914,13 @@ def list_publishing_queue(db: Session = Depends(get_db)):
             if p.exists():
                 size_mb = round(p.stat().st_size / (1024 * 1024), 2)
 
+        reconcile_meta = None
+        if getattr(u, "reconciliation_metadata", None):
+            try:
+                reconcile_meta = json.loads(u.reconciliation_metadata)
+            except Exception:
+                pass
+
         results.append({
             "id": u.id,
             "job_id": u.publishing_job_id,
@@ -914,6 +931,9 @@ def list_publishing_queue(db: Session = Depends(get_db)):
             "error_code": u.error_code,
             "error_message": u.error_message,
             "attempts": u.attempts,
+            "status_checks": getattr(u, "status_checks", 0) or 0,
+            "publishing_attempts": getattr(u, "publishing_attempts", 0) or 0,
+            "reconciliation_metadata": reconcile_meta,
             "title": meta.title if meta else "Clip",
             "scheduled_time": job.scheduled_time if job else None,
             "uploaded_at": u.uploaded_at,
