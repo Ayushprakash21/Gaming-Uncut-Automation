@@ -636,7 +636,8 @@ class DiscoveryService:
         # Trigger async pipeline task with publish_mode="approval" to separate clipping from publishing
         pipeline_service.start_job(
             job_id=job.id,
-            url_or_path=str(input_target),
+            url_or_path=d_video.youtube_url,
+            local_file_path=str(input_target) if (local_file_path and Path(local_file_path).exists()) else None,
             auth_type="creator_authorized",
             approval_mode="manual",
             publish_mode="approval",

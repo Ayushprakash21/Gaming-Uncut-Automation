@@ -2,12 +2,13 @@ import React, { useState, useEffect, useRef } from 'react'
 import {
   Sparkles, Youtube, Instagram, Facebook, Wand2, ShieldCheck,
   CheckCircle2, AlertCircle, FileVideo, Download, RotateCcw,
-  Check, Clock, Scissors, Sliders, Play, Edit3, Save, ExternalLink
+  Check, Clock, Scissors, Sliders, Play, Edit3, Save, ExternalLink,
+  UploadCloud, FolderOpen, RefreshCw, Info, X
 } from 'lucide-react'
 import {
   validateSource, generateReel, fetchJobProgress,
   updateClipMetadata, addClipToQueue, fetchConnections,
-  reanalyzeClip
+  reanalyzeClip, uploadSourceVideo
 } from '../services/api'
 
 interface CreateReelPageProps {
@@ -39,6 +40,14 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
   const [validating, setValidating] = useState(false)
   const [validationResult, setValidationResult] = useState<any>(null)
   const [validationError, setValidationError] = useState('')
+
+  // Source acquisition & local import states
+  const [localFilePath, setLocalFilePath] = useState('')
+  const [localFileName, setLocalFileName] = useState('')
+  const [showMetadataModal, setShowMetadataModal] = useState(false)
+  const [isUploading, setIsUploading] = useState(false)
+  const [showCreatorPathInput, setShowCreatorPathInput] = useState(false)
+  const [creatorPathInput, setCreatorPathInput] = useState('')
 
   // Job progress states
   const [submitting, setSubmitting] = useState(false)
@@ -96,8 +105,44 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0]
       setUrl(file.name)
+      setLocalFilePath('')
+      setLocalFileName(file.name)
       setValidationResult(null)
       setValidationError('')
+    }
+  }
+
+  const handleDirectFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0]
+      setIsUploading(true)
+      setValidationError('')
+      try {
+        const uploadRes = await uploadSourceVideo(file, url.startsWith('http') ? url : undefined)
+        setLocalFilePath(uploadRes.local_path)
+        setLocalFileName(uploadRes.filename || file.name)
+        // Automatically validate with local file path attached
+        const updatedVal = await validateSource(url.trim(), gameName.trim() || undefined, uploadRes.local_path)
+        setValidationResult(updatedVal)
+      } catch (err: any) {
+        setValidationError('File upload failed: ' + (err.message || String(err)))
+      } finally {
+        setIsUploading(false)
+      }
+    }
+  }
+
+  const handleApplyCreatorPath = async () => {
+    if (!creatorPathInput.trim()) return
+    const pathVal = creatorPathInput.trim()
+    setLocalFilePath(pathVal)
+    setLocalFileName(pathVal.split(/[\\/]/).pop() || pathVal)
+    setShowCreatorPathInput(false)
+    try {
+      const updatedVal = await validateSource(url.trim(), gameName.trim() || undefined, pathVal)
+      setValidationResult(updatedVal)
+    } catch (err: any) {
+      setValidationError('Local path verification failed: ' + (err.message || String(err)))
     }
   }
 
@@ -112,7 +157,7 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
     setValidationResult(null)
 
     try {
-      const data = await validateSource(url.trim(), gameName.trim() || undefined)
+      const data = await validateSource(url.trim(), gameName.trim() || undefined, localFilePath || undefined)
       setValidationResult(data)
     } catch (err: any) {
       setValidationError(err.message || 'Source validation failed.')
@@ -127,6 +172,11 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
 
     if (!sourceAuthorized) {
       alert('Usage rights or creator authorization confirmation is required.')
+      return
+    }
+
+    if (validationResult?.requires_file_import && !localFilePath) {
+      alert('Video found. Please import the original video file or provide an authorised source to start AI clipping.')
       return
     }
 
@@ -154,7 +204,8 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
         ai_hashtag_generation: aiHashtags,
         publish_mode: activeMode,
         platforms,
-        notes
+        notes,
+        local_file_path: localFilePath || undefined
       })
 
       const id = res.job_id
@@ -345,8 +396,122 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
             </p>
           </div>
 
-          {/* Validation Feedback Banner */}
-          {validationResult && (
+          {/* Metadata Found but File Required Banner */}
+          {validationResult && validationResult.requires_file_import && (
+            <div className="p-4 rounded-2xl border border-amber-500/40 bg-amber-500/10 text-xs space-y-3.5 shadow-lg">
+              <div className="flex flex-col sm:flex-row items-start justify-between gap-3">
+                <div className="space-y-1 flex-1">
+                  <div className="flex items-center space-x-2">
+                    <span className="px-2 py-0.5 rounded font-bold text-[10px] uppercase bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                      Metadata Available • File Required
+                    </span>
+                    <span className="text-slate-400 font-mono text-[11px]">{validationResult.duration_formatted}</span>
+                    <span className="text-slate-400 font-mono text-[11px]">{validationResult.resolution}</span>
+                  </div>
+                  <h4 className="font-extrabold text-slate-100 text-sm">{validationResult.title}</h4>
+                  <p className="text-slate-400 text-[11px]">Author: <span className="text-slate-200">{validationResult.author}</span></p>
+                  <p className="text-amber-200 font-semibold text-xs pt-1">
+                    {validationResult.message || "Video found. Import the original video file or provide an authorised source to start AI clipping."}
+                  </p>
+                </div>
+                {validationResult.thumbnail_url && (
+                  <img src={validationResult.thumbnail_url} alt="Thumbnail" className="w-28 h-16 object-cover rounded-xl border border-amber-500/30 flex-shrink-0" />
+                )}
+              </div>
+
+              {/* Attached Local/Creator File Confirmation */}
+              {localFilePath ? (
+                <div className="p-2.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-between">
+                  <div className="flex items-center space-x-2 text-emerald-300 font-semibold">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                    <span>Attached Source Video: <span className="text-slate-100 font-mono">{localFileName || localFilePath}</span></span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { setLocalFilePath(''); setLocalFileName(''); }}
+                    className="text-xs text-rose-400 hover:text-rose-300 underline font-medium"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ) : null}
+
+              {/* Action Buttons */}
+              <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-amber-500/20">
+                {/* 1. Import Local Video */}
+                <label className="cursor-pointer px-3.5 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold text-xs rounded-xl shadow-md flex items-center space-x-1.5 transition">
+                  <UploadCloud className="w-4 h-4" />
+                  <span>{isUploading ? 'Uploading Video...' : 'Import Local Video'}</span>
+                  <input
+                    type="file"
+                    accept="video/mp4,video/x-matroska,video/quicktime,video/webm"
+                    disabled={isUploading}
+                    onChange={handleDirectFileUpload}
+                    className="hidden"
+                  />
+                </label>
+
+                {/* 2. Creator-Provided Video */}
+                <button
+                  type="button"
+                  onClick={() => setShowCreatorPathInput(!showCreatorPathInput)}
+                  className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-xs rounded-xl flex items-center space-x-1.5 transition"
+                >
+                  <FolderOpen className="w-4 h-4 text-purple-400" />
+                  <span>Creator-Provided Video</span>
+                </button>
+
+                {/* 3. Retry Source Validation */}
+                <button
+                  type="button"
+                  onClick={handleValidateSource}
+                  disabled={validating}
+                  className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-xs rounded-xl flex items-center space-x-1.5 transition"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 text-slate-400 ${validating ? 'animate-spin' : ''}`} />
+                  <span>Retry Source Validation</span>
+                </button>
+
+                {/* 4. View Video Metadata */}
+                <button
+                  type="button"
+                  onClick={() => setShowMetadataModal(true)}
+                  className="px-3.5 py-2 bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700/80 font-bold text-xs rounded-xl flex items-center space-x-1.5 transition ml-auto"
+                >
+                  <Info className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>View Video Metadata</span>
+                </button>
+              </div>
+
+              {/* Creator Path Input Section */}
+              {showCreatorPathInput && (
+                <div className="p-3 bg-[#0a0d14] border border-gaming-border rounded-xl space-y-2 mt-2">
+                  <label className="block text-[11px] font-bold text-slate-300">
+                    Enter Local File Path for Creator-Provided Video:
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={creatorPathInput}
+                      onChange={(e) => setCreatorPathInput(e.target.value)}
+                      placeholder="e.g. D:\Recordings\gameplay.mp4"
+                      className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleApplyCreatorPath}
+                      className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-bold"
+                    >
+                      Attach Path
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Fully Validated Source Banner */}
+          {validationResult && !validationResult.requires_file_import && validationResult.valid && (
             <div className="p-3.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-xs flex items-start justify-between">
               <div className="space-y-1">
                 <div className="flex items-center space-x-2">
@@ -358,6 +523,9 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
                 <h4 className="font-bold text-slate-100 text-sm">{validationResult.title}</h4>
                 <p className="text-slate-400 text-[11px]">Author: <span className="text-slate-200">{validationResult.author}</span></p>
                 <p className="text-emerald-400 text-[11px]">{validationResult.message}</p>
+                {localFilePath && (
+                  <p className="text-purple-300 font-mono text-[11px] pt-0.5">Attached Source: {localFileName || localFilePath}</p>
+                )}
               </div>
               {validationResult.thumbnail_url && (
                 <img src={validationResult.thumbnail_url} alt="Thumbnail" className="w-24 h-14 object-cover rounded-lg border border-slate-700" />
@@ -898,6 +1066,75 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Video Source Metadata Modal */}
+      {showMetadataModal && validationResult && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-[#111827] border border-gaming-border rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-2xl relative">
+            <button
+              onClick={() => setShowMetadataModal(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white p-1 rounded-lg"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className="flex items-center space-x-2 pb-2 border-b border-gaming-border">
+              <Info className="w-5 h-5 text-purple-400" />
+              <h3 className="font-extrabold text-slate-100 text-base">Video Source Metadata</h3>
+            </div>
+            {validationResult.thumbnail_url && (
+              <img
+                src={validationResult.thumbnail_url}
+                alt="Thumbnail"
+                className="w-full h-44 object-cover rounded-xl border border-slate-700"
+              />
+            )}
+            <div className="space-y-2.5 text-xs">
+              <div>
+                <span className="text-slate-400 font-semibold block text-[11px] mb-0.5">Video Title:</span>
+                <p className="text-slate-100 font-bold text-sm">{validationResult.title}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                <div>
+                  <span className="text-slate-400 font-semibold block text-[11px]">Author / Channel:</span>
+                  <p className="text-slate-200">{validationResult.author}</p>
+                </div>
+                <div>
+                  <span className="text-slate-400 font-semibold block text-[11px]">Platform:</span>
+                  <p className="text-purple-400 font-bold">{validationResult.platform_name}</p>
+                </div>
+                <div>
+                  <span className="text-slate-400 font-semibold block text-[11px]">Duration:</span>
+                  <p className="text-slate-200 font-mono">{validationResult.duration_formatted}</p>
+                </div>
+                <div>
+                  <span className="text-slate-400 font-semibold block text-[11px]">Resolution:</span>
+                  <p className="text-slate-200 font-mono">{validationResult.resolution}</p>
+                </div>
+              </div>
+              <div className="pt-2">
+                <span className="text-slate-400 font-semibold text-[11px]">Acquisition Status:</span>
+                <span className="ml-2 px-2 py-0.5 rounded font-mono text-[11px] bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                  {validationResult.status || 'metadata_available'}
+                </span>
+              </div>
+              {validationResult.error_detail && (
+                <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 text-[11px] text-slate-400">
+                  <span className="text-slate-300 font-semibold">Stream Restriction:</span> {validationResult.error_detail}
+                </div>
+              )}
+            </div>
+            <div className="pt-3 border-t border-gaming-border flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowMetadataModal(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl transition"
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>

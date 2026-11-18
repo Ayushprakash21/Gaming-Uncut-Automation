@@ -124,12 +124,18 @@ class BaseSourceAdapter(ABC):
         pass
 
     @abstractmethod
-    def validate_source(self, url_or_path: str) -> Dict[str, Any]:
+    def validate_source(self, url_or_path: str, local_override_path: Optional[str] = None) -> Dict[str, Any]:
         """Validates source accessibility, format, and metadata without downloading full payload."""
         pass
 
     @abstractmethod
-    def validate_and_ingest(self, url_or_path: str, auth_type: str = "user_owned", job_id: Optional[int] = None) -> Dict[str, Any]:
+    def validate_and_ingest(
+        self,
+        url_or_path: str,
+        auth_type: str = "user_owned",
+        job_id: Optional[int] = None,
+        local_override_path: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Validates the source, downloads/copies if necessary,
         returns normalized metadata and local file path.
@@ -142,8 +148,8 @@ class LocalFileAdapter(BaseSourceAdapter):
         p = Path(os.path.expandvars(os.path.expanduser(raw_str)))
         return p.exists() and p.is_file() and p.suffix.lower() in [".mp4", ".mkv", ".mov", ".avi", ".ts", ".webm"]
 
-    def validate_source(self, url_or_path: str) -> Dict[str, Any]:
-        raw_str = str(url_or_path).strip().strip('\"\'')
+    def validate_source(self, url_or_path: str, local_override_path: Optional[str] = None) -> Dict[str, Any]:
+        raw_str = str(local_override_path or url_or_path).strip().strip('\"\'')
         path = Path(os.path.expandvars(os.path.expanduser(raw_str))).resolve()
         if not path.exists():
             raise FileNotFoundError(f"Local video file not found at: '{path}'")
@@ -157,6 +163,7 @@ class LocalFileAdapter(BaseSourceAdapter):
         seconds = int(meta["duration"] % 60)
         return {
             "valid": True,
+            "ready_to_process": True,
             "source_type": "local",
             "platform_name": "Local Video Footage",
             "title": path.name,
@@ -166,15 +173,25 @@ class LocalFileAdapter(BaseSourceAdapter):
             "thumbnail_url": "",
             "author": "Local Device",
             "accessible": True,
-            "message": f"Local footage verified ({meta['width']}x{meta['height']}, {minutes}:{seconds:02d})."
+            "can_download": False,
+            "requires_file_import": False,
+            "local_path": str(path),
+            "message": f"Local footage verified ({meta['width']}x{meta['height']}, {minutes}:{seconds:02d}).",
+            "suggested_actions": []
         }
 
-    def validate_and_ingest(self, url_or_path: str, auth_type: str = "user_owned", job_id: Optional[int] = None) -> Dict[str, Any]:
+    def validate_and_ingest(
+        self,
+        url_or_path: str,
+        auth_type: str = "user_owned",
+        job_id: Optional[int] = None,
+        local_override_path: Optional[str] = None
+    ) -> Dict[str, Any]:
         if job_id:
             from backend.app.services.pipeline_service import pipeline_service, JobCancelledException
             if pipeline_service.is_cancellation_requested(job_id):
                 raise JobCancelledException(f"Job #{job_id} cancelled during local file ingestion.")
-        raw_str = str(url_or_path).strip().strip('\"\'')
+        raw_str = str(local_override_path or url_or_path).strip().strip('\"\'')
         path = Path(os.path.expandvars(os.path.expanduser(raw_str))).resolve()
         meta = probe_local_media(path)
         if meta["duration"] < 5.0:
@@ -203,7 +220,9 @@ class DirectUrlAdapter(BaseSourceAdapter):
             for ext in [".mp4", ".mkv", ".mov", ".webm"]
         )
 
-    def validate_source(self, url_or_path: str) -> Dict[str, Any]:
+    def validate_source(self, url_or_path: str, local_override_path: Optional[str] = None) -> Dict[str, Any]:
+        if local_override_path:
+            return LocalFileAdapter().validate_source(local_override_path)
         url = url_or_path.strip().strip('\"\'')
         try:
             with httpx.Client(timeout=10.0, follow_redirects=True) as client:
@@ -216,6 +235,7 @@ class DirectUrlAdapter(BaseSourceAdapter):
                 filename = url.split("?")[0].split("/")[-1] or "direct_video.mp4"
                 return {
                     "valid": True,
+                    "ready_to_process": True,
                     "source_type": "direct_url",
                     "platform_name": "Direct Video Stream",
                     "title": filename,
@@ -225,12 +245,23 @@ class DirectUrlAdapter(BaseSourceAdapter):
                     "thumbnail_url": "",
                     "author": "Web Video Source",
                     "accessible": True,
-                    "message": f"Direct video stream accessible ({content_type})."
+                    "can_download": True,
+                    "requires_file_import": False,
+                    "message": f"Direct video stream accessible ({content_type}).",
+                    "suggested_actions": []
                 }
         except Exception as e:
             raise ValueError(f"Direct stream validation error: {e}")
 
-    def validate_and_ingest(self, url_or_path: str, auth_type: str = "creator_authorized", job_id: Optional[int] = None) -> Dict[str, Any]:
+    def validate_and_ingest(
+        self,
+        url_or_path: str,
+        auth_type: str = "creator_authorized",
+        job_id: Optional[int] = None,
+        local_override_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        if local_override_path:
+            return LocalFileAdapter().validate_and_ingest(local_override_path, auth_type=auth_type, job_id=job_id)
         # Validate accessibility with HEAD request
         with httpx.Client(timeout=10.0, follow_redirects=True) as client:
             resp = client.head(url_or_path)
@@ -276,42 +307,18 @@ class YouTubeAdapter(BaseSourceAdapter):
         clean = url_or_path.replace("\\", "/").strip().strip('\"\'')
         return bool(extract_youtube_id(clean) or ("youtube.com" in clean.lower()) or ("youtu.be" in clean.lower()))
 
-    def validate_source(self, url_or_path: str) -> Dict[str, Any]:
-        canonical_url = normalize_youtube_url(url_or_path)
-        ydl_opts = {
-            "extract_flat": False,
-            "skip_download": True,
-            "quiet": True,
-            "no_warnings": True,
-        }
-        try:
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(canonical_url, download=False)
-                if not info:
-                    raise ValueError("Could not extract metadata from YouTube URL.")
-                duration = float(info.get("duration", 0) or 0)
-                minutes = int(duration // 60)
-                seconds = int(duration % 60)
-                width = info.get("width") or 1920
-                height = info.get("height") or 1080
-                thumb = info.get("thumbnail") or ""
-                return {
-                    "valid": True,
-                    "source_type": "youtube",
-                    "platform_name": "YouTube",
-                    "title": info.get("title", f"YouTube {info.get('id', '')}"),
-                    "duration": duration,
-                    "duration_formatted": f"{minutes}:{seconds:02d}",
-                    "resolution": f"{width}x{height}",
-                    "thumbnail_url": thumb,
-                    "author": info.get("uploader") or info.get("channel") or "YouTube Creator",
-                    "accessible": True,
-                    "message": f"YouTube video verified ({minutes}:{seconds:02d}, {width}x{height})."
-                }
-        except Exception as e:
-            raise ValueError(f"YouTube source validation failed: {e}")
+    def validate_source(self, url_or_path: str, local_override_path: Optional[str] = None) -> Dict[str, Any]:
+        from backend.app.ingestion.youtube_source import youtube_source_service
+        return youtube_source_service.inspect_and_validate(url_or_path, local_override_path=local_override_path)
 
-    def validate_and_ingest(self, url_or_path: str, auth_type: str = "creator_authorized", job_id: Optional[int] = None) -> Dict[str, Any]:
+    def validate_and_ingest(
+        self,
+        url_or_path: str,
+        auth_type: str = "creator_authorized",
+        job_id: Optional[int] = None,
+        local_override_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        from backend.app.ingestion.youtube_source import youtube_source_service, YouTubeAcquisitionError
         if job_id:
             from backend.app.services.pipeline_service import pipeline_service, JobCancelledException
             if pipeline_service.is_cancellation_requested(job_id):
@@ -321,6 +328,29 @@ class YouTubeAdapter(BaseSourceAdapter):
         video_id = extract_youtube_id(canonical_url)
         if not video_id:
             raise ValueError(f"Could not extract a valid YouTube video ID from: {url_or_path}")
+
+        # 1. Local override (creator-provided or user-imported file)
+        if local_override_path:
+            p = Path(local_override_path).resolve()
+            if not p.exists() or not p.is_file():
+                raise FileNotFoundError(f"Creator-provided video file not found at: '{p}'")
+            meta = probe_local_media(p)
+            yt_meta = youtube_source_service.get_unified_metadata(video_id) or {}
+            duration = meta.get("duration", 0) or yt_meta.get("duration", 0)
+            return {
+                "source_type": "youtube",
+                "url": canonical_url,
+                "title": yt_meta.get("title", f"YouTube {video_id}"),
+                "duration": duration,
+                "width": meta["width"],
+                "height": meta["height"],
+                "fps": meta["fps"],
+                "format": meta["format"],
+                "local_path": str(p),
+                "author": yt_meta.get("author", "YouTube Creator"),
+                "license_info": "Creator Authorized Ingestion",
+                "auth_type": auth_type
+            }
 
         source_lock = get_source_lock(video_id)
         target_file = settings.INPUT_DIR / f"yt_{video_id}.mp4"
@@ -332,75 +362,34 @@ class YouTubeAdapter(BaseSourceAdapter):
                 if pipeline_service.is_cancellation_requested(job_id):
                     raise JobCancelledException(f"Job #{job_id} cancelled while acquiring source lock.")
 
-            # 1. Deduplication / Cache: Check if already downloaded, readable, and non-empty
+            # 2. Check local cache
             if target_file.exists() and target_file.stat().st_size > 1024:
                 meta = probe_local_media(target_file)
                 if meta.get("duration", 0) > 0 and meta.get("width", 0) > 0:
                     logger.info(f"Reusing existing downloaded source: {target_file}")
+                    yt_meta = youtube_source_service.get_unified_metadata(video_id) or {}
                     return {
                         "source_type": "youtube",
                         "url": canonical_url,
-                        "title": f"YouTube {video_id}",
+                        "title": yt_meta.get("title", f"YouTube {video_id}"),
                         "duration": meta["duration"],
                         "width": meta["width"],
                         "height": meta["height"],
                         "fps": meta["fps"],
                         "format": meta["format"],
                         "local_path": str(target_file.resolve()),
-                        "author": "YouTube Creator",
+                        "author": yt_meta.get("author", "YouTube Creator"),
                         "license_info": "Authorized Creator Ingestion",
                         "auth_type": auth_type
                     }
 
-            # 2. Download with unique temp file per thread to avoid file collisions
-            unique_token = uuid.uuid4().hex[:8]
-            temp_out_tmpl = str(settings.TEMP_DIR / f"yt_{video_id}_{unique_token}.%(ext)s")
-
-            def _yt_cancel_hook(d):
-                if job_id:
-                    from backend.app.services.pipeline_service import pipeline_service, JobCancelledException
-                    if pipeline_service.is_cancellation_requested(job_id):
-                        raise JobCancelledException(f"Job #{job_id} cancelled during YouTube download.")
-
-            ydl_opts = {
-                "format": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-                "outtmpl": temp_out_tmpl,
-                "merge_output_format": "mp4",
-                "quiet": True,
-                "no_warnings": True,
-                "noplaylist": True,
-                "progress_hooks": [_yt_cancel_hook],
-            }
-
+            # 3. Download via YouTubeSourceService
             try:
-                with YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(canonical_url, download=False)
-                    if not info:
-                        raise ValueError(f"Could not retrieve metadata for YouTube URL: {canonical_url}")
-                    
-                    duration = float(info.get("duration", 0) or 0)
-                    if duration > 7200:
-                        raise ValueError(f"Video duration ({duration/60:.1f}m) exceeds 2-hour processing maximum.")
-
-                    ydl.download([canonical_url])
-
-                # Locate downloaded temp output file
-                downloaded_temp = None
-                for ext in ["mp4", "mkv", "webm"]:
-                    candidate = settings.TEMP_DIR / f"yt_{video_id}_{unique_token}.{ext}"
-                    if candidate.exists() and candidate.stat().st_size > 1024:
-                        downloaded_temp = candidate
-                        break
-
-                if not downloaded_temp:
-                    raise FileNotFoundError(f"yt-dlp download failed to produce expected file for video ID {video_id}")
-
-                # Safely replace to canonical target location with Windows retry/backoff
-                safe_windows_replace(downloaded_temp, target_file)
-
-            except Exception as e:
-                logger.error(f"Downloader failed for YouTube video {video_id}: {e}", exc_info=True)
-                raise RuntimeError(f"YouTube video acquisition failed: {e}") from e
+                youtube_source_service.download_source_file(video_id, target_file, job_id=job_id)
+            except YouTubeAcquisitionError as ye:
+                raise ValueError(
+                    "Video found. Import the original video file or provide an authorised source to start AI clipping."
+                ) from ye
 
             # Validate target file exists, is non-empty, and probe-able
             if not target_file.exists() or target_file.stat().st_size <= 1024:
@@ -410,18 +399,19 @@ class YouTubeAdapter(BaseSourceAdapter):
             if meta.get("duration", 0) <= 0:
                 raise ValueError(f"Downloaded media is unreadable or corrupt: {target_file}")
 
+            yt_meta = youtube_source_service.get_unified_metadata(video_id) or {}
             return {
                 "source_type": "youtube",
                 "url": canonical_url,
-                "title": info.get("title", f"YouTube {video_id}"),
-                "duration": meta["duration"] or duration,
+                "title": yt_meta.get("title", f"YouTube {video_id}"),
+                "duration": meta["duration"],
                 "width": meta["width"],
                 "height": meta["height"],
                 "fps": meta["fps"],
                 "format": meta["format"],
                 "local_path": str(target_file.resolve()),
-                "author": info.get("uploader", "YouTube Creator"),
-                "license_info": info.get("license", "Authorized Creator Ingestion"),
+                "author": yt_meta.get("author", "YouTube Creator"),
+                "license_info": "Authorized Creator Ingestion",
                 "auth_type": auth_type
             }
 
@@ -433,7 +423,7 @@ class IngestionManager:
             DirectUrlAdapter()
         ]
 
-    def validate_source(self, url_or_path: str) -> Dict[str, Any]:
+    def validate_source(self, url_or_path: str, local_override_path: Optional[str] = None) -> Dict[str, Any]:
         """Probes and validates source accessibility, metadata, and platform type."""
         raw = str(url_or_path).strip().strip('\"\'')
         # Check local path expansion first
@@ -450,7 +440,7 @@ class IngestionManager:
                 f"Unsupported source format or unreachable URL: '{raw}'. "
                 "Supported: Authorized YouTube URLs, Direct Video MP4 streams, or Local MP4/MKV files."
             )
-        return matched_adapter.validate_source(raw)
+        return matched_adapter.validate_source(raw, local_override_path=local_override_path)
 
     def process_url_or_path(
         self,
@@ -458,7 +448,8 @@ class IngestionManager:
         auth_type: str = "user_owned",
         notes: str = "",
         job_id: Optional[int] = None,
-        game_name: Optional[str] = None
+        game_name: Optional[str] = None,
+        local_override_path: Optional[str] = None
     ) -> SourceVideo:
         target = url_or_path.strip()
         matched_adapter = next((a for a in self.adapters if a.can_handle(target)), None)
@@ -470,7 +461,12 @@ class IngestionManager:
             )
 
         logger.info(f"Ingesting source with {matched_adapter.__class__.__name__}: {target}")
-        data = matched_adapter.validate_and_ingest(target, auth_type=auth_type, job_id=job_id)
+        data = matched_adapter.validate_and_ingest(
+            target,
+            auth_type=auth_type,
+            job_id=job_id,
+            local_override_path=local_override_path
+        )
         clean_user_game = game_name.strip() if (game_name and game_name.strip()) else None
 
         with SessionLocal() as db:
@@ -478,6 +474,58 @@ class IngestionManager:
             existing = db.query(SourceVideo).filter(
                 (SourceVideo.local_path == data["local_path"]) | (SourceVideo.url == data["url"])
             ).first()
+
+            if existing:
+                video = existing
+                # ALWAYS update local_path, title, duration, and dimensions to real media values
+                video.local_path = data["local_path"]
+                video.url = data["url"]
+                if clean_user_game:
+                    video.user_game_name = clean_user_game
+                if data.get("title") and ("Source " not in data["title"] or not video.title):
+                    video.title = data["title"]
+                if data.get("duration"):
+                    video.duration = data["duration"]
+                if data.get("width"):
+                    video.width = data["width"]
+                if data.get("height"):
+                    video.height = data["height"]
+                if data.get("fps"):
+                    video.fps = data["fps"]
+                if data.get("format"):
+                    video.format = data["format"]
+                video.status = "ready"
+            else:
+                video = SourceVideo(
+                    url=data["url"],
+                    title=data["title"],
+                    duration=data["duration"],
+                    width=data["width"],
+                    height=data["height"],
+                    fps=data["fps"],
+                    format=data["format"],
+                    local_path=data["local_path"],
+                    source_type=data["source_type"],
+                    author=data["author"],
+                    license_info=data["license_info"],
+                    user_game_name=clean_user_game,
+                    status="ready"
+                )
+                db.add(video)
+                db.flush()
+
+                # Add authorization record
+                auth = SourceAuthorization(
+                    source_video_id=video.id,
+                    auth_type=data["auth_type"],
+                    authorized_by=data["author"],
+                    notes=notes or "Authorized via Gaming Uncut Ingestion Engine"
+                )
+                db.add(auth)
+
+            db.commit()
+            db.refresh(video)
+            return video
 
             if existing:
                 video = existing

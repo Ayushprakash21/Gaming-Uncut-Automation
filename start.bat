@@ -134,6 +134,7 @@ if not exist "data\output" mkdir "data\output"
 if not exist "data\processing" mkdir "data\processing"
 if not exist "data\thumbnails" mkdir "data\thumbnails"
 if not exist "data\temporary" mkdir "data\temporary"
+if not exist "data\sources" mkdir "data\sources"
 if not exist "logs" mkdir "logs"
 if not exist ".vault" mkdir ".vault"
 

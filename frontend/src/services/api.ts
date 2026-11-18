@@ -112,12 +112,33 @@ export async function fetchOverview(): Promise<OverviewData> {
   return safeFetch<OverviewData>(`${API_BASE}/overview`)
 }
 
-export async function validateSource(url: string, game_name?: string) {
+export async function validateSource(url: string, game_name?: string, local_file_path?: string) {
   return safeFetch(`${API_BASE}/reels/validate-source`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, game_name: game_name?.trim() || undefined })
+    body: JSON.stringify({
+      url,
+      game_name: game_name?.trim() || undefined,
+      local_file_path: local_file_path?.trim() || undefined
+    })
   })
+}
+
+export async function uploadSourceVideo(file: File, youtubeUrl?: string) {
+  const formData = new FormData()
+  formData.append('file', file)
+  if (youtubeUrl) {
+    formData.append('youtube_url', youtubeUrl)
+  }
+  const res = await fetch(`${API_BASE}/reels/upload-source`, {
+    method: 'POST',
+    body: formData
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Failed to upload video' }))
+    throw new Error(err.detail || 'Failed to upload video')
+  }
+  return res.json()
 }
 
 export async function generateReel(data: {
@@ -139,6 +160,7 @@ export async function generateReel(data: {
   publish_mode: string;
   platforms: string[];
   notes?: string;
+  local_file_path?: string;
 }) {
   return safeFetch(`${API_BASE}/reels/generate`, {
     method: 'POST',

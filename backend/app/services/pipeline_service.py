@@ -283,7 +283,8 @@ class PipelineService:
         background_tasks: Any = None,
         auth_type: str = "creator_authorized",
         approval_mode: str = "manual",
-        game_name: Optional[str] = None
+        game_name: Optional[str] = None,
+        local_file_path: Optional[str] = None
     ):
         """Asynchronously dispatches pipeline execution for a processing job."""
         effective_publish_mode = "immediate" if approval_mode == "auto" else publish_mode
@@ -301,7 +302,8 @@ class PipelineService:
             "enable_captions": enable_captions,
             "enable_watermark": enable_watermark,
             "enable_ai_metadata": enable_ai_metadata,
-            "game_name": game_name
+            "game_name": game_name,
+            "local_file_path": local_file_path
         }
         if background_tasks:
             background_tasks.add_task(self.execute_from_url_or_path, **kwargs)
@@ -326,7 +328,8 @@ class PipelineService:
         enable_watermark: bool = True,
         enable_ai_metadata: bool = True,
         notes: Optional[str] = None,
-        game_name: Optional[str] = None
+        game_name: Optional[str] = None,
+        local_file_path: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Executes full 10-stage autonomous pipeline:
@@ -393,9 +396,16 @@ class PipelineService:
         try:
             # Stage 1: Source validation
             self._update_job_stage(job_id, 0, self.STAGES[0], 10)
-            val_result = ingestion_manager.validate_source(clean_target)
+            val_result = ingestion_manager.validate_source(clean_target, local_override_path=local_file_path)
             if not val_result.get("accessible", False):
                 raise ValueError(f"Source validation rejected: {val_result.get('message', 'Source not accessible')}")
+            if val_result.get("requires_file_import", False) and not local_file_path:
+                raise ValueError(
+                    val_result.get(
+                        "message",
+                        "Video found. Import the original video file or provide an authorised source to start AI clipping."
+                    )
+                )
 
             # Stage 2: Media ingestion
             self._update_job_stage(job_id, 1, self.STAGES[1], 20)
@@ -404,7 +414,8 @@ class PipelineService:
                 clean_target,
                 notes=notes or "",
                 job_id=job_id,
-                game_name=game_name
+                game_name=game_name,
+                local_override_path=local_file_path
             )
             user_game = (game_name.strip() if game_name and game_name.strip() else None) or getattr(source_video, "user_game_name", None)
             if user_game and not getattr(source_video, "user_game_name", None):

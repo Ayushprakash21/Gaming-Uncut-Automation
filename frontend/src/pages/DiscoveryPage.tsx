@@ -43,6 +43,7 @@ import {
   deleteDiscoveryChannel,
   fetchDiscoverySchedule,
   updateDiscoverySchedule,
+  uploadSourceVideo,
   triggerDiscoveryScanNow,
   pauseDiscoverySchedule,
   resumeDiscoverySchedule
@@ -328,6 +329,25 @@ export const DiscoveryPage: React.FC<DiscoveryPageProps> = ({ onNavigate }) => {
       loadQueue()
     } catch (e: any) {
       showNotify(e.message || 'Retry failed.', 'error')
+    } finally {
+      setActionLoading((prev) => {
+        const copy = { ...prev }
+        delete copy[videoId]
+        return copy
+      })
+    }
+  }
+
+  const handleImportVideoForDiscovered = async (videoId: number, file: File, youtubeUrl: string) => {
+    setActionLoading((prev) => ({ ...prev, [videoId]: 'uploading' }))
+    try {
+      const uploadRes = await uploadSourceVideo(file, youtubeUrl)
+      showNotify(`Video uploaded: ${uploadRes.filename}. Enqueuing for processing...`, 'success')
+      const res = await processDiscoveredVideo(videoId, uploadRes.local_path, true)
+      showNotify(`Discovered video dispatched to AI pipeline as Job #${res.job_id}.`, 'success')
+      loadQueue()
+    } catch (e: any) {
+      showNotify(e.message || 'Failed to upload and process video.', 'error')
     } finally {
       setActionLoading((prev) => {
         const copy = { ...prev }
@@ -1039,8 +1059,12 @@ export const DiscoveryPage: React.FC<DiscoveryPageProps> = ({ onNavigate }) => {
                         </div>
 
                         {item.error_message && (
-                          <div className="text-[11px] text-rose-400 bg-rose-950/30 px-2 py-0.5 rounded border border-rose-500/20">
-                            Error: {item.error_message}
+                          <div className="text-[11px] text-amber-300 bg-amber-950/40 px-2.5 py-1 rounded-lg border border-amber-500/30 font-medium">
+                            {item.error_message.includes('bot') || item.error_message.includes('Import the original') ? (
+                              <span>Video found. Import the original video file or provide an authorised source to start AI clipping.</span>
+                            ) : (
+                              <span>Error: {item.error_message}</span>
+                            )}
                           </div>
                         )}
                       </div>
@@ -1074,18 +1098,35 @@ export const DiscoveryPage: React.FC<DiscoveryPageProps> = ({ onNavigate }) => {
                       )}
 
                       {item.status === 'failed' && (
-                        <button
-                          onClick={() => handleRetryVideo(item.id)}
-                          disabled={actionLoading[item.id] === 'retrying'}
-                          className="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-xs font-semibold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition shadow"
-                        >
-                          <RefreshCw
-                            className={`w-3.5 h-3.5 ${
-                              actionLoading[item.id] === 'retrying' ? 'animate-spin' : ''
-                            }`}
-                          />
-                          <span>Retry</span>
-                        </button>
+                        <>
+                          <label className="cursor-pointer bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-semibold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition shadow">
+                            <UploadCloud className="w-3.5 h-3.5" />
+                            <span>{actionLoading[item.id] === 'uploading' ? 'Uploading...' : 'Import Video'}</span>
+                            <input
+                              type="file"
+                              accept="video/mp4,video/x-matroska,video/quicktime,video/webm"
+                              disabled={actionLoading[item.id] === 'uploading'}
+                              onChange={(e) => {
+                                if (e.target.files && e.target.files[0]) {
+                                  handleImportVideoForDiscovered(item.id, e.target.files[0], item.youtube_url)
+                                }
+                              }}
+                              className="hidden"
+                            />
+                          </label>
+                          <button
+                            onClick={() => handleRetryVideo(item.id)}
+                            disabled={actionLoading[item.id] === 'retrying'}
+                            className="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-xs font-semibold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition shadow"
+                          >
+                            <RefreshCw
+                              className={`w-3.5 h-3.5 ${
+                                actionLoading[item.id] === 'retrying' ? 'animate-spin' : ''
+                              }`}
+                            />
+                            <span>Retry</span>
+                          </button>
+                        </>
                       )}
 
                       {['authorization_required', 'failed'].includes(item.status) && (

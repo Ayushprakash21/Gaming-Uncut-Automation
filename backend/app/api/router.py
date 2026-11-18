@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 import os
 import json
+import uuid
 import logging
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Form, UploadFile, File, Request, Query
 from pydantic import BaseModel
@@ -43,6 +44,7 @@ class SystemLimitsUpdateRequest(BaseModel):
 class ValidateSourceRequest(BaseModel):
     url: str
     game_name: Optional[str] = None
+    local_file_path: Optional[str] = None
 
 class CreateReelRequest(BaseModel):
     url: str
@@ -63,6 +65,7 @@ class CreateReelRequest(BaseModel):
     publish_mode: str = "approval"  # default to manual review until verified
     platforms: List[str] = ["youtube", "instagram", "facebook"]
     notes: Optional[str] = None
+    local_file_path: Optional[str] = None
 
 class UpdateClipMetadataRequest(BaseModel):
     title: str
@@ -279,13 +282,82 @@ async def validate_source(req: ValidateSourceRequest):
         raise HTTPException(status_code=400, detail="Video URL or path is required.")
     
     try:
-        result = ingestion_manager.validate_source(req.url.strip())
+        result = ingestion_manager.validate_source(
+            req.url.strip(),
+            local_override_path=req.local_file_path
+        )
         return result
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error(f"Validation error for '{req.url}': {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+# 3b. Local / Creator Source Video Upload Endpoint
+@router.post("/reels/upload-source")
+async def upload_source_video(
+    file: UploadFile = File(...),
+    youtube_url: Optional[str] = Form(None)
+):
+    """
+    Uploads and ingests a creator-provided or local gameplay video file.
+    Saves securely into data/input, probes media attributes, and optionally
+    pairs with a YouTube URL for AI clipping and metadata generation.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file uploaded.")
+
+    ext = Path(file.filename).suffix.lower()
+    if ext not in [".mp4", ".mkv", ".mov", ".avi", ".webm", ".ts"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported video format: '{ext}'. Allowed: MP4, MKV, MOV, WEBM."
+        )
+
+    clean_filename = f"upload_{uuid.uuid4().hex[:8]}_{Path(file.filename).name}"
+    target_path = settings.INPUT_DIR / clean_filename
+
+    try:
+        with open(target_path, "wb") as f:
+            while chunk := await file.read(1024 * 1024):
+                f.write(chunk)
+    except Exception as e:
+        logger.error(f"Failed to save uploaded video: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save video: {e}")
+
+    from backend.app.ingestion.adapters import probe_local_media
+    meta = probe_local_media(target_path)
+    if meta.get("duration", 0) < 3.0:
+        target_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded video duration is too short or file is corrupted (minimum 3s required)."
+        )
+
+    minutes = int(meta["duration"] // 60)
+    seconds = int(meta["duration"] % 60)
+
+    # If youtube_url was provided, retrieve YouTube metadata to combine
+    yt_meta = {}
+    if youtube_url:
+        from backend.app.ingestion.youtube_source import youtube_source_service, extract_youtube_id
+        vid = extract_youtube_id(youtube_url)
+        if vid:
+            yt_meta = youtube_source_service.get_unified_metadata(vid) or {}
+
+    return {
+        "status": "success",
+        "local_path": str(target_path.resolve()),
+        "filename": file.filename,
+        "size_mb": round(target_path.stat().st_size / (1024 * 1024), 2),
+        "duration": meta["duration"],
+        "duration_formatted": f"{minutes}:{seconds:02d}",
+        "resolution": f"{meta.get('width', 1920)}x{meta.get('height', 1080)}",
+        "title": yt_meta.get("title") or Path(file.filename).stem,
+        "author": yt_meta.get("author") or "Creator File",
+        "thumbnail_url": yt_meta.get("thumbnail_url") or "",
+        "message": "Local video file uploaded and verified successfully."
+    }
 
 # 4. Create / Generate Reel Workflow
 @router.post("/reels/generate")
@@ -321,7 +393,7 @@ def generate_reel(req: CreateReelRequest, background_tasks: BackgroundTasks, db:
             height=1080,
             fps=30.0,
             format="mp4",
-            local_path=clean_url if is_local else f"pending_{clean_url}",
+            local_path=req.local_file_path or (clean_url if is_local else f"pending_{clean_url}"),
             source_type="youtube" if ("youtube.com" in clean_url or "youtu.be" in clean_url) else ("direct_url" if clean_url.startswith("http") else "local"),
             user_game_name=clean_game_name,
             status="ingesting"
@@ -332,7 +404,9 @@ def generate_reel(req: CreateReelRequest, background_tasks: BackgroundTasks, db:
     else:
         if clean_game_name:
             source_video.user_game_name = clean_game_name
-            db.commit()
+        if req.local_file_path:
+            source_video.local_path = req.local_file_path
+        db.commit()
 
     job = ProcessingJob(
         source_video_id=source_video.id,
@@ -362,7 +436,8 @@ def generate_reel(req: CreateReelRequest, background_tasks: BackgroundTasks, db:
         enable_watermark=req.watermark,
         enable_ai_metadata=(req.ai_title_generation or req.ai_description_generation),
         notes=req.notes,
-        game_name=clean_game_name
+        game_name=clean_game_name,
+        local_file_path=req.local_file_path
     )
 
     return {
