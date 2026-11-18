@@ -20,11 +20,11 @@ export async function fetchOverview(): Promise<OverviewData> {
   return res.json()
 }
 
-export async function validateSource(url: string) {
+export async function validateSource(url: string, game_name?: string) {
   const res = await fetch(`${API_BASE}/reels/validate-source`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url })
+    body: JSON.stringify({ url, game_name: game_name?.trim() || undefined })
   })
   const data = await res.json()
   if (!res.ok) {
@@ -35,6 +35,7 @@ export async function validateSource(url: string) {
 
 export async function generateReel(data: {
   url: string;
+  game_name?: string;
   source_authorized: boolean;
   target_duration?: number;
   resolution?: string;

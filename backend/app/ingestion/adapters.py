@@ -452,7 +452,14 @@ class IngestionManager:
             )
         return matched_adapter.validate_source(raw)
 
-    def process_url_or_path(self, url_or_path: str, auth_type: str = "user_owned", notes: str = "", job_id: Optional[int] = None) -> SourceVideo:
+    def process_url_or_path(
+        self,
+        url_or_path: str,
+        auth_type: str = "user_owned",
+        notes: str = "",
+        job_id: Optional[int] = None,
+        game_name: Optional[str] = None
+    ) -> SourceVideo:
         target = url_or_path.strip()
         matched_adapter = next((a for a in self.adapters if a.can_handle(target)), None)
         
@@ -464,6 +471,7 @@ class IngestionManager:
 
         logger.info(f"Ingesting source with {matched_adapter.__class__.__name__}: {target}")
         data = matched_adapter.validate_and_ingest(target, auth_type=auth_type, job_id=job_id)
+        clean_user_game = game_name.strip() if (game_name and game_name.strip()) else None
 
         with SessionLocal() as db:
             # Check duplicate by local_path or URL
@@ -476,6 +484,8 @@ class IngestionManager:
                 # ALWAYS update local_path, title, duration, and dimensions to real media values
                 video.local_path = data["local_path"]
                 video.url = data["url"]
+                if clean_user_game:
+                    video.user_game_name = clean_user_game
                 if data.get("title") and ("Source " not in data["title"] or not video.title):
                     video.title = data["title"]
                 if data.get("duration"):
@@ -502,6 +512,7 @@ class IngestionManager:
                     source_type=data["source_type"],
                     author=data["author"],
                     license_info=data["license_info"],
+                    user_game_name=clean_user_game,
                     status="ready"
                 )
                 db.add(video)

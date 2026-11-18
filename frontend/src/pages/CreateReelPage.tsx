@@ -18,6 +18,7 @@ interface CreateReelPageProps {
 export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, activeMode }) => {
   // Input states
   const [url, setUrl] = useState('')
+  const [gameName, setGameName] = useState('')
   const [sourceAuthorized, setSourceAuthorized] = useState(true)
   const [targetDuration, setTargetDuration] = useState(60)
   const [template, setTemplate] = useState('blurred_bg')
@@ -111,7 +112,7 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
     setValidationResult(null)
 
     try {
-      const data = await validateSource(url.trim())
+      const data = await validateSource(url.trim(), gameName.trim() || undefined)
       setValidationResult(data)
     } catch (err: any) {
       setValidationError(err.message || 'Source validation failed.')
@@ -137,6 +138,7 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
     try {
       const res = await generateReel({
         url: url.trim(),
+        game_name: gameName.trim() || undefined,
         source_authorized: true,
         target_duration: targetDuration,
         resolution: '1080x1920',
@@ -324,6 +326,23 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
               <Wand2 className="w-4 h-4" />
               <span>{submitting ? 'GENERATING...' : 'GENERATE REEL'}</span>
             </button>
+          </div>
+
+          {/* Optional Game Name Context Input */}
+          <div className="space-y-1.5 pt-1">
+            <label className="block text-xs font-bold text-slate-300">
+              Game Name (Optional)
+            </label>
+            <input
+              type="text"
+              value={gameName}
+              onChange={(e) => setGameName(e.target.value)}
+              placeholder="e.g. GTA V, GTA VI, Red Dead Redemption 2, Valorant"
+              className="w-full bg-[#0a0d14] border border-gaming-border focus:border-purple-500 focus:ring-1 focus:ring-purple-500 rounded-xl px-4 py-2.5 text-xs text-slate-100 placeholder-slate-500 font-medium transition"
+            />
+            <p className="text-[11px] text-slate-400">
+              Enter the game name to help AI identify gameplay events and generate more accurate titles, descriptions and hashtags. Leave blank for automatic game detection.
+            </p>
           </div>
 
           {/* Validation Feedback Banner */}
@@ -728,6 +747,19 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
               {saveSuccessMsg && (
                 <div className="text-xs text-emerald-400 font-semibold bg-emerald-950/30 border border-emerald-500/30 px-3 py-2 rounded-xl">
                   {saveSuccessMsg}
+                </div>
+              )}
+
+              {/* Game Mismatch Alert Banner */}
+              {completedClip?.game_mismatch_flag && (
+                <div className="bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs p-3.5 rounded-xl flex items-start space-x-2.5">
+                  <AlertCircle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold">Game Mismatch Flagged for Review: </span>
+                    <span>
+                      User suggested "{completedClip.user_game_name}", but visual analysis confirmed "{completedClip.detected_game}". Auto-publishing has been held for manual review.
+                    </span>
+                  </div>
                 </div>
               )}
 

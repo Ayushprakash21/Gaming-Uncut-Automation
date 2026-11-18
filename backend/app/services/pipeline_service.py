@@ -273,7 +273,8 @@ class PipelineService:
         enable_ai_metadata: bool = True,
         background_tasks: Any = None,
         auth_type: str = "creator_authorized",
-        approval_mode: str = "manual"
+        approval_mode: str = "manual",
+        game_name: Optional[str] = None
     ):
         """Asynchronously dispatches pipeline execution for a processing job."""
         effective_publish_mode = "immediate" if approval_mode == "auto" else publish_mode
@@ -290,7 +291,8 @@ class PipelineService:
             "enable_smart_cropping": enable_smart_cropping,
             "enable_captions": enable_captions,
             "enable_watermark": enable_watermark,
-            "enable_ai_metadata": enable_ai_metadata
+            "enable_ai_metadata": enable_ai_metadata,
+            "game_name": game_name
         }
         if background_tasks:
             background_tasks.add_task(self.execute_from_url_or_path, **kwargs)
@@ -314,7 +316,8 @@ class PipelineService:
         enable_captions: bool = True,
         enable_watermark: bool = True,
         enable_ai_metadata: bool = True,
-        notes: Optional[str] = None
+        notes: Optional[str] = None,
+        game_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Executes full 10-stage autonomous pipeline:
@@ -388,7 +391,20 @@ class PipelineService:
             # Stage 2: Media ingestion
             self._update_job_stage(job_id, 1, self.STAGES[1], 20)
             self.check_cancellation(job_id)
-            source_video = ingestion_manager.process_url_or_path(clean_target, notes=notes or "", job_id=job_id)
+            source_video = ingestion_manager.process_url_or_path(
+                clean_target,
+                notes=notes or "",
+                job_id=job_id,
+                game_name=game_name
+            )
+            user_game = (game_name.strip() if game_name and game_name.strip() else None) or getattr(source_video, "user_game_name", None)
+            if user_game and not getattr(source_video, "user_game_name", None):
+                with SessionLocal() as db:
+                    sv = db.query(SourceVideo).filter_by(id=source_video.id).first()
+                    if sv:
+                        sv.user_game_name = user_game
+                        db.commit()
+                        source_video.user_game_name = user_game
 
             # STRICT PRE-STAGE 3 VALIDATION GUARD:
             raw_local_path = str(source_video.local_path or "").strip().strip('\"\'')
@@ -444,7 +460,8 @@ class PipelineService:
                 scene_timestamps=scene_cuts,
                 audio_peaks=audio_peaks,
                 video_duration=source_video.duration,
-                source_title=source_video.title
+                source_title=source_video.title,
+                game_name=user_game
             )
 
             if not highlights_data:
@@ -547,12 +564,13 @@ class PipelineService:
                     highlight_transcript=clip_transcript or transcript_text[:500],
                     clip_duration=best_hl["duration_sec"],
                     video_path=output_clip_path,
-                    source_title=source_video.title
+                    source_title=source_video.title,
+                    user_game_name=user_game
                 )
             else:
                 ai_metadata = {
                     "title": f"Gameplay Sequence: {source_video.title[:40]}",
-                    "topic": "Gaming Highlights",
+                    "topic": user_game or "Gaming Highlights",
                     "description": f"Raw gameplay capture from {source_video.title[:50]} highlighting active gameplay sequences.",
                     "hashtags": "#GamingUncut #Shorts #GameplayMoments #GamingClip",
                     "pinned_comment": "Rate this gameplay sequence from 1 to 10 in the comments below! 👇",
@@ -560,8 +578,10 @@ class PipelineService:
                     "youtube_desc": f"Raw gameplay capture from {source_video.title[:50]} highlighting active gameplay sequences.\n\n#GamingUncut #Shorts",
                     "instagram_caption": f"Raw gameplay sequence from {source_video.title[:50]}.\n\n#GamingUncut #reels #GamingClip",
                     "facebook_caption": f"Raw gameplay sequence from {source_video.title[:50]}.\n\n#GamingUncut #Reels",
-                    "detected_game": "Unknown Game",
-                    "game_confidence": 0.0,
+                    "detected_game": user_game or "Unknown Game",
+                    "game_confidence": 0.50 if user_game else 0.0,
+                    "user_game_name": user_game,
+                    "game_mismatch_flag": False,
                     "analysis_provider": "heuristic",
                     "analysis_status": "incomplete"
                 }
@@ -607,6 +627,8 @@ class PipelineService:
                     game_confidence=float(ai_metadata.get("game_confidence", 0.0)),
                     game_franchise=ai_metadata.get("game_franchise"),
                     game_genre=ai_metadata.get("game_genre"),
+                    user_game_name=ai_metadata.get("user_game_name", user_game),
+                    game_mismatch_flag=bool(ai_metadata.get("game_mismatch_flag", False)),
                     gameplay_summary=ai_metadata.get("gameplay_summary"),
                     detected_events_json=json.dumps(ai_metadata.get("detected_events", [])),
                     candidate_titles_json=json.dumps(ai_metadata.get("candidate_titles", [ai_metadata["title"]])),
@@ -616,16 +638,30 @@ class PipelineService:
                 )
                 db.add(meta_record)
 
-                # FINAL ACCEPTANCE CRITERIA: A video must not be auto-published if AI analysis is incomplete, heuristic, or unconfirmed
+                # FINAL ACCEPTANCE CRITERIA: A video must not be auto-published if AI analysis is incomplete, heuristic, unconfirmed, OR if user-supplied game name conflicts with visual evidence
+                game_mismatch = bool(ai_metadata.get("game_mismatch_flag", False))
                 analysis_is_verified = (
                     ai_metadata.get("analysis_provider") == "gemini" and
                     ai_metadata.get("analysis_status") == "complete" and
-                    float(ai_metadata.get("game_confidence", 0.0)) >= 0.50
+                    float(ai_metadata.get("game_confidence", 0.0)) >= 0.50 and
+                    not game_mismatch
                 )
                 if publish_mode == "auto" and passed and analysis_is_verified:
                     approval_status = "auto_approved"
                 else:
                     approval_status = "pending_review"
+                    if publish_mode == "auto":
+                        if game_mismatch:
+                            logger.warning(
+                                f"Clip #{clip_id} auto-publish held for review: User provided game '{user_game}' conflicts with visual analysis ('{ai_metadata.get('detected_game')}'). "
+                                f"Discrepancy: {ai_metadata.get('mismatch_reason')}. Held in pending_review."
+                            )
+                        elif not analysis_is_verified:
+                            logger.info(
+                                f"Clip #{clip_id} auto-publish held: AI intelligence is "
+                                f"{ai_metadata.get('analysis_status', 'unconfirmed')} (provider: {ai_metadata.get('analysis_provider')}). "
+                                f"Held in pending_review for manual approval."
+                            )
                     if publish_mode == "auto" and not analysis_is_verified:
                         logger.info(
                             f"Clip #{clip_id} auto-publish held: AI intelligence is "

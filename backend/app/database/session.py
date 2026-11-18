@@ -73,6 +73,16 @@ def ensure_schema_compatibility(db_engine):
                     conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN analysis_status VARCHAR(50) DEFAULT 'complete'"))
                 if "analysis_fingerprint" not in cm_cols:
                     conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN analysis_fingerprint VARCHAR(64)"))
+                if "user_game_name" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN user_game_name VARCHAR(150)"))
+                if "game_mismatch_flag" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN game_mismatch_flag BOOLEAN DEFAULT 0"))
+                conn.commit()
+        if "source_videos" in inspector.get_table_names():
+            sv_cols = [c["name"] for c in inspector.get_columns("source_videos")]
+            with db_engine.connect() as conn:
+                if "user_game_name" not in sv_cols:
+                    conn.execute(text("ALTER TABLE source_videos ADD COLUMN user_game_name VARCHAR(150)"))
                 conn.commit()
         if "source_authorizations" in inspector.get_table_names():
             sa_cols = [c["name"] for c in inspector.get_columns("source_authorizations")]

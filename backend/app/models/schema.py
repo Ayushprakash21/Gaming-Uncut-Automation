@@ -27,6 +27,7 @@ class SourceVideo(Base):
     source_type = Column(String(50), default="local")  # youtube, direct_url, local, twitch_vod
     author = Column(String(255), nullable=True)
     license_info = Column(String(255), nullable=True)
+    user_game_name = Column(String(150), nullable=True)
     status = Column(String(50), default="ready")  # pending_download, downloading, ready, failed
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -125,6 +126,8 @@ class ClipMetadata(Base):
     game_confidence = Column(Float, default=0.0)
     game_franchise = Column(String(100), nullable=True)
     game_genre = Column(String(100), nullable=True)
+    user_game_name = Column(String(150), nullable=True)
+    game_mismatch_flag = Column(Boolean, default=False)
     gameplay_summary = Column(Text, nullable=True)
     detected_events_json = Column(Text, nullable=True)
     candidate_titles_json = Column(Text, nullable=True)

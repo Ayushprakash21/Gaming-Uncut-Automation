@@ -42,9 +42,11 @@ class SystemLimitsUpdateRequest(BaseModel):
 
 class ValidateSourceRequest(BaseModel):
     url: str
+    game_name: Optional[str] = None
 
 class CreateReelRequest(BaseModel):
     url: str
+    game_name: Optional[str] = None
     source_authorized: bool = True
     target_duration: int = 60
     resolution: str = "1080x1920"
@@ -285,6 +287,7 @@ def generate_reel(req: CreateReelRequest, background_tasks: BackgroundTasks, db:
     # Ensure or create SourceVideo record for foreign key consistency
     raw_url = req.url.strip()
     clean_url = normalize_youtube_url(raw_url) if ("youtube.com" in raw_url or "youtu.be" in raw_url) else raw_url
+    clean_game_name = req.game_name.strip() if (req.game_name and req.game_name.strip()) else None
     source_video = db.query(SourceVideo).filter(
         (SourceVideo.url == clean_url) | (SourceVideo.local_path == clean_url)
     ).first()
@@ -298,13 +301,18 @@ def generate_reel(req: CreateReelRequest, background_tasks: BackgroundTasks, db:
             height=1080,
             fps=30.0,
             format="mp4",
-            local_path=clean_url if is_local else "",
+            local_path=clean_url if is_local else f"pending_{clean_url}",
             source_type="youtube" if ("youtube.com" in clean_url or "youtu.be" in clean_url) else ("direct_url" if clean_url.startswith("http") else "local"),
+            user_game_name=clean_game_name,
             status="ingesting"
         )
         db.add(source_video)
         db.commit()
         db.refresh(source_video)
+    else:
+        if clean_game_name:
+            source_video.user_game_name = clean_game_name
+            db.commit()
 
     job = ProcessingJob(
         source_video_id=source_video.id,
@@ -333,7 +341,8 @@ def generate_reel(req: CreateReelRequest, background_tasks: BackgroundTasks, db:
         enable_captions=req.animated_captions,
         enable_watermark=req.watermark,
         enable_ai_metadata=(req.ai_title_generation or req.ai_description_generation),
-        notes=req.notes
+        notes=req.notes,
+        game_name=clean_game_name
     )
 
     return {
@@ -378,6 +387,7 @@ def retry_job(job_id: int, background_tasks: BackgroundTasks, db: Session = Depe
         url_or_path=url_or_path,
         job_id=job.id,
         target_duration=int(source_video.duration or 60),
+        game_name=source_video.user_game_name
     )
 
     return {
@@ -446,6 +456,9 @@ def get_job_progress(job_id: int, db: Session = Depends(get_db)):
             "topic": meta.topic if meta else "Gaming",
             "description": meta.description if meta else "",
             "hashtags": meta.hashtags if meta else "",
+            "detected_game": meta.detected_game if meta else "Unknown Game",
+            "user_game_name": meta.user_game_name if meta else None,
+            "game_mismatch_flag": bool(meta.game_mismatch_flag) if meta else False,
             "created_at": clip.created_at
         }
 
@@ -478,7 +491,8 @@ def list_jobs(db: Session = Depends(get_db)):
             "error_message": j.error_message,
             "started_at": j.started_at,
             "completed_at": j.completed_at,
-            "cancelled_at": j.completed_at if j.status == "cancelled" else None
+            "cancelled_at": j.completed_at if j.status == "cancelled" else None,
+            "user_game_name": j.source_video.user_game_name if j.source_video else None
         })
     return results
 
@@ -571,6 +585,8 @@ def list_clips(status: Optional[str] = None, db: Session = Depends(get_db)):
             "game_confidence": meta.game_confidence if meta else 0.0,
             "game_franchise": meta.game_franchise if meta else "",
             "game_genre": meta.game_genre if meta else "",
+            "user_game_name": meta.user_game_name if meta else None,
+            "game_mismatch_flag": bool(meta.game_mismatch_flag) if meta else False,
             "gameplay_summary": meta.gameplay_summary if meta else "",
             "detected_events": events,
             "candidate_titles": candidate_titles,
@@ -604,6 +620,8 @@ def get_clip(clip_id: int, db: Session = Depends(get_db)):
         "game_confidence": meta.game_confidence if meta else 0.0,
         "game_franchise": meta.game_franchise if meta else "",
         "game_genre": meta.game_genre if meta else "",
+        "user_game_name": meta.user_game_name if meta else None,
+        "game_mismatch_flag": bool(meta.game_mismatch_flag) if meta else False,
         "gameplay_summary": meta.gameplay_summary if meta else "",
         "detected_events": events,
         "candidate_titles": candidate_titles,

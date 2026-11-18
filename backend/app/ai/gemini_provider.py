@@ -121,18 +121,23 @@ class GeminiAIProvider(BaseAIProvider):
         video_path: Path,
         transcript_text: str = "",
         audio_peaks: Optional[List[Dict[str, Any]]] = None,
-        bypass_cache: bool = False
+        bypass_cache: bool = False,
+        user_game_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Multimodal video analysis engine:
         - Extracts representative frames around key gameplay moments and audio spikes.
         - Identifies game, franchise, genre, and visual evidence (HUD, weapons, vehicles).
+        - Uses optional user_game_name as contextual guidance without treating it as verified visual proof.
+        - Compares supplied game name with visual analysis and flags mismatches for review.
         - Detects in-game events with timestamps and visual proof.
         - Generates 5 distinct grounded titles, unique description, hashtags, and subtitles.
         - Caches results by fingerprint.
         - Falls back gracefully to honest heuristic analysis if Gemini API is offline.
         """
-        fingerprint = compute_video_fingerprint(video_path)
+        base_fingerprint = compute_video_fingerprint(video_path)
+        clean_hint = user_game_name.strip() if (user_game_name and user_game_name.strip()) else None
+        fingerprint = f"{base_fingerprint}_{clean_hint.lower().replace(' ', '')}" if clean_hint else base_fingerprint
 
         if not bypass_cache:
             cached = get_cached_analysis(fingerprint)
@@ -160,13 +165,25 @@ class GeminiAIProvider(BaseAIProvider):
 
                 # Build prompt with game knowledge catalog
                 knowledge_context = format_game_knowledge_prompt()
+                hint_section = ""
+                if clean_hint:
+                    hint_section = f"""
+USER CONTEXTUAL GUIDANCE:
+The user suggested this footage may depict: "{clean_hint}".
+RULES FOR USER GUIDANCE:
+- Do NOT treat this as verified visual proof!
+- Compare this user suggestion against the visual frames, HUD, and gameplay art style.
+- If visual evidence confirms "{clean_hint}", identify it accurately with game-specific details.
+- If visual frames conflict with "{clean_hint}" (e.g. user suggested '{clean_hint}', but visual frames show a different game), identify the true game from visual evidence and note the discrepancy.
+- If visual frames are unidentifiable or inconclusive, return "Unknown Game" with confidence 0.0.
+"""
                 prompt = f"""
 You are the Lead Gaming Content Director for 'Gaming Uncut' (Tagline: NO FILTER. JUST GAMEPLAY).
 Analyze the provided visual gameplay frames and audio commentary transcript from a gaming clip.
 
 Reference Game Catalog (for visual HUD and asset verification):
 {knowledge_context}
-
+{hint_section}
 Commentary / Audio Transcript:
 "{transcript_text[:2000]}"
 
@@ -238,7 +255,7 @@ Return ONLY a valid JSON object matching this exact schema:
 
                 if raw_json:
                     data = json.loads(raw_json)
-                    validated = self._validate_and_sanitize_analysis(data)
+                    validated = self._validate_and_sanitize_analysis(data, user_game_name=clean_hint)
                     validated["analysis_fingerprint"] = fingerprint
                     store_cached_analysis(fingerprint, validated)
                     logger.info(f"Gemini multimodal analysis complete for {video_path.name}: Game '{validated['game']['name']}' ({int(validated['game']['confidence']*100)}% confidence)")
@@ -252,7 +269,8 @@ Return ONLY a valid JSON object matching this exact schema:
             video_path=video_path,
             transcript_text=transcript_text,
             audio_peaks=audio_peaks,
-            extracted_frames=extracted_frames
+            extracted_frames=extracted_frames,
+            user_game_name=clean_hint
         )
         heuristic["analysis_fingerprint"] = fingerprint
         return heuristic
@@ -260,8 +278,12 @@ Return ONLY a valid JSON object matching this exact schema:
     # =========================================================================
     # 2. Validation & Grounding Enforcement
     # =========================================================================
-    def _validate_and_sanitize_analysis(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Validates AI response, cross-checks against game registry, and prevents hallucinations."""
+    def _validate_and_sanitize_analysis(
+        self,
+        data: Dict[str, Any],
+        user_game_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Validates AI response, cross-checks against game registry, and detects user hint mismatches."""
         game_info = data.get("game", {})
         game_name = game_info.get("name", "Unknown Game").strip()
         confidence = float(game_info.get("confidence", 0.0))
@@ -287,6 +309,40 @@ Return ONLY a valid JSON object matching this exact schema:
         game_info["is_confirmed"] = bool(confidence >= 0.70 and game_name != "Unknown Game")
         game_info["is_uncertain"] = bool(confidence < 0.70 or game_name == "Unknown Game")
         game_info["evidence"] = [str(e) for e in evidence if e]
+
+        # Check user-supplied game name contextual guidance
+        game_mismatch_flag = False
+        mismatch_reason = None
+        clean_user_game = user_game_name.strip() if (user_game_name and user_game_name.strip()) else None
+
+        if clean_user_game:
+            user_reg = lookup_game_by_alias(clean_user_game)
+            user_canonical = user_reg["name"].lower() if user_reg else clean_user_game.lower()
+
+            if game_name != "Unknown Game" and confidence >= 0.60:
+                detected_canonical = game_name.lower()
+                is_compatible = (
+                    user_canonical == detected_canonical
+                    or user_canonical in detected_canonical
+                    or detected_canonical in user_canonical
+                    or (user_reg and user_reg.get("franchise", "").lower() == game_info.get("franchise", "").lower() and user_reg.get("franchise"))
+                )
+                if not is_compatible:
+                    game_mismatch_flag = True
+                    mismatch_reason = (
+                        f"Supplied game '{clean_user_game}' conflicts with visual analysis. "
+                        f"Visual evidence indicates '{game_name}' ({int(confidence * 100)}% confidence)."
+                    )
+                    logger.warning(mismatch_reason)
+            elif game_name == "Unknown Game":
+                # Do NOT treat user hint as verified visual evidence
+                # Keep confidence honest (<0.50), record alternative candidate
+                if user_reg:
+                    game_info["alternative_candidates"] = [user_reg["name"]]
+
+        data["user_game_name"] = clean_user_game
+        data["game_mismatch_flag"] = game_mismatch_flag
+        data["mismatch_reason"] = mismatch_reason
 
         # Validate content & titles
         content = data.get("content", {})
@@ -359,11 +415,13 @@ Return ONLY a valid JSON object matching this exact schema:
         video_path: Path,
         transcript_text: str = "",
         audio_peaks: Optional[List[Dict[str, Any]]] = None,
-        extracted_frames: Optional[List[Dict[str, Any]]] = None
+        extracted_frames: Optional[List[Dict[str, Any]]] = None,
+        user_game_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Honest, signal-fusion fallback when Gemini API is unconfigured or offline.
         Strictly labeled as 'heuristic'. Never hallucinates a fake game identity.
+        Uses user_game_name as contextual guidance without treating it as verified visual proof.
         """
         logger.info(f"Executing local signal-fusion heuristic analysis for {video_path.name}")
 
@@ -381,14 +439,79 @@ Return ONLY a valid JSON object matching this exact schema:
             event_name = "Precision Gameplay Sequence"
             intensity = "Moderate"
 
-        gameplay_summary = f"{intensity} {event_name} detected via audio signal-fusion"
+        clean_user_hint = user_game_name.strip() if (user_game_name and user_game_name.strip()) else None
+        game_name = "Unknown Game"
+        franchise = ""
+        genre = "Action Gameplay"
+        confidence = 0.0
+        mismatch_flag = False
+        mismatch_reason = None
+        evidence = [f"Frame extraction complete ({len(extracted_frames or [])} frames); Gemini API unconfigured."]
 
+        # Check if source video title or transcript references a registered game
+        text_context = f"{video_path.name} {transcript_text}".lower()
+        detected_from_source = None
+        for g_name, g_spec in GAME_REGISTRY.items():
+            pattern = rf"\b{re.escape(g_name.lower())}\b"
+            alias_match = any(re.search(rf"\b{re.escape(a.lower())}\b", text_context) for a in g_spec.get("aliases", []))
+            if re.search(pattern, text_context) or alias_match:
+                detected_from_source = {"name": g_name, **g_spec}
+                break
+
+        if clean_user_hint:
+            reg_match = lookup_game_by_alias(clean_user_hint)
+            hint_canon = reg_match["name"] if reg_match else clean_user_hint
+
+            if detected_from_source:
+                if detected_from_source["name"].lower() == hint_canon.lower():
+                    # User hint matches detected footage
+                    game_name = detected_from_source["name"]
+                    franchise = detected_from_source.get("franchise", "")
+                    genre = detected_from_source.get("genre", "Action Gameplay")
+                    confidence = 0.85
+                    evidence.append(f"User hint '{clean_user_hint}' confirmed by source footage/telemetry for '{game_name}'.")
+                else:
+                    # User hint CONFLICTS with detected footage
+                    game_name = detected_from_source["name"]
+                    franchise = detected_from_source.get("franchise", "")
+                    genre = detected_from_source.get("genre", "Action Gameplay")
+                    confidence = 0.75
+                    mismatch_flag = True
+                    mismatch_reason = f"Supplied game '{clean_user_hint}' conflicts with source title/telemetry identifying '{game_name}'."
+                    logger.warning(mismatch_reason)
+                    evidence.append(f"DISCREPANCY: User suggested '{clean_user_hint}', but footage evidence identified '{game_name}'.")
+            else:
+                # No conflict detected from footage text; use hint with moderate confidence
+                if reg_match:
+                    game_name = reg_match["name"]
+                    franchise = reg_match.get("franchise", "")
+                    genre = reg_match.get("genre", "Action Gameplay")
+                    confidence = 0.60
+                    evidence.append(f"User contextual guidance '{clean_user_hint}' mapped to registry '{game_name}'.")
+                else:
+                    game_name = clean_user_hint
+                    confidence = 0.50
+                    evidence.append(f"User contextual guidance '{clean_user_hint}' accepted as candidate.")
+        else:
+            # Blank user hint: automatic identification from source telemetry
+            if detected_from_source:
+                game_name = detected_from_source["name"]
+                franchise = detected_from_source.get("franchise", "")
+                genre = detected_from_source.get("genre", "Action Gameplay")
+                confidence = 0.70
+                evidence.append(f"Automatic identification from footage telemetry detected '{game_name}'.")
+
+        gameplay_summary = f"{intensity} {event_name} detected via audio signal-fusion"
+        if game_name != "Unknown Game":
+            gameplay_summary = f"{intensity} {game_name} {event_name.lower()} play"
+
+        game_qualifier = f" in {game_name}" if game_name != "Unknown Game" else ""
         titles = [
-            f"Pure Precision: {event_name}!",
-            f"Unbelievable Reaction Speed in This Moment!",
+            f"Pure Precision{game_qualifier}: {event_name}!",
+            f"Unbelievable Reaction Speed{game_qualifier}!",
             f"Wait For The Climax! {event_name}",
             f"Pure Skill: Watch This Play! | Gaming Uncut",
-            f"One Insane Sequence You Need To See!"
+            f"One Insane Sequence{game_qualifier} You Need To See!"
         ]
 
         desc = (
@@ -398,6 +521,10 @@ Return ONLY a valid JSON object matching this exact schema:
 
         clean_event_tag = re.sub(r'[^a-zA-Z0-9]', '', event_name)
         hashtags = [f"#{clean_event_tag}", "#GamingClip", "#GameplayMoments", "#Shorts", "#GamingUncut"]
+        if game_name != "Unknown Game":
+            clean_game_tag = f"#{re.sub(r'[^a-zA-Z0-9]', '', game_name)}"
+            if clean_game_tag not in hashtags:
+                hashtags.insert(0, clean_game_tag)
 
         # Synchronize captions with actual audio transcript if present, or descriptive audio markers
         captions_list = []
@@ -411,15 +538,18 @@ Return ONLY a valid JSON object matching this exact schema:
 
         return {
             "game": {
-                "name": "Unknown Game",
-                "franchise": "",
-                "genre": "Action Gameplay",
-                "confidence": 0.0,
-                "is_confirmed": False,
-                "is_uncertain": True,
-                "evidence": [f"Frame extraction complete ({len(extracted_frames or [])} frames); Gemini API unconfigured."],
+                "name": game_name,
+                "franchise": franchise,
+                "genre": genre,
+                "confidence": round(confidence, 2),
+                "is_confirmed": bool(confidence >= 0.70 and game_name != "Unknown Game"),
+                "is_uncertain": bool(confidence < 0.70 or game_name == "Unknown Game"),
+                "evidence": evidence,
                 "alternative_candidates": []
             },
+            "user_game_name": clean_user_hint,
+            "game_mismatch_flag": mismatch_flag,
+            "mismatch_reason": mismatch_reason,
             "gameplay": {
                 "summary": gameplay_summary,
                 "events": [
@@ -457,17 +587,19 @@ Return ONLY a valid JSON object matching this exact schema:
         scene_timestamps: List[float],
         audio_peaks: List[Dict[str, Any]],
         video_duration: float,
-        source_title: str = ""
+        source_title: str = "",
+        game_name: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         client = self._get_client()
 
         if not client:
-            return self._local_heuristic_highlights(scene_timestamps, audio_peaks, video_duration, transcript_text, source_title)
+            return self._local_heuristic_highlights(scene_timestamps, audio_peaks, video_duration, transcript_text, source_title, game_name=game_name)
 
+        game_context_line = f'Game Context (Hint): "{game_name}"\n' if game_name else ""
         prompt = f"""
 You are the lead editor for 'Gaming Uncut' (Tagline: NO FILTER. JUST GAMEPLAY).
 Analyze the following telemetry from a gaming video of duration {video_duration:.1f}s.
-Source Title Context: "{source_title}"
+{game_context_line}Source Title Context: "{source_title}"
 Identify the top 1 to 3 most intense, clutch, or funny gameplay highlights suitable for a 60-second vertical Reel.
 
 Telemetry Data:
@@ -511,7 +643,7 @@ Return ONLY a JSON array:
         except Exception as e:
             logger.error(f"Gemini API highlight analysis failed: {e}. Falling back to local heuristic.")
 
-        return self._local_heuristic_highlights(scene_timestamps, audio_peaks, video_duration, transcript_text, source_title)
+        return self._local_heuristic_highlights(scene_timestamps, audio_peaks, video_duration, transcript_text, source_title, game_name=game_name)
 
     def _local_heuristic_highlights(
         self,
@@ -519,13 +651,28 @@ Return ONLY a JSON array:
         audio_peaks: List[Dict[str, Any]],
         video_duration: float,
         transcript_text: str = "",
-        source_title: str = ""
+        source_title: str = "",
+        game_name: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Intelligent local signal-fusion fallback with context-aware event classification."""
-        combined_context = f"{source_title} {transcript_text}".lower()
+        combined_context = f"{source_title} {transcript_text} {game_name or ''}".lower()
 
         # Genre-specific event classification pools (avoids hardcoded static templates)
-        if any(w in combined_context for w in ["forza", "horizon", "racing", "race", "drift", "speed", "bugatti", "ferrari", "porsche", "f1", "circuit", "lap", "gt7", "nfs", "car"]):
+        if any(w in combined_context for w in ["gta", "grand theft auto", "heist", "wanted", "police", "cop", "chase", "driveby", "san andreas", "lossantos"]):
+            event_pool = [
+                ("High-Stakes Heist & Escape Pursuit", "High-intensity wanted level evasion and vehicle pursuit", "5-STAR WANTED RUN!"),
+                ("Aggressive Tactical Driveby & Shootout", "High-velocity driveby exchange with precise target elimination", "PURE CLUTCH SHOOTOUT!"),
+                ("Dynamic Open-World Stunt & Escape", "Unbelievable vehicle stunt ramp escape evading heavy pursuit", "CLEAN GETAWAY!"),
+                ("Extreme Speed Highway Pursuit", "Weaving through heavy traffic during an active high-speed escape", "SPEED & ESCAPE!")
+            ]
+        elif any(w in combined_context for w in ["red dead", "rdr", "outlaw", "cowboy", "dead eye", "saloon", "duel", "arthur"]):
+            event_pool = [
+                ("Deadeye Gunslinger Showdown", "Precision multi-target marksmanship under lethal crossfire", "PERFECT DEADEYE!"),
+                ("High-Noon Frontier Duel", "High-tension standoff and lightning-fast weapon draw", "LIGHTNING DRAW!"),
+                ("Dynamic Outlaw Train Heist Escape", "Mounted horseback pursuit and rapid weapon draw sequence", "TRAIN HEIST RUN!"),
+                ("Climactic Bounty Elimination", "Tense cover-to-cover exchange with accurate revolver fire", "WILD WEST SHOWDOWN!")
+            ]
+        elif any(w in combined_context for w in ["forza", "horizon", "racing", "race", "drift", "speed", "bugatti", "ferrari", "porsche", "f1", "circuit", "lap", "gt7", "nfs", "car"]):
             event_pool = [
                 ("High-Speed Drift & Acceleration Run", "High-velocity drift sequence with sustained engine revs", "DIRT & DRIFT RUN!"),
                 ("Precision Overtake & Velocity Pull", "Sharp overtake maneuver maintaining maximum track speed", "CLEAN PASS!"),
@@ -637,16 +784,20 @@ Return ONLY a JSON array:
         highlight_transcript: str = "",
         clip_duration: float = 60.0,
         video_path: Optional[Path] = None,
-        source_title: str = ""
+        source_title: str = "",
+        user_game_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Backwards-compatible metadata generator. If video_path is provided,
         runs the full multimodal analysis engine.
         """
+        clean_user_hint = user_game_name.strip() if (user_game_name and user_game_name.strip()) else None
+
         if video_path and Path(video_path).exists():
             analysis = self.analyze_multimodal_clip(
                 video_path=Path(video_path),
-                transcript_text=highlight_transcript
+                transcript_text=highlight_transcript,
+                user_game_name=clean_user_hint
             )
             titles = analysis["content"]["titles"]
             primary_title = titles[0] if titles else f"{gameplay_summary} | Gaming Uncut"
@@ -667,6 +818,9 @@ Return ONLY a JSON array:
                 "game_confidence": analysis["game"]["confidence"],
                 "game_franchise": analysis["game"]["franchise"],
                 "game_genre": analysis["game"]["genre"],
+                "user_game_name": analysis.get("user_game_name", clean_user_hint),
+                "game_mismatch_flag": analysis.get("game_mismatch_flag", False),
+                "mismatch_reason": analysis.get("mismatch_reason"),
                 "gameplay_summary": analysis["gameplay"]["summary"],
                 "detected_events": analysis["gameplay"]["events"],
                 "candidate_titles": titles,
@@ -677,10 +831,11 @@ Return ONLY a JSON array:
         # If no video_path given, check if Gemini is configured for text analysis
         client = self._get_client()
         if client:
+            hint_line = f"- Contextual Game Suggestion: {clean_user_hint}\n" if clean_user_hint else ""
             prompt = f"""
 You are the social media director for 'Gaming Uncut' (NO FILTER. JUST GAMEPLAY).
 Generate grounded publishing metadata for a gaming Reel:
-- Gameplay Summary: {gameplay_summary}
+{hint_line}- Gameplay Summary: {gameplay_summary}
 - Spoken Audio: "{highlight_transcript[:2000]}"
 - Brand Tagline: "NO FILTER. JUST GAMEPLAY."
 
@@ -719,8 +874,11 @@ Output JSON with EXACT keys:
                         "youtube_desc": f"{desc}\n\n{hashtags_str}",
                         "instagram_caption": f"{primary_title}\n\n{desc}\n\n{hashtags_str}",
                         "facebook_caption": f"{primary_title}\n\n{desc}\n\n{' '.join(hashtags_str.split()[:3])}",
-                        "detected_game": "Unknown Game",
-                        "game_confidence": 0.0,
+                        "detected_game": clean_user_hint or "Unknown Game",
+                        "game_confidence": 0.50 if clean_user_hint else 0.0,
+                        "user_game_name": clean_user_hint,
+                        "game_mismatch_flag": False,
+                        "mismatch_reason": None,
                         "candidate_titles": titles[:5],
                         "analysis_provider": "gemini",
                         "analysis_status": "complete"
@@ -732,6 +890,10 @@ Output JSON with EXACT keys:
         clean_title = f"{gameplay_summary} | Gaming Uncut"
         event_tag = re.sub(r'[^a-zA-Z0-9]', '', gameplay_summary.split()[0])
         hashtags = f"#{event_tag} #GamingClip #GameplayMoments #Shorts #GamingUncut"
+        if clean_user_hint:
+            game_tag = f"#{re.sub(r'[^a-zA-Z0-9]', '', clean_user_hint)}"
+            if game_tag not in hashtags:
+                hashtags = f"{game_tag} {hashtags}"
         desc = f"Raw unedited gameplay capture featuring {gameplay_summary.lower()} with synchronized audio spikes and tactical transitions."
         titles = [
             f"Pure Skill: {gameplay_summary}!",
@@ -743,7 +905,7 @@ Output JSON with EXACT keys:
 
         return {
             "title": clean_title[:95],
-            "topic": "Gaming Highlights",
+            "topic": clean_user_hint or "Gaming Highlights",
             "description": desc,
             "hashtags": hashtags,
             "pinned_comment": "Rate this play from 1 to 10 in the comments below! 👇",
@@ -751,10 +913,13 @@ Output JSON with EXACT keys:
             "youtube_desc": f"{desc}\n\n{hashtags}",
             "instagram_caption": f"{clean_title}\n\n{desc}\n\n{hashtags}",
             "facebook_caption": f"{clean_title}\n\n{desc}\n\n{' '.join(hashtags.split()[:3])}",
-            "detected_game": "Unknown Game",
-            "game_confidence": 0.0,
+            "detected_game": clean_user_hint or "Unknown Game",
+            "game_confidence": 0.50 if clean_user_hint else 0.0,
             "game_franchise": "",
             "game_genre": "Action Gameplay",
+            "user_game_name": clean_user_hint,
+            "game_mismatch_flag": False,
+            "mismatch_reason": None,
             "gameplay_summary": gameplay_summary,
             "detected_events": [{"name": gameplay_summary, "start": 0.0, "end": clip_duration, "confidence": 0.75}],
             "candidate_titles": titles,
