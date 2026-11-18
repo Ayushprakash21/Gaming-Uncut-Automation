@@ -5,7 +5,7 @@ Initializes Database, Scheduler, CORS, Static Media Mounts, and REST API.
 
 from pathlib import Path
 import socket
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Response, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
@@ -82,8 +82,15 @@ frontend_dist = settings.ROOT_DIR / "frontend" / "dist"
 if frontend_dist.exists():
     app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="frontend_assets")
 
-    @app.get("/{full_path:path}", response_class=HTMLResponse)
-    def serve_frontend_spa(full_path: str, response: Response):
+    @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"], response_class=HTMLResponse)
+    def serve_frontend_spa(full_path: str, request: Request, response: Response):
+        # Prevent API or media routes from falling through to the SPA catch-all
+        if full_path.startswith("api/") or full_path == "api" or full_path.startswith("media/"):
+            raise HTTPException(status_code=404, detail=f"API route not found: /{full_path}")
+
+        if request.method != "GET":
+            raise HTTPException(status_code=405, detail=f"Method {request.method} not allowed for SPA route: /{full_path}")
+
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"

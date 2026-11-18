@@ -10,7 +10,7 @@ from typing import List, Optional, Dict, Any
 import os
 import json
 import logging
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Form, UploadFile, File, Request
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Form, UploadFile, File, Request, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -1276,14 +1276,23 @@ class DiscoveryScheduleUpdateRequest(BaseModel):
     auto_approve_clips: Optional[bool] = None
     auto_publish: Optional[bool] = None
 
-@router.post("/discovery/search")
-def manual_youtube_search(req: ManualSearchRequest, db: Session = Depends(get_db)):
-    """Executes a manual search via YouTube Data API v3 with quota tracking and game filtering."""
+def _handle_manual_search(
+    query: Optional[str],
+    game_titles: Optional[List[str]],
+    channel_id: Optional[str],
+    published_after_raw: Optional[str],
+    duration_filter: Optional[str],
+    min_views: Optional[int],
+    page_token: Optional[str],
+    max_results: int,
+    db: Session
+):
     from backend.app.discovery.service import discovery_service
+    from datetime import timedelta
     pub_after = None
-    if req.published_after:
+    if published_after_raw:
         now = datetime.utcnow()
-        p_lower = req.published_after.lower().strip()
+        p_lower = published_after_raw.lower().strip()
         if p_lower == "today":
             pub_after = now - timedelta(days=1)
         elif p_lower == "week":
@@ -1292,25 +1301,66 @@ def manual_youtube_search(req: ManualSearchRequest, db: Session = Depends(get_db
             pub_after = now - timedelta(days=30)
         else:
             try:
-                pub_after = datetime.fromisoformat(req.published_after.replace("Z", "+00:00"))
+                pub_after = datetime.fromisoformat(published_after_raw.replace("Z", "+00:00"))
             except Exception:
                 pass
 
     try:
-        res = discovery_service.search_manual(
+        return discovery_service.search_manual(
             db=db,
-            query=req.query or "",
-            game_titles=req.game_titles,
-            channel_id=req.channel_id,
+            query=query or "",
+            game_titles=game_titles,
+            channel_id=channel_id,
             published_after=pub_after,
-            duration_filter=req.duration_filter,
-            min_views=req.min_views,
-            page_token=req.page_token,
-            max_results=req.max_results
+            duration_filter=duration_filter,
+            min_views=min_views,
+            page_token=page_token,
+            max_results=max_results
         )
-        return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/discovery/search")
+@router.post("/discovery/search/")
+def manual_youtube_search_post(req: ManualSearchRequest, db: Session = Depends(get_db)):
+    """Executes a manual search via YouTube Data API v3 with quota tracking and game filtering (POST JSON)."""
+    return _handle_manual_search(
+        query=req.query,
+        game_titles=req.game_titles,
+        channel_id=req.channel_id,
+        published_after_raw=req.published_after,
+        duration_filter=req.duration_filter,
+        min_views=req.min_views,
+        page_token=req.page_token,
+        max_results=req.max_results,
+        db=db
+    )
+
+@router.get("/discovery/search")
+@router.get("/discovery/search/")
+def manual_youtube_search_get(
+    query: Optional[str] = Query(None),
+    game: Optional[List[str]] = Query(None),
+    channel_id: Optional[str] = Query(None),
+    published_after: Optional[str] = Query(None),
+    duration: Optional[str] = Query(None),
+    min_views: Optional[int] = Query(None),
+    page_token: Optional[str] = Query(None),
+    max_results: int = Query(25),
+    db: Session = Depends(get_db)
+):
+    """Executes a manual search via YouTube Data API v3 with quota tracking and game filtering (GET Query)."""
+    return _handle_manual_search(
+        query=query,
+        game_titles=game,
+        channel_id=channel_id,
+        published_after_raw=published_after,
+        duration_filter=duration,
+        min_views=min_views,
+        page_token=page_token,
+        max_results=max_results,
+        db=db
+    )
 
 @router.post("/discovery/import")
 def import_discovered_videos(req: ImportVideosRequest, db: Session = Depends(get_db)):
@@ -1854,8 +1904,11 @@ def get_growth_intelligence(db: Session = Depends(get_db)):
     }
 
 @router.post("/seo/growth/compute-insights")
+@router.post("/seo/growth/compute-insights/")
+@router.get("/seo/growth/compute-insights")
+@router.get("/seo/growth/compute-insights/")
 def trigger_compute_insights(db: Session = Depends(get_db)):
-    """Computes fresh continuous learning growth insights from historical data."""
+    """Computes fresh continuous learning growth insights from historical data (supports POST and GET)."""
     from backend.app.analytics.growth_intelligence import growth_intelligence_service
     insights = growth_intelligence_service.compute_continuous_learning_insights(db)
     return {
