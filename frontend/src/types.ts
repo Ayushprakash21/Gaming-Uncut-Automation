@@ -178,3 +178,92 @@ export interface ConnectionsData {
     status_label: string;
   };
 }
+
+export interface DiscoveredVideoItem {
+  id: number;
+  youtube_video_id: string;
+  title: string;
+  channel_id?: string;
+  channel_title?: string;
+  published_at?: string;
+  duration_sec: number;
+  view_count: number;
+  thumbnail_url?: string;
+  youtube_url: string;
+  game_title: string;
+  discovery_mode: string;
+  status: string;
+  processing_job_id?: number | null;
+  clips_count: number;
+  error_message?: string | null;
+  authorization?: {
+    auth_type: string;
+    authorized_by?: string;
+    source_owner?: string;
+    permitted_scope?: string;
+    evidence_url?: string;
+    confirmed_at?: string;
+  } | null;
+  created_at?: string;
+}
+
+export interface ManualSearchVideoResult {
+  youtube_video_id: string;
+  title: string;
+  channel_id: string;
+  channel_title: string;
+  published_at?: string;
+  duration_sec: number;
+  duration_formatted: string;
+  view_count: number;
+  thumbnail_url: string;
+  youtube_url: string;
+  game_title: string;
+  description?: string;
+  in_queue?: boolean;
+  queue_status?: string;
+  discovered_video_id?: number | null;
+  authorization_state?: string;
+}
+
+export interface DiscoverySourceItem {
+  id: number;
+  name: string;
+  game_title: string;
+  keywords: string[];
+  is_active: boolean;
+  min_duration_sec: number;
+  max_duration_sec: number;
+  min_views: number;
+  max_results_per_scan: number;
+  priority: number;
+  last_scanned_at?: string | null;
+  next_scan_at?: string | null;
+}
+
+export interface DiscoveryChannelItem {
+  id: number;
+  channel_id: string;
+  channel_title: string;
+  custom_url?: string | null;
+  is_approved: boolean;
+  auto_authorize_sources: boolean;
+  notes?: string | null;
+}
+
+export interface DiscoveryScheduleData {
+  id: number;
+  name: string;
+  interval_minutes: number;
+  is_active: boolean;
+  max_discoveries_per_scan: number;
+  max_videos_processed_per_day: number;
+  max_clips_generated_per_day: number;
+  ai_budget_daily: number;
+  auto_approve_clips: boolean;
+  auto_publish: boolean;
+  last_scan_at?: string | null;
+  next_scan_at?: string | null;
+  last_scan_status: string;
+}
+

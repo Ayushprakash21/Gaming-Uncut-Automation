@@ -43,6 +43,15 @@ def run_stalled_jobs_watchdog():
     except Exception as e:
         logger.warning(f"Watchdog stalled job check warning: {e}")
 
+def run_scheduled_discovery():
+    """Checks if automatic YouTube gameplay discovery scan is due and executes it."""
+    try:
+        from backend.app.discovery.service import discovery_service
+        with SessionLocal() as db:
+            discovery_service.execute_scheduled_discovery(db)
+    except Exception as e:
+        logger.warning(f"Scheduled discovery periodic check error: {e}")
+
 class TaskScheduler:
     def __init__(self):
         jobstores = {
@@ -68,8 +77,15 @@ class TaskScheduler:
                 id="stalled_watchdog",
                 replace_existing=True
             )
+            self.scheduler.add_job(
+                run_scheduled_discovery,
+                "interval",
+                seconds=60,
+                id="discovery_scanner",
+                replace_existing=True
+            )
             self.scheduler.start()
-            logger.info("Persistent background scheduler started with stalled job watchdog.")
+            logger.info("Persistent background scheduler started with stalled watchdog and discovery engine.")
 
     def shutdown(self):
         if self.scheduler.running:
@@ -90,6 +106,20 @@ class TaskScheduler:
             for pjob in interrupted_pub:
                 logger.warning(f"Recovering interrupted publishing job #{pjob.id}. Resetting to pending.")
                 pjob.status = "pending"
+
+            try:
+                from backend.app.models.schema import DiscoveryJob, DiscoverySchedule
+                interrupted_disc = db.query(DiscoveryJob).filter_by(status="running").all()
+                for djob in interrupted_disc:
+                    logger.warning(f"Recovering interrupted discovery job #{djob.id}. Marking as interrupted.")
+                    djob.status = "interrupted"
+                    djob.error_message = "Interrupted by system restart."
+                    djob.completed_at = datetime.utcnow()
+                sched = db.query(DiscoverySchedule).first()
+                if sched and sched.last_scan_status == "running":
+                    sched.last_scan_status = "idle"
+            except Exception as e:
+                logger.warning(f"Discovery recovery warning: {e}")
 
             db.commit()
 

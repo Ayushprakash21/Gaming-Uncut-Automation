@@ -250,6 +250,54 @@ class PipelineService:
                 db_job.last_heartbeat = datetime.utcnow()
                 db_job.worker_pid = os.getpid()
                 db.commit()
+                try:
+                    from backend.app.discovery.service import discovery_service
+                    discovery_service.sync_pipeline_status(db, job_id, stage_idx, stage_name, status)
+                except Exception:
+                    pass
+
+    def start_job(
+        self,
+        job_id: int,
+        url_or_path: str,
+        template: str = "blurred_bg",
+        publish_mode: str = "approval",
+        platforms: Optional[List[str]] = None,
+        target_duration: int = 60,
+        resolution: str = "1080x1920",
+        aspect_ratio: str = "9:16",
+        enable_ai_highlights: bool = True,
+        enable_smart_cropping: bool = True,
+        enable_captions: bool = True,
+        enable_watermark: bool = True,
+        enable_ai_metadata: bool = True,
+        background_tasks: Any = None,
+        auth_type: str = "creator_authorized",
+        approval_mode: str = "manual"
+    ):
+        """Asynchronously dispatches pipeline execution for a processing job."""
+        effective_publish_mode = "immediate" if approval_mode == "auto" else publish_mode
+        kwargs = {
+            "url_or_path": url_or_path,
+            "template": template,
+            "publish_mode": effective_publish_mode,
+            "platforms": platforms or ["youtube"],
+            "job_id": job_id,
+            "target_duration": target_duration,
+            "resolution": resolution,
+            "aspect_ratio": aspect_ratio,
+            "enable_ai_highlights": enable_ai_highlights,
+            "enable_smart_cropping": enable_smart_cropping,
+            "enable_captions": enable_captions,
+            "enable_watermark": enable_watermark,
+            "enable_ai_metadata": enable_ai_metadata
+        }
+        if background_tasks:
+            background_tasks.add_task(self.execute_from_url_or_path, **kwargs)
+        else:
+            import threading
+            t = threading.Thread(target=self.execute_from_url_or_path, kwargs=kwargs, daemon=True)
+            t.start()
 
     def execute_from_url_or_path(
         self,
@@ -659,6 +707,11 @@ class PipelineService:
                         db_job.status = "failed"
                         db_job.error_message = str(e)
                     db.commit()
+                    try:
+                        from backend.app.discovery.service import discovery_service
+                        discovery_service.sync_pipeline_status(db, job_id, 0, "Error", db_job.status)
+                    except Exception:
+                        pass
             raise
 
         finally:

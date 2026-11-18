@@ -3,6 +3,7 @@ import { Navbar } from './components/Navbar'
 import { Sidebar } from './components/Sidebar'
 import { OverviewPage } from './pages/OverviewPage'
 import { CreateReelPage } from './pages/CreateReelPage'
+import { DiscoveryPage } from './pages/DiscoveryPage'
 import { QueuePage } from './pages/QueuePage'
 import { ContentLibraryPage } from './pages/ContentLibraryPage'
 import { PublishingQueuePage } from './pages/PublishingQueuePage'
@@ -53,6 +54,9 @@ export const App: React.FC = () => {
           )}
           {currentTab === 'create' && (
             <CreateReelPage onReelCreated={() => setCurrentTab('queue')} activeMode={activeMode} />
+          )}
+          {currentTab === 'discovery' && (
+            <DiscoveryPage onNavigate={(tab) => setCurrentTab(tab)} />
           )}
           {currentTab === 'queue' && <QueuePage />}
           {currentTab === 'published' && <PublishingQueuePage />}

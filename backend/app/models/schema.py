@@ -37,13 +37,18 @@ class SourceVideo(Base):
 class SourceAuthorization(Base):
     __tablename__ = "source_authorizations"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    source_video_id = Column(Integer, ForeignKey("source_videos.id", ondelete="CASCADE"), nullable=False)
+    source_video_id = Column(Integer, ForeignKey("source_videos.id", ondelete="CASCADE"), nullable=True)
+    discovered_video_id = Column(Integer, ForeignKey("discovered_videos.id", ondelete="SET NULL"), nullable=True)
     auth_type = Column(String(50), default="user_owned")  # user_owned, creator_authorized, licensed, creative_commons
     authorized_by = Column(String(255), nullable=True)
+    source_owner = Column(String(255), nullable=True)
+    permitted_scope = Column(String(255), default="shorts_clips_derivative")
+    evidence_url = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
     confirmed_at = Column(DateTime, default=datetime.utcnow)
 
     source_video = relationship("SourceVideo", back_populates="authorizations")
+    discovered_video = relationship("DiscoveredVideo", back_populates="authorization")
 
 class ProcessingJob(Base):
     __tablename__ = "processing_jobs"
@@ -242,3 +247,115 @@ class ApplicationEvent(Base):
     event_type = Column(String(100), nullable=False)
     details_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class DiscoverySearch(Base):
+    __tablename__ = "discovery_searches"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    query = Column(String(255), nullable=False)
+    game_title = Column(String(100), nullable=True)
+    search_type = Column(String(50), default="manual")  # manual, automatic
+    status = Column(String(50), default="completed")  # completed, failed, in_progress
+    results_count = Column(Integer, default=0)
+    quota_units_used = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    discovered_videos = relationship("DiscoveredVideo", back_populates="discovery_search")
+
+class DiscoverySource(Base):
+    __tablename__ = "discovery_sources"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False)
+    game_title = Column(String(100), nullable=False)
+    keywords_json = Column(Text, default="[]")  # JSON array of keywords
+    is_active = Column(Boolean, default=True)
+    min_duration_sec = Column(Float, default=60.0)
+    max_duration_sec = Column(Float, default=1800.0)
+    min_views = Column(Integer, default=0)
+    max_results_per_scan = Column(Integer, default=10)
+    priority = Column(Integer, default=1)
+    last_scanned_at = Column(DateTime, nullable=True)
+    next_scan_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class DiscoveryChannel(Base):
+    __tablename__ = "discovery_channels"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    channel_id = Column(String(100), unique=True, nullable=False, index=True)
+    channel_title = Column(String(255), nullable=False)
+    custom_url = Column(String(255), nullable=True)
+    is_approved = Column(Boolean, default=True)
+    auto_authorize_sources = Column(Boolean, default=False)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class DiscoverySchedule(Base):
+    __tablename__ = "discovery_schedules"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), default="Default Discovery Schedule")
+    interval_minutes = Column(Integer, default=180)  # e.g. 180 min (3 hours)
+    is_active = Column(Boolean, default=True)
+    max_discoveries_per_scan = Column(Integer, default=10)
+    max_videos_processed_per_day = Column(Integer, default=5)
+    max_clips_generated_per_day = Column(Integer, default=15)
+    ai_budget_daily = Column(Integer, default=100)
+    auto_approve_clips = Column(Boolean, default=False)
+    auto_publish = Column(Boolean, default=False)  # SAFETY: MUST DEFAULT TO FALSE
+    last_scan_at = Column(DateTime, nullable=True)
+    next_scan_at = Column(DateTime, nullable=True)
+    last_scan_status = Column(String(50), default="idle")  # idle, running, success, failed, paused_quota
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    jobs = relationship("DiscoveryJob", back_populates="schedule", cascade="all, delete-orphan")
+
+class DiscoveryJob(Base):
+    __tablename__ = "discovery_jobs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    schedule_id = Column(Integer, ForeignKey("discovery_schedules.id", ondelete="SET NULL"), nullable=True)
+    status = Column(String(50), default="pending")  # pending, running, completed, failed, paused_quota
+    videos_found = Column(Integer, default=0)
+    videos_imported = Column(Integer, default=0)
+    quota_used = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    schedule = relationship("DiscoverySchedule", back_populates="jobs")
+    discovered_videos = relationship("DiscoveredVideo", back_populates="discovery_job")
+
+class DiscoveredVideo(Base):
+    __tablename__ = "discovered_videos"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    youtube_video_id = Column(String(50), unique=True, index=True, nullable=False)
+    title = Column(String(500), nullable=False)
+    channel_id = Column(String(100), nullable=True)
+    channel_title = Column(String(255), nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    duration_sec = Column(Float, default=0.0)
+    view_count = Column(Integer, default=0)
+    thumbnail_url = Column(Text, nullable=True)
+    youtube_url = Column(Text, nullable=False)
+    game_title = Column(String(100), default="Unknown Game")
+    discovery_mode = Column(String(50), default="manual")  # manual, automatic
+    discovery_search_id = Column(Integer, ForeignKey("discovery_searches.id", ondelete="SET NULL"), nullable=True)
+    discovery_job_id = Column(Integer, ForeignKey("discovery_jobs.id", ondelete="SET NULL"), nullable=True)
+    status = Column(String(50), default="discovered", index=True)
+    # Unified statuses:
+    # discovered, authorization_required, authorized, queued, analyzing,
+    # highlights_detected, rendering, review_required, ready_to_publish, published, failed, skipped
+    source_video_id = Column(Integer, ForeignKey("source_videos.id", ondelete="SET NULL"), nullable=True)
+    processing_job_id = Column(Integer, ForeignKey("processing_jobs.id", ondelete="SET NULL"), nullable=True)
+    clips_count = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    authorization = relationship("SourceAuthorization", back_populates="discovered_video", uselist=False, cascade="all, delete-orphan")
+    source_video = relationship("SourceVideo")
+    processing_job = relationship("ProcessingJob")
+    discovery_search = relationship("DiscoverySearch", back_populates="discovered_videos")
+    discovery_job = relationship("DiscoveryJob", back_populates="discovered_videos")

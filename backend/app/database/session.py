@@ -74,6 +74,20 @@ def ensure_schema_compatibility(db_engine):
                 if "analysis_fingerprint" not in cm_cols:
                     conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN analysis_fingerprint VARCHAR(64)"))
                 conn.commit()
+        if "source_authorizations" in inspector.get_table_names():
+            sa_cols = [c["name"] for c in inspector.get_columns("source_authorizations")]
+            with db_engine.connect() as conn:
+                if "discovered_video_id" not in sa_cols:
+                    conn.execute(text("ALTER TABLE source_authorizations ADD COLUMN discovered_video_id INTEGER"))
+                if "source_owner" not in sa_cols:
+                    conn.execute(text("ALTER TABLE source_authorizations ADD COLUMN source_owner VARCHAR(255)"))
+                if "permitted_scope" not in sa_cols:
+                    conn.execute(text("ALTER TABLE source_authorizations ADD COLUMN permitted_scope VARCHAR(255) DEFAULT 'shorts_clips_derivative'"))
+                if "evidence_url" not in sa_cols:
+                    conn.execute(text("ALTER TABLE source_authorizations ADD COLUMN evidence_url TEXT"))
+                conn.commit()
+        # Ensure any newly declared tables are created
+        Base.metadata.create_all(bind=db_engine)
     except Exception as e:
         import logging
         logging.getLogger("gaming_uncut.db").warning(f"Schema compatibility check warning: {e}")

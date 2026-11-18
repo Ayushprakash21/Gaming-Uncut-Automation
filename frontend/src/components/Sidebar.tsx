@@ -10,7 +10,8 @@ import {
   Sparkles,
   Share2,
   Sliders,
-  Terminal
+  Terminal,
+  Compass
 } from 'lucide-react'
 
 interface SidebarProps {
@@ -36,7 +37,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const navItems = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
-    { id: 'create', label: 'Create Reel', icon: Film, highlight: true },
+    { id: 'create', label: 'Create Reel', icon: Film },
+    { id: 'discovery', label: 'Video Discovery', icon: Compass, highlight: true },
     { id: 'queue', label: 'Processing Queue', icon: ListOrdered },
     { id: 'published', label: 'Published Videos', icon: CheckCircle2 },
     { id: 'library', label: 'Content Library', icon: FileVideo },

@@ -1195,3 +1195,395 @@ def update_system_limits(req: SystemLimitsUpdateRequest, db: Session = Depends(g
             "auto_reschedule_on_quota": settings_obj.auto_reschedule_on_quota
         }
     }
+
+
+# =========================================================================
+# 11. Gameplay Discovery Engine (Manual Search, Queue, Scheduler, Auth)
+# =========================================================================
+
+class ManualSearchRequest(BaseModel):
+    query: Optional[str] = ""
+    game_titles: Optional[List[str]] = None
+    channel_id: Optional[str] = None
+    published_after: Optional[str] = None
+    duration_filter: Optional[str] = None
+    min_views: int = 0
+    page_token: Optional[str] = None
+    max_results: int = 15
+
+class ImportVideosRequest(BaseModel):
+    videos: List[Dict[str, Any]]
+    search_id: Optional[int] = None
+
+class AuthorizeSourceRequest(BaseModel):
+    auth_type: str = "creator_authorized"
+    authorized_by: Optional[str] = None
+    source_owner: Optional[str] = None
+    permitted_scope: str = "shorts_clips_derivative"
+    evidence_url: Optional[str] = None
+    notes: Optional[str] = None
+    local_file_path: Optional[str] = None
+    enqueue_now: bool = True
+
+class ProcessDiscoveredVideoRequest(BaseModel):
+    local_file_path: Optional[str] = None
+
+class DiscoverySourceRequest(BaseModel):
+    id: Optional[int] = None
+    name: Optional[str] = None
+    game_title: str
+    keywords: Optional[List[str]] = None
+    is_active: bool = True
+    min_duration_sec: float = 60.0
+    max_duration_sec: float = 1800.0
+    min_views: int = 0
+    max_results_per_scan: int = 10
+    priority: int = 1
+
+class DiscoveryChannelRequest(BaseModel):
+    channel_id: str
+    channel_title: str
+    custom_url: Optional[str] = None
+    is_approved: bool = True
+    auto_authorize_sources: bool = False
+    notes: Optional[str] = None
+
+class DiscoveryScheduleUpdateRequest(BaseModel):
+    interval_minutes: Optional[int] = None
+    is_active: Optional[bool] = None
+    max_discoveries_per_scan: Optional[int] = None
+    max_videos_processed_per_day: Optional[int] = None
+    max_clips_generated_per_day: Optional[int] = None
+    ai_budget_daily: Optional[int] = None
+    auto_approve_clips: Optional[bool] = None
+    auto_publish: Optional[bool] = None
+
+@router.post("/discovery/search")
+def manual_youtube_search(req: ManualSearchRequest, db: Session = Depends(get_db)):
+    """Executes a manual search via YouTube Data API v3 with quota tracking and game filtering."""
+    from backend.app.discovery.service import discovery_service
+    pub_after = None
+    if req.published_after:
+        now = datetime.utcnow()
+        p_lower = req.published_after.lower().strip()
+        if p_lower == "today":
+            pub_after = now - timedelta(days=1)
+        elif p_lower == "week":
+            pub_after = now - timedelta(days=7)
+        elif p_lower == "month":
+            pub_after = now - timedelta(days=30)
+        else:
+            try:
+                pub_after = datetime.fromisoformat(req.published_after.replace("Z", "+00:00"))
+            except Exception:
+                pass
+
+    try:
+        res = discovery_service.search_manual(
+            db=db,
+            query=req.query or "",
+            game_titles=req.game_titles,
+            channel_id=req.channel_id,
+            published_after=pub_after,
+            duration_filter=req.duration_filter,
+            min_views=req.min_views,
+            page_token=req.page_token,
+            max_results=req.max_results
+        )
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/discovery/import")
+def import_discovered_videos(req: ImportVideosRequest, db: Session = Depends(get_db)):
+    """Imports selected discovered videos into the discovery queue."""
+    from backend.app.discovery.service import discovery_service
+    if not req.videos:
+        raise HTTPException(status_code=400, detail="No videos provided for import.")
+    imported = discovery_service.import_videos_to_queue(
+        db=db,
+        videos=req.videos,
+        discovery_mode="manual",
+        search_id=req.search_id
+    )
+    return {
+        "status": "success",
+        "imported_count": len(imported),
+        "items": [{
+            "id": v.id,
+            "youtube_video_id": v.youtube_video_id,
+            "title": v.title,
+            "status": v.status
+        } for v in imported]
+    }
+
+@router.get("/discovery/queue")
+def get_discovery_queue(
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db)
+):
+    """Retrieves paginated discovery queue items."""
+    from backend.app.discovery.service import discovery_service
+    items, total = discovery_service.get_queue(
+        db=db, status=status, search=search, limit=limit, offset=offset
+    )
+    return {
+        "total": total,
+        "items": [{
+            "id": it.id,
+            "youtube_video_id": it.youtube_video_id,
+            "title": it.title,
+            "channel_id": it.channel_id,
+            "channel_title": it.channel_title,
+            "published_at": it.published_at.isoformat() if it.published_at else None,
+            "duration_sec": it.duration_sec,
+            "view_count": it.view_count,
+            "thumbnail_url": it.thumbnail_url,
+            "youtube_url": it.youtube_url,
+            "game_title": it.game_title,
+            "discovery_mode": it.discovery_mode,
+            "status": it.status,
+            "processing_job_id": it.processing_job_id,
+            "clips_count": it.clips_count,
+            "error_message": it.error_message,
+            "authorization": {
+                "auth_type": it.authorization.auth_type,
+                "authorized_by": it.authorization.authorized_by,
+                "source_owner": it.authorization.source_owner,
+                "permitted_scope": it.authorization.permitted_scope,
+                "evidence_url": it.authorization.evidence_url,
+                "confirmed_at": it.authorization.confirmed_at.isoformat() if it.authorization.confirmed_at else None
+            } if it.authorization else None,
+            "created_at": it.created_at.isoformat() if it.created_at else None
+        } for it in items]
+    }
+
+@router.post("/discovery/queue/{video_id}/authorize")
+def authorize_discovered_video(
+    video_id: int,
+    req: AuthorizeSourceRequest,
+    db: Session = Depends(get_db)
+):
+    """Attaches explicit creator authorization or local file to a discovered video."""
+    from backend.app.discovery.service import discovery_service
+    try:
+        video = discovery_service.authorize_source(
+            db=db,
+            discovered_video_id=video_id,
+            auth_type=req.auth_type,
+            authorized_by=req.authorized_by,
+            source_owner=req.source_owner,
+            permitted_scope=req.permitted_scope,
+            evidence_url=req.evidence_url,
+            notes=req.notes,
+            local_file_path=req.local_file_path,
+            enqueue_now=req.enqueue_now
+        )
+        return {
+            "status": "success",
+            "message": f"Video #{video_id} authorized.",
+            "video_status": video.status
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/discovery/queue/{video_id}/process")
+def process_discovered_video(
+    video_id: int,
+    req: Optional[ProcessDiscoveredVideoRequest] = None,
+    db: Session = Depends(get_db)
+):
+    """Enqueues an authorized discovered video into the AI clipping pipeline."""
+    from backend.app.discovery.service import discovery_service
+    try:
+        local_path = req.local_file_path if req else None
+        job = discovery_service.enqueue_for_processing(
+            db=db,
+            discovered_video_id=video_id,
+            local_file_path=local_path
+        )
+        return {
+            "status": "success",
+            "job_id": job.id,
+            "message": f"Video enqueued for AI pipeline as Job #{job.id}."
+        }
+    except PermissionError as pe:
+        raise HTTPException(status_code=403, detail=str(pe))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/discovery/queue/{video_id}/retry")
+def retry_discovered_video(video_id: int, db: Session = Depends(get_db)):
+    """Retries a failed discovered video."""
+    from backend.app.discovery.service import discovery_service
+    try:
+        video = discovery_service.retry_video(db, video_id)
+        return {"status": "success", "video_status": video.status}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/discovery/queue/{video_id}/skip")
+def skip_discovered_video(video_id: int, db: Session = Depends(get_db)):
+    """Skips a discovered video."""
+    from backend.app.discovery.service import discovery_service
+    try:
+        video = discovery_service.skip_video(db, video_id)
+        return {"status": "success", "video_status": video.status}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/discovery/sources")
+def list_discovery_sources(db: Session = Depends(get_db)):
+    """Lists configured gaming sources to monitor."""
+    from backend.app.discovery.service import discovery_service
+    sources = discovery_service.list_sources(db)
+    return [{
+        "id": s.id,
+        "name": s.name,
+        "game_title": s.game_title,
+        "keywords": json.loads(s.keywords_json) if s.keywords_json else [],
+        "is_active": s.is_active,
+        "min_duration_sec": s.min_duration_sec,
+        "max_duration_sec": s.max_duration_sec,
+        "min_views": s.min_views,
+        "max_results_per_scan": s.max_results_per_scan,
+        "priority": s.priority,
+        "last_scanned_at": s.last_scanned_at.isoformat() if s.last_scanned_at else None,
+        "next_scan_at": s.next_scan_at.isoformat() if s.next_scan_at else None
+    } for s in sources]
+
+@router.post("/discovery/sources")
+def add_or_update_discovery_source(req: DiscoverySourceRequest, db: Session = Depends(get_db)):
+    """Creates or updates a monitored gaming source."""
+    from backend.app.discovery.service import discovery_service
+    src = discovery_service.add_or_update_source(
+        db=db,
+        game_title=req.game_title,
+        name=req.name,
+        keywords=req.keywords,
+        is_active=req.is_active,
+        min_duration_sec=req.min_duration_sec,
+        max_duration_sec=req.max_duration_sec,
+        min_views=req.min_views,
+        max_results_per_scan=req.max_results_per_scan,
+        priority=req.priority,
+        source_id=req.id
+    )
+    return {"status": "success", "source_id": src.id}
+
+@router.delete("/discovery/sources/{source_id}")
+def delete_discovery_source(source_id: int, db: Session = Depends(get_db)):
+    """Deletes a monitored gaming source."""
+    from backend.app.discovery.service import discovery_service
+    ok = discovery_service.delete_source(db, source_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Source #{source_id} not found.")
+    return {"status": "success", "message": f"Source #{source_id} removed."}
+
+@router.get("/discovery/channels")
+def list_discovery_channels(db: Session = Depends(get_db)):
+    """Lists allowlisted / approved YouTube channels."""
+    from backend.app.discovery.service import discovery_service
+    channels = discovery_service.list_channels(db)
+    return [{
+        "id": c.id,
+        "channel_id": c.channel_id,
+        "channel_title": c.channel_title,
+        "custom_url": c.custom_url,
+        "is_approved": c.is_approved,
+        "auto_authorize_sources": c.auto_authorize_sources,
+        "notes": c.notes
+    } for c in channels]
+
+@router.post("/discovery/channels")
+def add_or_update_discovery_channel(req: DiscoveryChannelRequest, db: Session = Depends(get_db)):
+    """Adds or updates an approved channel."""
+    from backend.app.discovery.service import discovery_service
+    chan = discovery_service.add_or_update_channel(
+        db=db,
+        channel_id=req.channel_id,
+        channel_title=req.channel_title,
+        custom_url=req.custom_url,
+        is_approved=req.is_approved,
+        auto_authorize_sources=req.auto_authorize_sources,
+        notes=req.notes
+    )
+    return {"status": "success", "channel_id": chan.channel_id}
+
+@router.delete("/discovery/channels/{channel_id}")
+def delete_discovery_channel(channel_id: str, db: Session = Depends(get_db)):
+    """Removes an approved channel."""
+    from backend.app.discovery.service import discovery_service
+    ok = discovery_service.delete_channel(db, channel_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Channel '{channel_id}' not found.")
+    return {"status": "success", "message": f"Channel '{channel_id}' removed."}
+
+@router.get("/discovery/schedule")
+def get_discovery_schedule(db: Session = Depends(get_db)):
+    """Gets current automatic discovery schedule settings and status."""
+    from backend.app.discovery.service import discovery_service
+    sched = discovery_service.get_or_create_schedule(db)
+    return {
+        "id": sched.id,
+        "name": sched.name,
+        "interval_minutes": sched.interval_minutes,
+        "is_active": sched.is_active,
+        "max_discoveries_per_scan": sched.max_discoveries_per_scan,
+        "max_videos_processed_per_day": sched.max_videos_processed_per_day,
+        "max_clips_generated_per_day": sched.max_clips_generated_per_day,
+        "ai_budget_daily": sched.ai_budget_daily,
+        "auto_approve_clips": sched.auto_approve_clips,
+        "auto_publish": sched.auto_publish,
+        "last_scan_at": sched.last_scan_at.isoformat() if sched.last_scan_at else None,
+        "next_scan_at": sched.next_scan_at.isoformat() if sched.next_scan_at else None,
+        "last_scan_status": sched.last_scan_status
+    }
+
+@router.post("/discovery/schedule")
+def update_discovery_schedule(req: DiscoveryScheduleUpdateRequest, db: Session = Depends(get_db)):
+    """Updates automatic discovery schedule settings."""
+    from backend.app.discovery.service import discovery_service
+    updates = req.dict(exclude_unset=True)
+    sched = discovery_service.update_schedule_settings(db, updates)
+    return {
+        "status": "success",
+        "message": "Discovery schedule updated.",
+        "schedule": {
+            "interval_minutes": sched.interval_minutes,
+            "is_active": sched.is_active,
+            "max_discoveries_per_scan": sched.max_discoveries_per_scan,
+            "max_videos_processed_per_day": sched.max_videos_processed_per_day,
+            "max_clips_generated_per_day": sched.max_clips_generated_per_day,
+            "ai_budget_daily": sched.ai_budget_daily,
+            "auto_approve_clips": sched.auto_approve_clips,
+            "auto_publish": sched.auto_publish
+        }
+    }
+
+@router.post("/discovery/schedule/scan-now")
+def trigger_immediate_discovery_scan(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Triggers an immediate automatic discovery scan in the background."""
+    from backend.app.discovery.service import discovery_service
+    def _run_scan():
+        with SessionLocal() as session:
+            discovery_service.execute_scheduled_discovery(session, force=True)
+    background_tasks.add_task(_run_scan)
+    return {"status": "started", "message": "Immediate automatic discovery scan initiated in background."}
+
+@router.post("/discovery/schedule/pause")
+def pause_discovery_schedule(db: Session = Depends(get_db)):
+    """Pauses scheduled automatic discovery."""
+    from backend.app.discovery.service import discovery_service
+    sched = discovery_service.pause_schedule(db)
+    return {"status": "paused", "is_active": sched.is_active}
+
+@router.post("/discovery/schedule/resume")
+def resume_discovery_schedule(db: Session = Depends(get_db)):
+    """Resumes scheduled automatic discovery."""
+    from backend.app.discovery.service import discovery_service
+    sched = discovery_service.resume_schedule(db)
+    return {"status": "active", "is_active": sched.is_active, "next_scan_at": sched.next_scan_at.isoformat() if sched.next_scan_at else None}

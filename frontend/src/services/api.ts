@@ -1,4 +1,17 @@
-import { OverviewData, ProcessingJobItem, GeneratedClipItem, PublishingQueueItem, ConnectionsData, SystemLogItem, SystemLimits } from '../types'
+import {
+  OverviewData,
+  ProcessingJobItem,
+  GeneratedClipItem,
+  PublishingQueueItem,
+  ConnectionsData,
+  SystemLogItem,
+  SystemLimits,
+  DiscoveredVideoItem,
+  ManualSearchVideoResult,
+  DiscoverySourceItem,
+  DiscoveryChannelItem,
+  DiscoveryScheduleData
+} from '../types'
 
 const API_BASE = '/api'
 
@@ -287,3 +300,249 @@ export async function dismissJob(jobId: number): Promise<any> {
   }
   return json
 }
+
+// =========================================================================
+// Video Discovery & Acquisition Engine API
+// =========================================================================
+
+export async function searchYouTubeDiscovery(params: {
+  query?: string;
+  game_titles?: string[];
+  channel_id?: string;
+  published_after?: string;
+  duration_filter?: string;
+  min_views?: number;
+  page_token?: string;
+  max_results?: number;
+}): Promise<{
+  items: ManualSearchVideoResult[];
+  next_page_token?: string;
+  prev_page_token?: string;
+  total_results: number;
+  search_id?: number;
+  quota_used: number;
+}> {
+  const res = await fetch(`${API_BASE}/discovery/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params)
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'YouTube discovery search failed.')
+  }
+  return data
+}
+
+export async function importDiscoveredVideos(videos: any[], searchId?: number): Promise<any> {
+  const res = await fetch(`${API_BASE}/discovery/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ videos, search_id: searchId })
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Failed to import videos to discovery queue.')
+  }
+  return data
+}
+
+export async function fetchDiscoveryQueue(
+  status?: string,
+  search?: string,
+  limit: number = 50,
+  offset: number = 0
+): Promise<{ total: number; items: DiscoveredVideoItem[] }> {
+  const params = new URLSearchParams()
+  if (status && status !== 'ALL') params.append('status', status)
+  if (search && search.trim()) params.append('search', search.trim())
+  params.append('limit', limit.toString())
+  params.append('offset', offset.toString())
+  const res = await fetch(`${API_BASE}/discovery/queue?${params.toString()}`)
+  if (!res.ok) {
+    throw new Error(`Failed to fetch discovery queue: HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function authorizeDiscoveredVideo(
+  videoId: number,
+  payload: {
+    auth_type: string;
+    authorized_by?: string;
+    source_owner?: string;
+    permitted_scope?: string;
+    evidence_url?: string;
+    notes?: string;
+    local_file_path?: string;
+    enqueue_now?: boolean;
+  }
+): Promise<any> {
+  const res = await fetch(`${API_BASE}/discovery/queue/${videoId}/authorize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Failed to authorize video source.')
+  }
+  return data
+}
+
+export async function processDiscoveredVideo(
+  videoId: number,
+  localFilePath?: string
+): Promise<any> {
+  const res = await fetch(`${API_BASE}/discovery/queue/${videoId}/process`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ local_file_path: localFilePath })
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Failed to queue video for AI processing.')
+  }
+  return data
+}
+
+export async function retryDiscoveredVideo(videoId: number): Promise<any> {
+  const res = await fetch(`${API_BASE}/discovery/queue/${videoId}/retry`, {
+    method: 'POST'
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Failed to retry video.')
+  }
+  return data
+}
+
+export async function skipDiscoveredVideo(videoId: number): Promise<any> {
+  const res = await fetch(`${API_BASE}/discovery/queue/${videoId}/skip`, {
+    method: 'POST'
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Failed to skip video.')
+  }
+  return data
+}
+
+export async function fetchDiscoverySources(): Promise<DiscoverySourceItem[]> {
+  const res = await fetch(`${API_BASE}/discovery/sources`)
+  if (!res.ok) {
+    throw new Error(`Failed to fetch discovery sources: HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function saveDiscoverySource(source: Partial<DiscoverySourceItem>): Promise<any> {
+  const res = await fetch(`${API_BASE}/discovery/sources`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(source)
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Failed to save discovery source.')
+  }
+  return data
+}
+
+export async function deleteDiscoverySource(sourceId: number): Promise<any> {
+  const res = await fetch(`${API_BASE}/discovery/sources/${sourceId}`, {
+    method: 'DELETE'
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Failed to delete discovery source.')
+  }
+  return data
+}
+
+export async function fetchDiscoveryChannels(): Promise<DiscoveryChannelItem[]> {
+  const res = await fetch(`${API_BASE}/discovery/channels`)
+  if (!res.ok) {
+    throw new Error(`Failed to fetch discovery channels: HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function saveDiscoveryChannel(channel: Partial<DiscoveryChannelItem>): Promise<any> {
+  const res = await fetch(`${API_BASE}/discovery/channels`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(channel)
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Failed to save discovery channel.')
+  }
+  return data
+}
+
+export async function deleteDiscoveryChannel(channelId: string | number): Promise<any> {
+  const res = await fetch(`${API_BASE}/discovery/channels/${channelId}`, {
+    method: 'DELETE'
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Failed to delete discovery channel.')
+  }
+  return data
+}
+
+export async function fetchDiscoverySchedule(): Promise<DiscoveryScheduleData> {
+  const res = await fetch(`${API_BASE}/discovery/schedule`)
+  if (!res.ok) {
+    throw new Error(`Failed to fetch discovery schedule: HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function updateDiscoverySchedule(schedule: Partial<DiscoveryScheduleData>): Promise<any> {
+  const res = await fetch(`${API_BASE}/discovery/schedule`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(schedule)
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Failed to update discovery schedule.')
+  }
+  return data
+}
+
+export async function triggerDiscoveryScanNow(): Promise<any> {
+  const res = await fetch(`${API_BASE}/discovery/schedule/scan-now`, {
+    method: 'POST'
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Failed to trigger scan.')
+  }
+  return data
+}
+
+export async function pauseDiscoverySchedule(): Promise<any> {
+  const res = await fetch(`${API_BASE}/discovery/schedule/pause`, {
+    method: 'POST'
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Failed to pause discovery schedule.')
+  }
+  return data
+}
+
+export async function resumeDiscoverySchedule(): Promise<any> {
+  const res = await fetch(`${API_BASE}/discovery/schedule/resume`, {
+    method: 'POST'
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Failed to resume discovery schedule.')
+  }
+  return data
+}
+
