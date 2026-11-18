@@ -138,6 +138,10 @@ class VideoRenderer:
             filter_complex += f";[base]ass='{ass_escaped}',setsar=1[outv]"
             final_label = "[outv]"
 
+        # Force BT.709 SDR color tags and standard yuv420p to prevent Meta edge ingest rejection on HDR footage
+        filter_complex += f";{final_label}setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,format=yuv420p[sdrv]"
+        final_label = "[sdrv]"
+
         cmd = [
             "ffmpeg", "-y",
             "-ss", str(start_sec),
