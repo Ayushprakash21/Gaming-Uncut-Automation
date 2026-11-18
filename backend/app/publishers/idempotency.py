@@ -22,36 +22,65 @@ logger = logging.getLogger("gaming_uncut.idempotency")
 class PublishingState:
     QUEUED = "QUEUED"
     CLAIMED = "CLAIMED"
+    CONTAINER_CREATED = "CONTAINER_CREATED"
     UPLOADING = "UPLOADING"
     PROCESSING = "PROCESSING"
+    FINISHED = "FINISHED"
+    PUBLISHING = "PUBLISHING"
     PUBLISHED = "PUBLISHED"
     FAILED = "FAILED"
+    ERROR = "ERROR"
+    EXPIRED = "EXPIRED"
     UNKNOWN = "UNKNOWN"
+    RECONCILING = "RECONCILING"
     PAUSED = "PAUSED"
 
-    ALL_STATES = {QUEUED, CLAIMED, UPLOADING, PROCESSING, PUBLISHED, FAILED, UNKNOWN, PAUSED}
+    ALL_STATES = {
+        QUEUED, CLAIMED, CONTAINER_CREATED, UPLOADING, PROCESSING,
+        FINISHED, PUBLISHING, PUBLISHED, FAILED, ERROR, EXPIRED,
+        UNKNOWN, RECONCILING, PAUSED
+    }
 
-    # Normalize legacy status values to strict state machine states
+    # Normalize status values to strict state machine states
     NORMALIZATION_MAP = {
         "pending": QUEUED,
         "queued": QUEUED,
-        "publishing": CLAIMED,
+        "QUEUED": QUEUED,
         "claimed": CLAIMED,
-        "upload_initialized": UPLOADING,
+        "CLAIMED": CLAIMED,
+        "container_created": CONTAINER_CREATED,
+        "CONTAINER_CREATED": CONTAINER_CREATED,
+        "upload_initialized": CONTAINER_CREATED,
         "video_transferring": UPLOADING,
         "transfer_completed": UPLOADING,
         "uploading": UPLOADING,
+        "UPLOADING": UPLOADING,
         "instagram_processing": PROCESSING,
         "facebook_processing": PROCESSING,
         "processing": PROCESSING,
+        "PROCESSING": PROCESSING,
+        "finished": FINISHED,
+        "FINISHED": FINISHED,
+        "publishing": PUBLISHING,
+        "PUBLISHING": PUBLISHING,
         "published": PUBLISHED,
+        "PUBLISHED": PUBLISHED,
         "partially_published": QUEUED,
         "failed": FAILED,
+        "FAILED": FAILED,
+        "error": ERROR,
+        "ERROR": ERROR,
+        "expired": EXPIRED,
+        "EXPIRED": EXPIRED,
         "unknown": UNKNOWN,
+        "UNKNOWN": UNKNOWN,
         "ambiguous": UNKNOWN,
+        "reconciling": RECONCILING,
+        "RECONCILING": RECONCILING,
         "paused_quota": PAUSED,
         "paused_unauthorized": PAUSED,
         "paused": PAUSED,
+        "PAUSED": PAUSED,
         "scheduled_next_window": PAUSED
     }
 
@@ -410,40 +439,83 @@ class IdempotencyManager:
                 ig_id = creds.get("instagram_account_id")
 
                 if token and target_id:
-                    # Check if target_id is an already published media object
-                    res = requests.get(
-                        f"https://graph.facebook.com/v21.0/{target_id}",
-                        params={"fields": "id,permalink,media_type,shortcode", "access_token": token},
-                        timeout=10
-                    )
-                    if res.status_code == 200 and "permalink" in res.json():
-                        m_data = res.json()
-                        logger.info(f"Reconciled Instagram published media for #{target_id}: {m_data['permalink']}")
-                        return {
-                            "published": True,
-                            "platform": "instagram",
-                            "post_id": target_id,
-                            "url": m_data["permalink"],
-                            "reconciled_via": "instagram_media_lookup"
-                        }
-
-                    # Check if target_id is a container that is FINISHED
-                    c_res = requests.get(
-                        f"https://graph.facebook.com/v21.0/{target_id}",
-                        params={"fields": "status_code,status", "access_token": token},
-                        timeout=10
-                    )
-                    if c_res.status_code == 200:
-                        c_data = c_res.json()
-                        if c_data.get("status_code") == "FINISHED":
-                            # Ready for publication rather than re-creating container!
+                    headers = {"Authorization": f"Bearer {token}"}
+                    # 1. Check if target_id is an already published media object
+                    try:
+                        res = requests.get(
+                            f"https://graph.facebook.com/v21.0/{target_id}",
+                            headers=headers,
+                            params={"fields": "id,permalink,media_type,shortcode"},
+                            timeout=10
+                        )
+                        if res.status_code == 200 and "permalink" in res.json():
+                            m_data = res.json()
+                            logger.info(f"Reconciled Instagram published media for #{target_id}: {m_data['permalink']}")
                             return {
-                                "published": False,
-                                "ready_to_publish_container": True,
-                                "container_id": target_id,
+                                "published": True,
                                 "platform": "instagram",
-                                "reconciled_via": "instagram_finished_container"
+                                "post_id": target_id,
+                                "url": m_data["permalink"],
+                                "reconciled_via": "instagram_media_lookup"
                             }
+                    except Exception as e:
+                        logger.debug(f"Instagram media lookup notice: {e}")
+
+                    # 2. Check if target_id is an Instagram container
+                    try:
+                        c_res = requests.get(
+                            f"https://graph.facebook.com/v21.0/{target_id}",
+                            headers=headers,
+                            params={"fields": "status_code,status"},
+                            timeout=10
+                        )
+                        if c_res.status_code == 200:
+                            c_data = c_res.json()
+                            status_code = str(c_data.get("status_code", "")).upper()
+                            if status_code == "FINISHED":
+                                return {
+                                    "published": False,
+                                    "ready_to_publish_container": True,
+                                    "container_id": target_id,
+                                    "platform": "instagram",
+                                    "reconciled_via": "instagram_finished_container"
+                                }
+                            elif status_code == "IN_PROGRESS":
+                                return {
+                                    "published": False,
+                                    "in_progress_container": True,
+                                    "container_id": target_id,
+                                    "status_text": c_data.get("status", "Media is still being processed."),
+                                    "platform": "instagram",
+                                    "reconciled_via": "instagram_in_progress_container"
+                                }
+                            elif status_code == "PUBLISHED":
+                                return {
+                                    "published": True,
+                                    "platform": "instagram",
+                                    "post_id": target_id,
+                                    "url": f"https://www.instagram.com/reel/{target_id}",
+                                    "reconciled_via": "instagram_container_published"
+                                }
+                            elif status_code == "ERROR":
+                                return {
+                                    "published": False,
+                                    "error_container": True,
+                                    "container_id": target_id,
+                                    "error_message": c_data.get("status", "Video failed Meta transcoding requirements"),
+                                    "platform": "instagram",
+                                    "reconciled_via": "instagram_error_container"
+                                }
+                            elif status_code == "EXPIRED":
+                                return {
+                                    "published": False,
+                                    "expired_container": True,
+                                    "container_id": target_id,
+                                    "platform": "instagram",
+                                    "reconciled_via": "instagram_expired_container"
+                                }
+                    except Exception as e:
+                        logger.debug(f"Instagram container lookup notice: {e}")
             except Exception as e:
                 logger.debug(f"Instagram reconciliation check notice: {e}")
 

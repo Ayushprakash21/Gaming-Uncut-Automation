@@ -1011,6 +1011,17 @@ def force_dispatch(
     background_tasks.add_task(publishing_manager.execute_job, job_id, allow_rep)
     return {"status": "started", "message": f"Dispatch initiated for job #{job_id}"}
 
+@router.post("/publishing/reconcile-instagram")
+def trigger_instagram_reconciliation(db: Session = Depends(get_db)):
+    """Triggers on-demand background reconciliation of in-flight Instagram containers."""
+    from backend.app.publishers.instagram.reconciler import instagram_reconciler
+    results = instagram_reconciler.reconcile_pending_containers(db)
+    return {
+        "success": True,
+        "message": f"Reconciliation executed. Processed {len(results)} container(s).",
+        "results": results
+    }
+
 # 8. Platform Connections & Settings
 @router.get("/settings/connections")
 def get_connections():

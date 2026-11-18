@@ -72,6 +72,15 @@ def run_scheduled_discovery():
     except Exception as e:
         logger.warning(f"Scheduled discovery periodic check error: {e}")
 
+def run_instagram_reconciliation():
+    """Periodically reconciles in-flight Instagram containers in the background without blocking the server."""
+    try:
+        from backend.app.publishers.instagram.reconciler import instagram_reconciler
+        with SessionLocal() as db:
+            instagram_reconciler.reconcile_pending_containers(db)
+    except Exception as e:
+        logger.warning(f"Instagram reconciliation periodic check error: {e}")
+
 class TaskScheduler:
     def __init__(self):
         jobstores = {
@@ -104,8 +113,15 @@ class TaskScheduler:
                 id="discovery_scanner",
                 replace_existing=True
             )
+            self.scheduler.add_job(
+                run_instagram_reconciliation,
+                "interval",
+                seconds=60,
+                id="instagram_reconciler",
+                replace_existing=True
+            )
             self.scheduler.start()
-            logger.info("Persistent background scheduler started with stalled watchdog and discovery engine.")
+            logger.info("Persistent background scheduler started with stalled watchdog, discovery engine, and Instagram reconciler.")
 
     def shutdown(self):
         if self.scheduler.running:

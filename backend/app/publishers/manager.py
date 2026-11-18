@@ -25,6 +25,7 @@ from backend.app.publishers.instagram.instagram_client import (
     instagram_client, InstagramAPIError, InstagramTokenExpiredError,
     InstagramPermissionError, InstagramConfigError, InstagramVideoUrlError,
     InstagramProcessingFailedError, InstagramProcessingTimeoutError,
+    InstagramContainerProcessingInProgress,
     InstagramUploadFailedError, InstagramValidationError, InstagramRateLimitError as ClientIGRateLimitError
 )
 from backend.app.publishers.facebook.facebook_client import (
@@ -467,6 +468,88 @@ class PublishingManager:
                         idempotency_decision="RECONCILED", started_at=started_at, completed_at=datetime.utcnow()
                     )
                     db.commit()
+                elif reconciled and reconciled.get("ready_to_publish_container"):
+                    # The container already reached FINISHED on Meta servers! Publish immediately without re-uploading
+                    cid = reconciled["container_id"]
+                    logger.info(f"Reconciled FINISHED container {cid} for Job #{job.id}. Publishing directly...")
+                    try:
+                        ig_auth = instagram_client._get_auth()
+                        media_id = instagram_client.publish_container(ig_account_id, cid, ig_auth["token"])
+                        verified = instagram_client.verify_media_published(media_id, ig_auth["token"])
+                        ig_upload.status = "published"
+                        ig_upload.external_post_id = media_id
+                        ig_upload.external_url = verified["permalink"]
+                        ig_upload.uploaded_at = datetime.utcnow()
+                        ig_upload.error_code = None
+                        ig_upload.error_message = None
+                        idempotency_manager.update_stage(
+                            db, ig_idemp_key, active_worker_id, PublishingState.PUBLISHED,
+                            external_post_id=media_id, external_url=verified["permalink"]
+                        )
+                        record_upload_success(db, "instagram", quota_units=0)
+                        results["instagram"] = {
+                            "platform": "instagram",
+                            "post_id": media_id,
+                            "url": verified["permalink"],
+                            "container_id": cid,
+                            "shortcode": verified.get("shortcode"),
+                            "published_at": datetime.utcnow().isoformat()
+                        }
+                        log_publishing_audit(
+                            db, platform="instagram", publishing_job_id=job.id, clip_id=clip.id,
+                            stage="reconciliation_published", error=None, level="INFO", attempts=ig_upload.attempts,
+                            user_message=f"Published reconciled FINISHED Instagram Reel: {verified['permalink']}",
+                            worker_id=active_worker_id, account_id=ig_account_id,
+                            external_media_id=media_id, published_url=verified["permalink"],
+                            idempotency_decision="RECONCILED_PUBLISHED", started_at=started_at, completed_at=datetime.utcnow()
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to publish reconciled FINISHED container {cid}: {e}")
+                        ig_upload.status = "unknown"
+                        ig_upload.error_code = "RECONCILE_PUBLISH_FAILED"
+                        ig_upload.error_message = str(e)
+                    db.commit()
+                elif reconciled and reconciled.get("in_progress_container"):
+                    # Container is actively transcoding on Meta servers! DO NOT create a new container or fail!
+                    cid = reconciled["container_id"]
+                    msg = f"Instagram container {cid} is transcoding on Meta servers ({reconciled.get('status_text')}). Monitoring continues in background."
+                    logger.info(msg)
+                    ig_upload.status = "reconciling"
+                    ig_upload.error_code = "RECONCILING"
+                    ig_upload.error_message = msg
+                    ig_upload.external_post_id = cid
+                    idempotency_manager.update_stage(
+                        db, ig_idemp_key, active_worker_id, PublishingState.RECONCILING,
+                        external_post_id=cid
+                    )
+                    log_publishing_audit(
+                        db, platform="instagram", publishing_job_id=job.id, clip_id=clip.id,
+                        stage="reconciliation", error=None, level="INFO", attempts=ig_upload.attempts,
+                        user_message=msg, worker_id=active_worker_id, account_id=ig_account_id,
+                        external_media_id=cid, idempotency_decision="RECONCILING",
+                        started_at=started_at, completed_at=datetime.utcnow()
+                    )
+                    db.commit()
+                elif ig_upload.status in ("unknown", "reconciling", "UNKNOWN", "RECONCILING") and ig_upload.external_post_id and not allow_republish:
+                    # STRICT IDEMPOTENCY: Do not create replacement containers for in-flight/unknown jobs!
+                    cid = ig_upload.external_post_id
+                    msg = f"Instagram container {cid} already exists for Job #{job.id}. Preserving container; scheduled for background reconciliation."
+                    logger.info(msg)
+                    ig_upload.status = "reconciling"
+                    ig_upload.error_code = "RECONCILING"
+                    ig_upload.error_message = msg
+                    idempotency_manager.update_stage(
+                        db, ig_idemp_key, active_worker_id, PublishingState.RECONCILING,
+                        external_post_id=cid
+                    )
+                    log_publishing_audit(
+                        db, platform="instagram", publishing_job_id=job.id, clip_id=clip.id,
+                        stage="reconciliation", error=None, level="INFO", attempts=ig_upload.attempts,
+                        user_message=msg, worker_id=active_worker_id, account_id=ig_account_id,
+                        external_media_id=cid, idempotency_decision="RECONCILING",
+                        started_at=started_at, completed_at=datetime.utcnow()
+                    )
+                    db.commit()
                 elif ig_upload.status != "published":
                     # Step 2B: Acquire Platform Idempotency Lock
                     locked, lock_reason, idemp_rec = idempotency_manager.acquire_platform_idempotency_lock(
@@ -631,6 +714,25 @@ class PublishingManager:
                                     stage=ig_stage[0], error=e, level="ERROR", attempts=ig_upload.attempts,
                                     error_code="INACCESSIBLE_URL", user_message=e.user_message,
                                     worker_id=active_worker_id, account_id=ig_account_id, idempotency_decision="FAILED"
+                                )
+                            except InstagramContainerProcessingInProgress as e:
+                                code = "RECONCILING"
+                                ig_upload.status = "reconciling"
+                                ig_upload.error_code = code
+                                ig_upload.error_message = e.user_message
+                                if not ig_upload.external_post_id:
+                                    ig_upload.external_post_id = e.container_id
+                                idempotency_manager.update_stage(
+                                    db, ig_idemp_key, active_worker_id, PublishingState.RECONCILING,
+                                    external_post_id=e.container_id
+                                )
+                                logger.info(f"Instagram container {e.container_id} is processing on Meta servers. Scheduled for background reconciliation.")
+                                log_publishing_audit(
+                                    db, platform="instagram", publishing_job_id=job.id, clip_id=clip.id,
+                                    stage="instagram_processing", error=None, level="INFO",
+                                    attempts=ig_upload.attempts, error_code=code, user_message=e.user_message,
+                                    worker_id=active_worker_id, account_id=ig_account_id,
+                                    external_media_id=e.container_id, idempotency_decision="RECONCILING"
                                 )
                             except (InstagramProcessingFailedError, InstagramProcessingTimeoutError) as e:
                                 code = "PROCESSING_TIMEOUT" if isinstance(e, InstagramProcessingTimeoutError) else "PROCESSING_FAILED"

@@ -89,6 +89,22 @@ class InstagramProcessingTimeoutError(InstagramAPIError):
     """Raised when container processing times out waiting for FINISHED status."""
     pass
 
+class InstagramContainerProcessingInProgress(InstagramAPIError):
+    """
+    Raised when an Instagram container is confirmed actively transcoding / processing
+    on Meta servers, but has not yet reached FINISHED state within the inline monitoring window.
+    This is NOT a failure; the container should be reconciled in the background.
+    """
+    def __init__(self, container_id: str, status_data: Dict[str, Any], checks: int = 0, waited_sec: float = 0.0):
+        status_text = status_data.get("status", "Media is still being processed.")
+        status_code = status_data.get("status_code", "IN_PROGRESS")
+        msg = f"Instagram container {container_id} is {status_code} ({status_text}) after {checks} checks ({waited_sec:.1f}s)."
+        super().__init__(msg, code=None, subcode=None, error_type="ProcessingInProgress", user_message=msg)
+        self.container_id = container_id
+        self.status_data = status_data
+        self.checks = checks
+        self.waited_sec = waited_sec
+
 class InstagramUploadFailedError(InstagramAPIError):
     """Raised when binary transfer or media publishing fails."""
     pass
@@ -98,6 +114,18 @@ class InstagramValidationError(InstagramAPIError):
     pass
 
 
+def redact_token(text: Any) -> str:
+    """Masks Meta and Google access tokens, secrets, and auth headers from text and log statements."""
+    if not text:
+        return ""
+    import re
+    s = str(text)
+    s = re.sub(r'(EAAB[a-zA-Z0-9_\-\.]+)|(EAAQ[a-zA-Z0-9_\-\.]+)|(IGAA[a-zA-Z0-9_\-\.]+)|(IGQV[a-zA-Z0-9_\-\.]+)', '[REDACTED_TOKEN]', s)
+    s = re.sub(r'access_token=[^&\s"\']+', 'access_token=[REDACTED_TOKEN]', s)
+    s = re.sub(r'Authorization:\s*(Bearer|OAuth)\s+[^\s"\']+', 'Authorization: \\1 [REDACTED_TOKEN]', s, flags=re.IGNORECASE)
+    return s
+
+
 def parse_instagram_error(
     res_data: Any,
     default_msg: str = "Instagram API operation failed",
@@ -105,11 +133,7 @@ def parse_instagram_error(
     http_status: Optional[int] = None
 ) -> InstagramAPIError:
     """Parses Meta Graph API error payload into a safe typed exception without exposing secrets."""
-    import re
-    def redact(text: str) -> str:
-        if not text:
-            return ""
-        return re.sub(r'(EAAB[a-zA-Z0-9_-]+|EAAQ[a-zA-Z0-9_-]+|IGAA[a-zA-Z0-9_-]+|IGQV[a-zA-Z0-9_-]+)', '[REDACTED_TOKEN]', str(text))
+    redact = redact_token
 
     # Handle Meta rupload debug_info payload format:
     # {"debug_info": {"retriable": false, "type": "ProcessingFailedError", "message": "..."}}
@@ -350,11 +374,11 @@ class InstagramPublishClient:
         - Resumable direct upload (when video_url is None)
         - Direct public video URL ingestion (when video_url is a public address)
         """
+        headers = {"Authorization": f"Bearer {token}"}
         data = {
             "media_type": "REELS",
             "caption": caption,
-            "share_to_feed": "true",
-            "access_token": token
+            "share_to_feed": "true"
         }
 
         if video_url:
@@ -374,11 +398,12 @@ class InstagramPublishClient:
         init_res = None
         for attempt in range(1, 4):
             try:
-                res = requests.post(f"{GRAPH_URL}/{ig_id}/media", data=data, timeout=30)
+                res = requests.post(f"{GRAPH_URL}/{ig_id}/media", headers=headers, data=data, timeout=30)
                 init_res = res.json()
                 break
             except requests.RequestException as e:
-                logger.warning(f"Container creation network attempt {attempt}/3 failed: {e}")
+                safe_err = redact_token(str(e))
+                logger.warning(f"Container creation network attempt {attempt}/3 failed: {safe_err}")
                 if attempt == 3:
                     raise InstagramUploadFailedError(f"Network error creating Instagram container: {e}")
                 time.sleep(2 ** attempt)
@@ -628,28 +653,113 @@ class InstagramPublishClient:
         return True
 
     # ==========================================
-    # Stage 3: Container Processing Status Polling
+    # Stage 3: Container Processing Status Polling & Querying
     # ==========================================
+    def query_container_status(
+        self,
+        container_id: str,
+        token: Optional[str] = None,
+        include_copyright: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Queries the current status of an Instagram media container using Meta Graph API.
+        Guarantees zero access token leakage in logs/exceptions.
+        Explicitly handles all statuses: IN_PROGRESS, FINISHED, PUBLISHED, ERROR, EXPIRED.
+        """
+        if not token:
+            auth = self._get_auth()
+            token = auth["token"]
+
+        headers = {"Authorization": f"Bearer {token}"}
+        status_url = f"{GRAPH_URL}/{container_id}"
+
+        # 1. First attempt full fields query if include_copyright is True
+        data = None
+        copyright_status = None
+        if include_copyright:
+            try:
+                res = requests.get(
+                    status_url,
+                    headers=headers,
+                    params={"fields": "id,status_code,status,copyright_check_status"},
+                    timeout=15
+                )
+                if res.status_code == 200:
+                    data = res.json()
+                    copyright_status = data.get("copyright_check_status")
+                elif res.status_code == 500:
+                    # Meta Graph API returns HTTP 500 Code 1 OAuthException when querying copyright_check_status
+                    # on un-evaluated or in-progress containers. Safely fall back to core status fields.
+                    logger.debug(f"Container {container_id} copyright_check_status query returned HTTP 500. Falling back to status_code,status.")
+            except requests.RequestException as e:
+                safe_err = redact_token(str(e))
+                logger.warning(f"Transient network error querying container {container_id} full fields: {safe_err}")
+
+        # 2. Fallback or primary query for status_code,status
+        if data is None or "status_code" not in data:
+            try:
+                res = requests.get(
+                    status_url,
+                    headers=headers,
+                    params={"fields": "id,status_code,status"},
+                    timeout=15
+                )
+                data = res.json()
+            except requests.RequestException as e:
+                safe_err = redact_token(str(e))
+                logger.warning(f"Transient error querying container {container_id} status: {safe_err}")
+                raise InstagramAPIError(f"Network error querying container {container_id}: {safe_err}")
+
+        if "error" in data:
+            err = parse_instagram_error(data, f"Status check failed for container {container_id}")
+            raise err
+
+        status_code = str(data.get("status_code", "")).upper()
+        status_text = data.get("status", "")
+
+        return {
+            "id": str(data.get("id", container_id)),
+            "status_code": status_code,
+            "status": status_text,
+            "copyright_check_status": copyright_status,
+            "is_in_progress": status_code == "IN_PROGRESS",
+            "is_finished": status_code == "FINISHED",
+            "is_published": status_code == "PUBLISHED",
+            "is_error": status_code == "ERROR",
+            "is_expired": status_code == "EXPIRED",
+            "raw_response": data
+        }
+
     def poll_container_status(
         self,
         container_id: str,
         token: str,
         max_wait_sec: int = 300,
-        poll_interval: float = 5.0,
+        poll_interval: float = 60.0,
         poll_interval_sec: Optional[float] = None,
         max_checks: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Stage 3: Polls container status. Strictly awaits 'FINISHED' before proceeding.
-        Raises InstagramProcessingFailedError on 'ERROR' and InstagramProcessingTimeoutError on timeout.
+        Stage 3: Polls container status following Meta's official Graph API guidance:
+        - Poll approximately once per minute (default 60s).
+        - Maximum initial inline window: five minutes (300s, ~5 checks).
+        - Strictly awaits FINISHED before returning success.
+        - If still IN_PROGRESS when initial 5-minute deadline is reached, moves to RECONCILING
+          and raises InstagramContainerProcessingInProgress so background reconciliation continues
+          without blocking the server or throwing a premature upload failure.
+        - Raises InstagramProcessingFailedError on ERROR and InstagramUploadFailedError on EXPIRED.
         """
         if poll_interval_sec is not None:
             poll_interval = poll_interval_sec
 
-        status_url = f"{GRAPH_URL}/{container_id}"
-        logger.info(f"Stage 3: Polling Instagram container {container_id} processing status...")
+        logger.info(f"Stage 3: Controlled Meta polling for Instagram container {container_id} (interval={poll_interval}s, max_inline_wait={max_wait_sec}s)...")
         start_time = time.time()
         checks = 0
+        last_status_data = None
+
+        # Initial wait before first probe (skip if in fast unit test mode)
+        if poll_interval > 5.0 and max_checks is None:
+            time.sleep(15.0)
 
         while True:
             checks += 1
@@ -659,50 +769,55 @@ class InstagramPublishClient:
                 break
 
             try:
-                res = requests.get(
-                    status_url,
-                    params={"fields": "status_code,status", "access_token": token},
-                    timeout=15
-                )
-                data = res.json()
+                status_info = self.query_container_status(container_id, token=token, include_copyright=False)
+                last_status_data = status_info
             except requests.RequestException as e:
-                logger.warning(f"Transient error querying Instagram container {container_id}: {e}")
+                safe_err = redact_token(str(e))
+                logger.warning(f"Transient error querying Instagram container {container_id}: {safe_err}")
                 if poll_interval > 0:
                     time.sleep(poll_interval)
                 continue
 
-            if "error" in data:
-                err = parse_instagram_error(data, f"Status check failed for container {container_id}")
-                log_instagram_audit("ERROR", f"Container status check failed: {err.user_message}", {"container_id": container_id})
-                raise err
-
-            code = data.get("status_code", "").upper()
-            status_text = data.get("status", "")
+            code = status_info["status_code"]
+            status_text = status_info["status"]
 
             if code == "FINISHED":
                 logger.info(f"Stage 3 complete: Container {container_id} is FINISHED and ready to publish.")
-                log_instagram_audit("INFO", f"Container {container_id} processing FINISHED.", {"container_id": container_id})
-                return data
+                log_instagram_audit("INFO", f"Container {container_id} processing FINISHED.", {"container_id": container_id, "checks": checks})
+                return status_info["raw_response"]
+
+            if code == "PUBLISHED":
+                logger.info(f"Stage 3: Container {container_id} is already PUBLISHED on Instagram.")
+                return status_info["raw_response"]
 
             if code == "ERROR":
                 err_msg = f"Instagram container transcode error: {status_text or 'Video failed Meta transcoding requirements'}"
-                log_instagram_audit("ERROR", err_msg, {"container_id": container_id, "status": status_text})
+                log_instagram_audit("ERROR", err_msg, {"container_id": container_id, "status": status_text, "checks": checks})
                 raise InstagramProcessingFailedError(err_msg, user_message=err_msg)
 
             if code == "EXPIRED":
                 err_msg = f"Instagram container {container_id} expired before publishing."
-                log_instagram_audit("ERROR", err_msg, {"container_id": container_id})
+                log_instagram_audit("ERROR", err_msg, {"container_id": container_id, "checks": checks})
                 raise InstagramUploadFailedError(err_msg, user_message=err_msg)
+
+            if code == "IN_PROGRESS":
+                logger.info(f"Container {container_id} status check #{checks}: IN_PROGRESS ({status_text}). Awaiting next check in {poll_interval}s...")
 
             if poll_interval > 0:
                 time.sleep(poll_interval)
 
+        # Inline window completed without reaching terminal status
+        waited = time.time() - start_time
+        if last_status_data and last_status_data["is_in_progress"]:
+            logger.info(f"Container {container_id} is confirmed IN_PROGRESS after {checks} inline checks ({waited:.1f}s). Handing off to background reconciliation.")
+            raise InstagramContainerProcessingInProgress(container_id, last_status_data, checks=checks, waited_sec=waited)
+
         # Timeout reached without FINISHED status
         timeout_msg = (
-            f"Instagram container {container_id} timed out after {checks} checks without reaching FINISHED state. "
+            f"Instagram container {container_id} timed out after {checks} checks ({waited:.1f}s) without reaching FINISHED state. "
             "Publishing aborted to prevent publishing an incomplete media container."
         )
-        log_instagram_audit("ERROR", timeout_msg, {"container_id": container_id, "waited_sec": max_wait_sec})
+        log_instagram_audit("ERROR", timeout_msg, {"container_id": container_id, "waited_sec": waited, "checks": checks})
         raise InstagramProcessingTimeoutError(timeout_msg, user_message=timeout_msg)
 
     # ==========================================
@@ -718,16 +833,36 @@ class InstagramPublishClient:
         Stage 4: Dispatches media_publish for a verified FINISHED container.
         Returns the published media_id.
         """
-        logger.info(f"Stage 4: Publishing Instagram Reel for Container ID {container_id}")
-        try:
-            res = requests.post(
-                f"{GRAPH_URL}/{ig_id}/media_publish",
-                data={"creation_id": container_id, "access_token": token},
-                timeout=30
+        # Pre-flight check: ensure container is not IN_PROGRESS
+        status_info = self.query_container_status(container_id, token=token, include_copyright=False)
+        if status_info["status_code"] == "IN_PROGRESS":
+            raise InstagramProcessingFailedError(
+                f"Cannot publish container {container_id}: container is still IN_PROGRESS.",
+                user_message=f"Container {container_id} is still transcoding on Meta servers."
             )
-            pub_res = res.json()
-        except requests.RequestException as e:
-            raise InstagramUploadFailedError(f"Network error executing Instagram media_publish: {e}")
+        if status_info["status_code"] == "PUBLISHED":
+            logger.info(f"Container {container_id} is already PUBLISHED. Returning existing container ID.")
+            return container_id
+
+        logger.info(f"Stage 4: Publishing Instagram Reel for Container ID {container_id}")
+        headers = {"Authorization": f"Bearer {token}"}
+        pub_res = None
+        for attempt in range(1, 3):
+            try:
+                res = requests.post(
+                    f"{GRAPH_URL}/{ig_id}/media_publish",
+                    headers=headers,
+                    data={"creation_id": container_id},
+                    timeout=45
+                )
+                pub_res = res.json()
+                break
+            except requests.RequestException as e:
+                safe_err = redact_token(str(e))
+                logger.warning(f"media_publish attempt {attempt}/2 failed: {safe_err}")
+                if attempt == 2:
+                    raise InstagramUploadFailedError(f"Network error executing Instagram media_publish: {safe_err}")
+                time.sleep(3)
 
         if "id" not in pub_res:
             err = parse_instagram_error(pub_res, "Instagram media_publish failed")
@@ -759,10 +894,12 @@ class InstagramPublishClient:
         Stage 5: Confirms the published media exists on Instagram and extracts canonical permalink.
         """
         logger.info(f"Stage 5: Verifying published Instagram media object for Media ID {media_id}")
+        headers = {"Authorization": f"Bearer {token}"}
         try:
             res = requests.get(
                 f"{GRAPH_URL}/{media_id}",
-                params={"fields": "id,media_type,permalink,shortcode,timestamp", "access_token": token},
+                headers=headers,
+                params={"fields": "id,media_type,permalink,shortcode,timestamp"},
                 timeout=15
             )
             data = res.json()
@@ -905,11 +1042,13 @@ class InstagramPublishClient:
         token = token.strip()
         required_perms = ["instagram_content_publish", "pages_show_list"]
 
+        headers = {"Authorization": f"Bearer {token}"}
         try:
             # 1. Test /me token validity
             me_res = requests.get(
                 f"{GRAPH_URL}/me",
-                params={"fields": "id,name", "access_token": token},
+                headers=headers,
+                params={"fields": "id,name"},
                 timeout=10
             ).json()
 
@@ -929,7 +1068,7 @@ class InstagramPublishClient:
             # 2. Check permissions
             perms_res = requests.get(
                 f"{GRAPH_URL}/me/permissions",
-                params={"access_token": token},
+                headers=headers,
                 timeout=10
             ).json()
 
