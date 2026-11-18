@@ -1,5 +1,8 @@
 @echo off
+chcp 65001 >nul
 setlocal enabledelayedexpansion
+set "PYTHONIOENCODING=utf-8"
+set "PYTHONUTF8=1"
 title Gaming Uncut Automation — NO FILTER. JUST GAMEPLAY.
 cd /d "%~dp0"
 
@@ -10,15 +13,49 @@ echo ==================================================================
 echo.
 
 rem ------------------------------------------------------------------
+rem 0. Parse Command-Line Arguments
+rem ------------------------------------------------------------------
+set "FORCE_BUILD=0"
+set "FORCE_RESTART=0"
+set "KEEP_EXISTING=0"
+
+:parse_args
+if "%~1"=="" goto :done_args
+if /i "%~1"=="--build" set "FORCE_BUILD=1"
+if /i "%~1"=="-b" set "FORCE_BUILD=1"
+if /i "%~1"=="--rebuild" set "FORCE_BUILD=1"
+if /i "%~1"=="--restart" set "FORCE_RESTART=1"
+if /i "%~1"=="-r" set "FORCE_RESTART=1"
+if /i "%~1"=="--force" set "FORCE_RESTART=1"
+if /i "%~1"=="--keep" set "KEEP_EXISTING=1"
+if /i "%~1"=="-k" set "KEEP_EXISTING=1"
+if /i "%~1"=="--help" goto :show_help
+if /i "%~1"=="-h" goto :show_help
+shift
+goto :parse_args
+
+:show_help
+echo Usage: start.bat [options]
+echo.
+echo Options:
+echo   --restart, -r, --force   Force restart even if server is already running
+echo   --build, -b, --rebuild   Force rebuild the React frontend SPA
+echo   --keep, -k               Keep existing running server without restart
+echo   --help, -h               Show this help message
+echo.
+exit /b 0
+
+:done_args
+
+rem ------------------------------------------------------------------
 rem 1. Detect & Activate Python Environment
 rem ------------------------------------------------------------------
 set "PYTHON_EXE="
-if exist ".venv\Scripts\activate.bat" (
-    call ".venv\Scripts\activate.bat"
-    set "PYTHON_EXE=python"
-    echo [*] Activated local virtual environment [.venv]
-) else if exist ".venv\Scripts\python.exe" (
-    set "PYTHON_EXE=.venv\Scripts\python.exe"
+if exist "%~dp0.venv\Scripts\python.exe" (
+    set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
+    if exist "%~dp0.venv\Scripts\activate.bat" (
+        call "%~dp0.venv\Scripts\activate.bat"
+    )
     echo [*] Using local virtual environment [.venv]
 ) else (
     where python >nul 2>nul
@@ -26,12 +63,12 @@ if exist ".venv\Scripts\activate.bat" (
         echo [*] Virtual environment [.venv] not found.
         echo [*] Initializing new Python virtual environment in .venv...
         python -m venv .venv
-        if exist ".venv\Scripts\activate.bat" (
+        if exist ".venv\Scripts\python.exe" (
+            set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
             call ".venv\Scripts\activate.bat"
-            set "PYTHON_EXE=python"
             echo [*] Installing requirements into .venv...
-            python -m pip install --upgrade pip
-            python -m pip install -r requirements.txt
+            "%PYTHON_EXE%" -m pip install --upgrade pip
+            "%PYTHON_EXE%" -m pip install -r requirements.txt
         ) else (
             set "PYTHON_EXE=python"
             echo [*] Using system Python
@@ -46,7 +83,7 @@ if exist ".venv\Scripts\activate.bat" (
 )
 
 rem Verify core python packages
-"%PYTHON_EXE%" -c "import fastapi, uvicorn, sqlalchemy" >nul 2>nul
+"%PYTHON_EXE%" -c "import fastapi, uvicorn, sqlalchemy, psutil" >nul 2>nul
 if %ERRORLEVEL% neq 0 (
     echo [*] Core Python packages missing. Installing dependencies from requirements.txt...
     "%PYTHON_EXE%" -m pip install -r requirements.txt
@@ -56,9 +93,9 @@ if %ERRORLEVEL% neq 0 (
 )
 
 rem ------------------------------------------------------------------
-rem 2. Pre-flight Check & Auto-Discovery: FFmpeg
+rem 2. Pre-flight Check & Auto-Discovery: FFmpeg and FFprobe
 rem ------------------------------------------------------------------
-where ffmpeg >nul 2>nul
+where.exe ffmpeg >nul 2>nul
 if %ERRORLEVEL% equ 0 (
     echo [*] FFmpeg detected on PATH.
 ) else (
@@ -82,7 +119,7 @@ if %ERRORLEVEL% equ 0 (
 rem ------------------------------------------------------------------
 rem 3. Pre-flight Check: Node.js and npm
 rem ------------------------------------------------------------------
-where node >nul 2>nul
+where.exe node >nul 2>nul
 if %ERRORLEVEL% equ 0 (
     echo [*] Node.js detected on PATH.
 ) else (
@@ -103,14 +140,9 @@ if not exist ".vault" mkdir ".vault"
 rem ------------------------------------------------------------------
 rem 5. Check frontend production build
 rem ------------------------------------------------------------------
-set "FORCE_BUILD=0"
-if "%1"=="--build" set "FORCE_BUILD=1"
-if "%1"=="-b" set "FORCE_BUILD=1"
-if "%1"=="--rebuild" set "FORCE_BUILD=1"
-
 if "!FORCE_BUILD!"=="1" (
     echo [*] Force rebuild requested. Rebuilding React SPA...
-    where npm >nul 2>nul
+    where.exe npm >nul 2>nul
     if %ERRORLEVEL% equ 0 (
         if not exist "frontend\node_modules" call npm install --prefix frontend
         call npm run build --prefix frontend
@@ -118,7 +150,7 @@ if "!FORCE_BUILD!"=="1" (
 ) else (
     if not exist "frontend\dist\index.html" (
         echo [*] Frontend production build missing. Building React SPA...
-        where npm >nul 2>nul
+        where.exe npm >nul 2>nul
         if %ERRORLEVEL% equ 0 (
             if not exist "frontend\node_modules" (
                 echo [*] Installing frontend npm packages...
@@ -133,22 +165,38 @@ if "!FORCE_BUILD!"=="1" (
 )
 
 rem ------------------------------------------------------------------
-rem 6. Port 8765 Conflict Resolution & Safe Recycling
+rem 6. Port 8765 Conflict Resolution & Smart Server Lifecycle
 rem ------------------------------------------------------------------
 netstat -ano | findstr ":8765 " | findstr "LISTENING" >nul 2>nul
 if %ERRORLEVEL% equ 0 (
-    echo [*] Server port 8765 is currently in use.
-    if "%1"=="--keep" (
+    if "!FORCE_RESTART!"=="1" (
+        echo [*] Force restart requested. Recycling port 8765...
+        goto :kill_existing
+    )
+    if "!KEEP_EXISTING!"=="1" (
         echo [*] Keeping existing server. Opening dashboard...
         start http://localhost:8765
         exit /b 0
     )
-    if "%1"=="-k" (
-        echo [*] Keeping existing server. Opening dashboard...
+
+    rem Test whether existing server is healthy and responsive
+    curl.exe -f -s -m 2 http://127.0.0.1:8765/api/health >nul 2>nul
+    if not errorlevel 1 (
+        echo.
+        echo ==================================================================
+        echo [*] Gaming Uncut Automation is ALREADY RUNNING and healthy.
+        echo [*] Dashboard URL:  http://localhost:8765
+        echo [*] Standalone UI:  http://localhost:8765/ui
+        echo [*] REST API Docs:  http://localhost:8765/docs
+        echo [*] [To force restart, run: start.bat --restart]
+        echo ==================================================================
         start http://localhost:8765
         exit /b 0
     )
-    echo [*] Recycling port 8765 to guarantee fresh server launch...
+
+    echo [*] Port 8765 is in use but unresponsive. Recycling port...
+
+:kill_existing
     for /f %%p in ('powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique"') do (
         set "EXISTING_PID=%%p"
         if defined EXISTING_PID (
@@ -157,12 +205,13 @@ if %ERRORLEVEL% equ 0 (
         )
     )
     rem Wait for socket release
-    for /l %%w in (1,1,6) do (
+    for /l %%w in (1,1,10) do (
         netstat -ano | findstr ":8765 " | findstr "LISTENING" >nul 2>nul
-        if !ERRORLEVEL! equ 0 (
-            ping 127.0.0.1 -n 2 >nul 2>&1
-        )
+        if errorlevel 1 goto :port_freed
+        ping 127.0.0.1 -n 2 >nul 2>&1
     )
+:port_freed
+    echo [*] Port 8765 is free.
 )
 
 rem ------------------------------------------------------------------
