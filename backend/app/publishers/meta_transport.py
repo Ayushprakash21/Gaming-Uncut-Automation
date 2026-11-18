@@ -24,6 +24,30 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+# Resilient DNS resolution for Meta hosts to bypass blackholed ISP routes (e.g. 57.145.14.0/24)
+_META_FALLBACK_IPS = {
+    "graph.facebook.com": ["57.144.54.141", "57.144.208.141", "57.144.210.141"],
+    "rupload.facebook.com": ["57.144.242.141", "57.144.54.141", "57.144.208.141"],
+}
+
+_orig_getaddrinfo = socket.getaddrinfo
+
+def _resilient_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    if host in _META_FALLBACK_IPS and family in (0, socket.AF_INET):
+        try:
+            res = _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+            # Filter out blackholed 57.145.14.x IPs that cause connect timeouts on some ISPs
+            good = [r for r in res if not r[4][0].startswith("57.145.14.")]
+            if good:
+                return good
+        except Exception:
+            pass
+        ips = _META_FALLBACK_IPS[host]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port)) for ip in ips]
+    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+
+socket.getaddrinfo = _resilient_getaddrinfo
+
 logger = logging.getLogger("gaming_uncut.meta_transport")
 
 # =============================================================================
