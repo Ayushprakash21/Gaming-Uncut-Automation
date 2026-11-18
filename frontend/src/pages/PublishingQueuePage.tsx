@@ -36,9 +36,10 @@ export const PublishingQueuePage: React.FC = () => {
       const inFlightStatuses = [
         'claimed', 'uploading', 'processing', 'publishing',
         'video_transferring', 'upload_initialized', 'transfer_completed',
-        'facebook_processing', 'instagram_processing'
+        'facebook_processing', 'instagram_processing',
+        'reconciling', 'unknown'
       ]
-      return inFlightStatuses.includes(s) || ['claimed', 'uploading', 'processing', 'publishing'].includes(js)
+      return inFlightStatuses.includes(s) || ['claimed', 'uploading', 'processing', 'publishing', 'reconciling', 'unknown'].includes(js)
     })
   }
 
@@ -346,7 +347,9 @@ export const PublishingQueuePage: React.FC = () => {
                                 : 'bg-purple-600 hover:bg-purple-500 text-white'
                             }`}
                           >
-                            {isJobInFlight(item.job_id)
+                            {item.status === 'reconciling' || item.status === 'RECONCILING'
+                              ? 'Reconciling...'
+                              : isJobInFlight(item.job_id)
                               ? 'Publishing...'
                               : isPublished
                               ? 'Republish'

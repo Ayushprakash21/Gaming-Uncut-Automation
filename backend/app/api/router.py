@@ -992,6 +992,18 @@ def force_dispatch(
             detail=f"Publishing job #{job_id} is currently in-flight (status: {pub_job.status}). Concurrent dispatch prevented."
         )
 
+    # Section 1 Safeguard: Disable Publish Now for all jobs/uploads in RECONCILING or UNKNOWN state
+    reconciling_upload = db.query(PlatformUpload).filter(
+        PlatformUpload.publishing_job_id == job_id,
+        PlatformUpload.status.in_(["reconciling", "RECONCILING", "unknown", "UNKNOWN"])
+    ).first()
+    if reconciling_upload and not allow_rep:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Publishing job #{job_id} has platform upload '{reconciling_upload.platform}' in {reconciling_upload.status.upper()} state. "
+                   "Publish Now is disabled to prevent duplicate container creation while reconciliation is active."
+        )
+
     # Check if job already finished publishing
     if pub_job.status in ["published", "PUBLISHED"] and not allow_rep:
         has_pending = db.query(PlatformUpload).filter(

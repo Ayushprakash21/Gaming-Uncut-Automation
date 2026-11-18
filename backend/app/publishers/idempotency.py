@@ -410,7 +410,8 @@ class IdempotencyManager:
                     if token:
                         res = requests.get(
                             f"https://graph.facebook.com/v21.0/{target_id}",
-                            params={"fields": "id,status,published,permalink_url", "access_token": token},
+                            headers={"Authorization": f"Bearer {token}"},
+                            params={"fields": "id,status,published,permalink_url"},
                             timeout=10
                         )
                         if res.status_code == 200:

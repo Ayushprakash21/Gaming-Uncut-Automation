@@ -57,6 +57,12 @@ def ensure_schema_compatibility(db_engine):
                     conn.execute(text("ALTER TABLE platform_uploads ADD COLUMN idempotency_key VARCHAR(255)"))
                 if "last_attempt_at" not in p_columns:
                     conn.execute(text("ALTER TABLE platform_uploads ADD COLUMN last_attempt_at DATETIME"))
+                if "status_checks" not in p_columns:
+                    conn.execute(text("ALTER TABLE platform_uploads ADD COLUMN status_checks INTEGER DEFAULT 0"))
+                if "publishing_attempts" not in p_columns:
+                    conn.execute(text("ALTER TABLE platform_uploads ADD COLUMN publishing_attempts INTEGER DEFAULT 0"))
+                if "reconciliation_metadata" not in p_columns:
+                    conn.execute(text("ALTER TABLE platform_uploads ADD COLUMN reconciliation_metadata TEXT"))
                 conn.commit()
         if "publishing_jobs" in inspector.get_table_names():
             pj_cols = [c["name"] for c in inspector.get_columns("publishing_jobs")]

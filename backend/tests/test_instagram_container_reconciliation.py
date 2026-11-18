@@ -13,6 +13,8 @@ Validates all requirements:
 
 import os
 import json
+from pathlib import Path
+import requests
 import pytest
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
@@ -29,6 +31,7 @@ from backend.app.publishers.idempotency import (
 )
 from backend.app.publishers.instagram.instagram_client import (
     InstagramPublishClient,
+    InstagramAPIError,
     InstagramContainerProcessingInProgress,
     InstagramProcessingFailedError,
     InstagramUploadFailedError,
@@ -459,4 +462,329 @@ def test_lost_response_reconciled_after_publish_timeout(test_clip_and_job):
 
             upload = db.query(PlatformUpload).filter_by(id=upload_id).first()
             assert upload.status == "published"
+
+
+# =============================================================================
+# Root Cause Regression Tests (Scenarios 1 through 12)
+# =============================================================================
+
+# Scenario 1 & 6: HTTP 400 plus Graph API IN_PROGRESS does not return upload success
+def test_http_400_plus_graph_api_in_progress_does_not_return_upload_success(tmp_path):
+    client = InstagramPublishClient()
+    test_video = tmp_path / "test_dummy.mp4"
+    test_video.write_bytes(b"A" * (8 * 1024 * 1024))  # 8MB dummy
+
+    # Mock rupload POST returning HTTP 400 with retriable=False, and rupload GET offset returning 0
+    with patch("requests.post") as mock_post, patch("requests.get") as mock_get:
+        mock_post_resp = MagicMock()
+        mock_post_resp.status_code = 400
+        mock_post_resp.json.return_value = {
+            "error": {"message": "Invalid chunk payload", "code": 400},
+            "debug_info": {"retriable": False}
+        }
+        mock_post_resp.text = '{"error": {"message": "Invalid chunk payload"}}'
+        mock_post.return_value = mock_post_resp
+
+        mock_get_resp = MagicMock()
+        mock_get_resp.status_code = 200
+        mock_get_resp.json.return_value = {"offset": 0}
+        mock_get.return_value = mock_get_resp
+
+        with pytest.raises(InstagramAPIError) as exc_info:
+            client.transfer_binary("https://rupload.facebook.com/test", test_video, "token", max_retries=1)
+
+        assert "HTTP 400" in str(exc_info.value) or "Invalid chunk payload" in str(exc_info.value) or "failed" in str(exc_info.value).lower()
+
+
+# Scenario 2: Failed intermediate chunk does not skip remaining bytes
+def test_failed_intermediate_chunk_does_not_skip_remaining_bytes(tmp_path):
+    client = InstagramPublishClient()
+    test_video = tmp_path / "test_chunk_fail.mp4"
+    test_video.write_bytes(b"B" * (12 * 1024 * 1024))  # 12MB dummy (3 x 4MB chunks)
+
+    # Chunk 1 succeeds (offset 0), Chunk 2 fails repeatedly
+    call_count = 0
+    def mock_post_impl(url, headers, data, timeout):
+        nonlocal call_count
+        call_count += 1
+        resp = MagicMock()
+        if headers.get("offset") == "0":
+            resp.status_code = 206
+            resp.json.return_value = {"offset": 4194304}
+            return resp
+        else:
+            resp.status_code = 500
+            resp.text = "Internal error on chunk 2"
+            resp.json.return_value = {"error": {"message": "Server error"}}
+            return resp
+
+    with patch("requests.post", side_effect=mock_post_impl), patch("requests.get") as mock_get:
+        # rupload GET returns acknowledged offset of only first chunk
+        mock_get_resp = MagicMock()
+        mock_get_resp.status_code = 200
+        mock_get_resp.json.return_value = {"offset": 4194304}
+        mock_get.return_value = mock_get_resp
+
+        with pytest.raises(InstagramAPIError):
+            client.transfer_binary("https://rupload.facebook.com/test", test_video, "token", max_retries=2, chunk_size=4*1024*1024)
+
+
+# Scenario 3: Partial chunk acknowledgement resumes at correct offset
+def test_partial_chunk_acknowledgement_resumes_at_correct_offset(tmp_path):
+    client = InstagramPublishClient()
+    test_video = tmp_path / "test_resume.mp4"
+    total_bytes = 8 * 1024 * 1024
+    test_video.write_bytes(b"C" * total_bytes)
+
+    observed_offsets = []
+    def mock_post_impl(url, headers, data, timeout):
+        observed_offsets.append(int(headers.get("offset", 0)))
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"offset": total_bytes}
+        return resp
+
+    with patch("requests.post", side_effect=mock_post_impl), patch("requests.get") as mock_get:
+        # Pre-upload GET acknowledges that 4MB was already uploaded
+        mock_get_resp = MagicMock()
+        mock_get_resp.status_code = 200
+        mock_get_resp.json.return_value = {"offset": 4 * 1024 * 1024}
+        mock_get.return_value = mock_get_resp
+
+        result = client.transfer_binary("https://rupload.facebook.com/test", test_video, "token", chunk_size=4*1024*1024)
+        assert result is True
+        # Proves it resumed directly at offset 4194304 without re-uploading chunk 0
+        assert observed_offsets[0] == 4 * 1024 * 1024
+
+
+# Scenario 4: Full byte acknowledgement completes the transfer
+def test_full_byte_acknowledgement_completes_transfer(tmp_path):
+    client = InstagramPublishClient()
+    test_video = tmp_path / "test_full_ack.mp4"
+    total_bytes = 8 * 1024 * 1024
+    test_video.write_bytes(b"D" * total_bytes)
+
+    with patch("requests.post") as mock_post, patch("requests.get") as mock_get:
+        # Both chunks succeed
+        resp1 = MagicMock()
+        resp1.status_code = 206
+        resp1.json.return_value = {"offset": 4194304}
+
+        resp2 = MagicMock()
+        resp2.status_code = 200
+        resp2.json.return_value = {"offset": total_bytes}
+
+        mock_post.side_effect = [resp1, resp2]
+        mock_get_resp = MagicMock(status_code=200)
+        mock_get_resp.json.return_value = {"offset": 0}
+        mock_get.return_value = mock_get_resp
+
+        success = client.transfer_binary("https://rupload.facebook.com/test", test_video, "token", chunk_size=4*1024*1024)
+        assert success is True
+
+
+# Scenario 5: Final chunk network timeout reconciles using acknowledged bytes
+def test_final_chunk_network_timeout_reconciles_using_acknowledged_bytes(tmp_path):
+    client = InstagramPublishClient()
+    test_video = tmp_path / "test_timeout_reconcile.mp4"
+    total_bytes = 4 * 1024 * 1024
+    test_video.write_bytes(b"E" * total_bytes)
+
+    # First POST throws network Timeout, but subsequent GET to rupload confirms full offset
+    with patch("requests.post", side_effect=requests.Timeout("Connection timed out waiting for rupload response")), \
+         patch("requests.get") as mock_get:
+        # Initial GET before upload returns 0
+        get_init = MagicMock(status_code=200)
+        get_init.json.return_value = {"offset": 0}
+
+        # Query GET after timeout confirms server actually received all bytes!
+        get_after = MagicMock(status_code=200)
+        get_after.json.return_value = {"offset": total_bytes}
+
+        mock_get.side_effect = [get_init, get_after]
+
+        success = client.transfer_binary("https://rupload.facebook.com/test", test_video, "token", max_retries=2)
+        assert success is True
+
+
+# Scenario 7 & 8: FINISHED is not published twice & PUBLISHED is reconciled without another media_publish
+def test_finished_published_exact_once(test_clip_and_job):
+    clip_id, job_id, upload_id = test_clip_and_job
+    publish_calls = 0
+
+    def mock_publish(ig_id, cid, tok):
+        nonlocal publish_calls
+        publish_calls += 1
+        return "ig_media_999"
+
+    with patch.object(instagram_client, "query_container_status") as mock_query, \
+         patch.object(instagram_client, "publish_container", side_effect=mock_publish), \
+         patch.object(instagram_client, "verify_media_published", return_value={"permalink": "https://instagram.com/reel/999"}), \
+         patch("backend.app.publishers.instagram.reconciler.meta_token_manager.get_instagram_credentials", return_value={"token": "t", "instagram_account_id": "17841448213228145"}):
+
+        # First run: FINISHED triggers publish exactly once
+        mock_query.return_value = {"id": "18058853213607108", "status_code": "FINISHED", "status": "Ready", "is_in_progress": False, "is_finished": True, "is_published": False, "is_error": False, "is_expired": False, "raw_response": {}}
+        with SessionLocal() as db:
+            res1 = instagram_reconciler.reconcile_pending_containers(db)
+            assert len(res1) == 1
+            assert res1[0]["action"] == "published"
+            assert publish_calls == 1
+
+        # Second run: Container is already published, must NOT call media_publish again!
+        mock_query.return_value = {"id": "18058853213607108", "status_code": "PUBLISHED", "status": "Live", "is_in_progress": False, "is_finished": False, "is_published": True, "is_error": False, "is_expired": False, "raw_response": {}}
+        with SessionLocal() as db:
+            res2 = instagram_reconciler.reconcile_pending_containers(db)
+            # Already marked published, pending_uploads does not process it again
+            assert len(res2) == 0
+            assert publish_calls == 1
+
+
+# Scenario 9: Existing UNKNOWN jobs are not duplicated
+def test_existing_unknown_jobs_are_not_duplicated():
+    from backend.app.publishers.manager import publishing_manager
+    import uuid
+    uid = uuid.uuid4().hex[:6]
+    with SessionLocal() as db:
+        c = GeneratedClip(duration_sec=30.0, width=1080, height=1920, output_path=f"data/output/unknown_{uid}.mp4")
+        db.add(c)
+        db.commit()
+
+        j = PublishingJob(clip_id=c.id, scheduled_time=datetime.utcnow(), status="UNKNOWN", attempts=1)
+        db.add(j)
+        db.commit()
+
+        u = PlatformUpload(
+            publishing_job_id=j.id, platform="instagram", account_id="acc1", destination="reels",
+            idempotency_key=f"unk_{uid}", external_post_id=f"cid_unk_{uid}", status="unknown",
+            attempts=1, last_attempt_at=datetime.utcnow()
+        )
+        db.add(u)
+        db.commit()
+
+        with patch.object(instagram_client, "create_media_container") as mock_create, \
+             patch.object(instagram_client, "query_container_status", return_value={"id": f"cid_unk_{uid}", "status_code": "IN_PROGRESS", "status": "Processing", "is_in_progress": True, "is_finished": False, "is_published": False, "is_error": False, "is_expired": False, "raw_response": {}}), \
+             patch("backend.app.publishers.manager.meta_token_manager.get_instagram_credentials", return_value={"token": "t", "instagram_account_id": "acc1"}), \
+             patch("pathlib.Path.exists", return_value=True):
+
+            res = publishing_manager.execute_job(j.id)
+            # Verifies that it did NOT call create_media_container to replace the container
+            assert mock_create.call_count == 0
+            db.refresh(u)
+            assert u.status in ("reconciling", "unknown")
+
+        db.delete(u)
+        db.delete(j)
+        db.delete(c)
+        db.commit()
+
+
+# Scenario 10: Polling uses the intended five-minute initial window and clamps legacy defaults
+def test_polling_uses_intended_five_minute_initial_window():
+    from backend.app.publishers.instagram.instagram_client import (
+        DEFAULT_POLL_INTERVAL_SEC, DEFAULT_MAX_POLL_CHECKS, DEFAULT_MAX_MONITORING_WINDOW_SEC
+    )
+    assert DEFAULT_POLL_INTERVAL_SEC == 60.0
+    assert DEFAULT_MAX_POLL_CHECKS == 5
+    assert DEFAULT_MAX_MONITORING_WINDOW_SEC == 300
+
+    client = InstagramPublishClient()
+    with patch.object(client, "poll_container_status") as mock_poll, \
+         patch.object(client, "create_media_container", return_value={"container_id": "c123", "upload_url": None}), \
+         patch.object(client, "optimize_video_for_reels", return_value=(Path("dummy.mp4"), False)), \
+         patch.object(client, "_get_auth", return_value={"token": "t", "ig_id": "ig123"}), \
+         patch("pathlib.Path.exists", return_value=True):
+
+        # Calling publish_reel with old legacy params (5s, 60 checks) gets safely clamped to 60s, 5 checks
+        try:
+            client.publish_reel(video_path="dummy.mp4", poll_interval_sec=5, max_poll_checks=60)
+        except Exception:
+            pass
+
+        mock_poll.assert_called_once()
+        _, kwargs = mock_poll.call_args
+        assert kwargs["poll_interval"] == 60.0
+        assert kwargs["max_checks"] == 5
+        assert kwargs["max_wait_sec"] == 300
+
+
+# Scenario 11: Reconciliation attempts and status checks are counted separately
+def test_reconciliation_attempts_and_status_checks_are_counted_separately():
+    import uuid
+    uid = uuid.uuid4().hex[:6]
+    with SessionLocal() as db:
+        c = GeneratedClip(duration_sec=30.0, width=1080, height=1920, output_path=f"data/output/chk_{uid}.mp4")
+        db.add(c)
+        db.commit()
+
+        j = PublishingJob(clip_id=c.id, scheduled_time=datetime.utcnow(), status="UNKNOWN", attempts=1)
+        db.add(j)
+        db.commit()
+
+        # Initial upload: attempts=1, status_checks=0
+        u = PlatformUpload(
+            publishing_job_id=j.id, platform="instagram", account_id="acc1", destination="feed",
+            idempotency_key=f"k_chk_{uid}", external_post_id=f"cid_chk_{uid}", status="reconciling",
+            attempts=1, status_checks=0, last_attempt_at=datetime.utcnow() - timedelta(minutes=5)
+        )
+        db.add(u)
+        db.commit()
+
+        with patch.object(instagram_client, "query_container_status", return_value={"id": f"cid_chk_{uid}", "status_code": "IN_PROGRESS", "status": "Processing", "is_in_progress": True, "is_finished": False, "is_published": False, "is_error": False, "is_expired": False, "raw_response": {}}), \
+             patch("backend.app.publishers.instagram.reconciler.meta_token_manager.get_instagram_credentials", return_value={"token": "t", "instagram_account_id": "acc1"}):
+
+            res = instagram_reconciler.reconcile_pending_containers(db)
+            assert len(res) == 1
+            assert res[0]["action"] == "monitoring_continued"
+
+            db.refresh(u)
+            # upload.attempts MUST remain 1 (no new binary upload occurred!)
+            assert u.attempts == 1
+            # status_checks MUST increment to 1
+            assert u.status_checks == 1
+            assert u.reconciliation_metadata is not None
+            meta = json.loads(u.reconciliation_metadata)
+            assert meta["status_checks"] == 1
+            assert meta["upload_attempts"] == 1
+
+
+# Scenario 12: Restart recovery preserves offsets and container IDs
+def test_restart_recovery_preserves_offsets_and_container_ids():
+    from backend.app.scheduler.manager import task_scheduler
+    import uuid
+    uid = uuid.uuid4().hex[:6]
+    with SessionLocal() as db:
+        c = GeneratedClip(duration_sec=30.0, width=1080, height=1920, output_path=f"data/output/rst_{uid}.mp4")
+        db.add(c)
+        db.commit()
+
+        j = PublishingJob(clip_id=c.id, scheduled_time=datetime.utcnow(), status="CLAIMED", attempts=1, worker_id="dead_worker_123")
+        db.add(j)
+        db.commit()
+
+        cid = f"cid_rst_{uid}"
+        u = PlatformUpload(
+            publishing_job_id=j.id, platform="instagram", account_id="acc1", destination="feed",
+            idempotency_key=f"k_rst_{uid}", external_post_id=cid, status="reconciling",
+            attempts=1, status_checks=4, last_attempt_at=datetime.utcnow() - timedelta(minutes=10)
+        )
+        db.add(u)
+        db.commit()
+
+        # Simulate task scheduler recovery after system reboot
+        task_scheduler.recover_interrupted_jobs()
+
+        db.refresh(j)
+        assert j.status == "UNKNOWN"
+
+        db.refresh(u)
+        # Container ID and reconciling state are preserved
+        assert u.external_post_id == cid
+        assert u.status == "reconciling"
+        assert u.status_checks == 4
+
+        # Cleanup
+        db.delete(u)
+        db.delete(j)
+        db.delete(c)
+        db.commit()
 

@@ -14,10 +14,12 @@ Runs asynchronously in the background to monitor in-flight Instagram containers:
 - Zero access token leakage in logs or exceptions.
 """
 
+import json
 import logging
 import threading
 import requests
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 
@@ -137,7 +139,27 @@ class InstagramReconciler:
         except requests.RequestException as e:
             safe_err = redact_token(str(e))
             logger.warning(f"[InstagramReconciler] Transient network error querying container {container_id}: {safe_err}")
-            return {"container_id": container_id, "status": "NETWORK_ERROR", "action": "retry_later"}
+            upload.status_checks = (upload.status_checks or 0) + 1
+            upload.last_attempt_at = now
+            container_created_at = self._get_or_infer_container_created_at(db, upload, container_id)
+            deadline = container_created_at + timedelta(hours=24)
+            diag_metadata = {
+                "container_created_at": container_created_at.isoformat(),
+                "last_ack_at": upload.last_attempt_at.isoformat() if upload.last_attempt_at else now.isoformat(),
+                "total_file_bytes": None,
+                "acknowledged_bytes": None,
+                "last_graph_status": "NETWORK_ERROR",
+                "last_graph_status_text": safe_err,
+                "last_checked_at": now.isoformat(),
+                "last_network_error": safe_err,
+                "next_check_at": (now + timedelta(seconds=60)).isoformat(),
+                "reconciliation_deadline": deadline.isoformat(),
+                "status_checks": upload.status_checks,
+                "upload_attempts": upload.attempts,
+                "publishing_attempts": upload.publishing_attempts or 0
+            }
+            upload.reconciliation_metadata = json.dumps(diag_metadata)
+            return {"container_id": container_id, "status": "NETWORK_ERROR", "action": "retry_later", "diagnostics": diag_metadata}
 
         status_code = status_info["status_code"]
         status_text = status_info["status"]
@@ -146,109 +168,79 @@ class InstagramReconciler:
         # 1. FINISHED: Eligible for immediate publishing!
         # =====================================================================
         if status_code == "FINISHED":
-            logger.info(f"[InstagramReconciler] Container {container_id} is FINISHED! Dispatches media_publish...")
-            try:
-                media_id = instagram_client.publish_container(ig_id, container_id, token)
-                verified = instagram_client.verify_media_published(media_id, token)
-
-                upload.status = "published"
-                upload.external_post_id = media_id
-                upload.external_url = verified["permalink"]
-                upload.uploaded_at = now
-                upload.error_code = None
-                upload.error_message = None
-
-                idempotency_manager.update_stage(
-                    db, upload.idempotency_key, "reconciler", PublishingState.PUBLISHED,
-                    external_post_id=media_id, external_url=verified["permalink"]
-                )
-                record_upload_success(db, "instagram", quota_units=0)
-
-                # Check if entire job can now be completed
-                self._check_and_complete_job(db, job)
-
-                log_publishing_audit(
-                    db, platform="instagram", publishing_job_id=upload.publishing_job_id,
-                    clip_id=clip_id, stage="reconciliation_published", error=None, level="INFO",
-                    attempts=upload.attempts,
-                    user_message=f"Reconciler published Instagram Reel: {verified['permalink']}",
-                    worker_id="reconciler", account_id=ig_id,
-                    external_media_id=media_id, published_url=verified["permalink"],
-                    idempotency_decision="RECONCILED_PUBLISHED", completed_at=now
-                )
-                return {
-                    "container_id": container_id,
-                    "status": "FINISHED",
-                    "action": "published",
-                    "media_id": media_id,
-                    "url": verified["permalink"]
-                }
-            except Exception as e:
-                safe_err = redact_token(str(e))
-                # Check if container actually reached PUBLISHED state despite network timeout
-                try:
-                    re_check = instagram_client.query_container_status(container_id, token=token, include_copyright=False)
-                    if re_check.get("is_published"):
-                        verified = instagram_client.verify_media_published(container_id, token)
-                        upload.status = "published"
-                        upload.external_url = verified["permalink"]
-                        upload.uploaded_at = now
-                        upload.error_code = None
-                        upload.error_message = None
-                        idempotency_manager.update_stage(
-                            db, upload.idempotency_key, "reconciler", PublishingState.PUBLISHED,
-                            external_post_id=container_id, external_url=verified["permalink"]
-                        )
-                        record_upload_success(db, "instagram", quota_units=0)
-                        self._check_and_complete_job(db, job)
-                        return {
-                            "container_id": container_id,
-                            "status": "PUBLISHED",
-                            "action": "published",
-                            "url": verified["permalink"]
-                        }
-                except Exception:
-                    pass
-                logger.error(f"[InstagramReconciler] Failed publishing FINISHED container {container_id}: {safe_err}")
-                upload.status = "reconciling"
-                upload.error_code = "RECONCILE_PUBLISH_FAILED"
-                upload.error_message = safe_err
-                return {"container_id": container_id, "status": "FINISHED", "action": "publish_failed", "error": safe_err}
+            return self._publish_finished_container(db, upload, container_id, ig_id, token, now, clip_id, job)
 
         # =====================================================================
         # 2. PUBLISHED: Already live on Instagram
         # =====================================================================
         elif status_code == "PUBLISHED":
-            logger.info(f"[InstagramReconciler] Container {container_id} is already PUBLISHED!")
-            verified = instagram_client.verify_media_published(container_id, token)
-
-            upload.status = "published"
-            upload.external_url = verified["permalink"]
-            upload.uploaded_at = upload.uploaded_at or now
-            upload.error_code = None
-            upload.error_message = None
-
-            idempotency_manager.update_stage(
-                db, upload.idempotency_key, "reconciler", PublishingState.PUBLISHED,
-                external_post_id=container_id, external_url=verified["permalink"]
-            )
-            self._check_and_complete_job(db, job)
-            return {"container_id": container_id, "status": "PUBLISHED", "action": "marked_published", "url": verified["permalink"]}
+            return self._handle_published_container(db, upload, container_id, token, now, job)
 
         # =====================================================================
-        # 3. IN_PROGRESS: Continue controlled monitoring
+        # 3. IN_PROGRESS: Check for FINISHED sibling before continuing monitoring
         # =====================================================================
         elif status_code == "IN_PROGRESS":
-            upload.attempts += 1
+            # Check if an earlier sibling container for this job/clip is already FINISHED or PUBLISHED
+            for sib_id in self._find_sibling_containers(db, upload):
+                if sib_id == container_id:
+                    continue
+                try:
+                    sib_info = instagram_client.query_container_status(sib_id, token=token, include_copyright=False)
+                    if sib_info.get("status_code") == "FINISHED":
+                        logger.info(
+                            f"[InstagramReconciler] Primary container {container_id} is IN_PROGRESS, but sibling container {sib_id} "
+                            "is FINISHED! Reconciling and publishing sibling container."
+                        )
+                        container_id = sib_id
+                        upload.external_post_id = sib_id
+                        return self._publish_finished_container(db, upload, container_id, ig_id, token, now, clip_id, job)
+                    elif sib_info.get("status_code") == "PUBLISHED":
+                        logger.info(
+                            f"[InstagramReconciler] Sibling container {sib_id} is already PUBLISHED! Marking complete."
+                        )
+                        container_id = sib_id
+                        upload.external_post_id = sib_id
+                        return self._handle_published_container(db, upload, container_id, token, now, job)
+                except Exception as e:
+                    logger.debug(f"[InstagramReconciler] Sibling query on {sib_id} failed: {e}")
+
+            # Increment dedicated status_checks counter (preserve upload.attempts for actual binary upload attempts)
+            upload.status_checks = (upload.status_checks or 0) + 1
             upload.last_attempt_at = now
             upload.status = "reconciling"
             upload.error_code = "RECONCILING"
 
-            # Check 24-hour Meta expiration deadline
-            initial_time = upload.last_attempt_at or now
-            if job and job.created_at:
-                initial_time = job.created_at
-            elapsed_hours = (now - initial_time).total_seconds() / 3600.0
+            # Determine actual container creation timestamp (never use overall job creation time)
+            container_created_at = self._get_or_infer_container_created_at(db, upload, container_id)
+            deadline = container_created_at + timedelta(hours=24)
+            elapsed_hours = (now - container_created_at).total_seconds() / 3600.0
+
+            # Total expected and acknowledged file bytes if available
+            total_file_bytes = None
+            if job and job.clip and job.clip.output_path:
+                try:
+                    p = Path(job.clip.output_path)
+                    if p.exists():
+                        total_file_bytes = p.stat().st_size
+                except Exception:
+                    pass
+
+            diag_metadata = {
+                "container_created_at": container_created_at.isoformat(),
+                "last_ack_at": upload.last_attempt_at.isoformat() if upload.last_attempt_at else now.isoformat(),
+                "total_file_bytes": total_file_bytes,
+                "acknowledged_bytes": total_file_bytes,
+                "last_graph_status": status_code,
+                "last_graph_status_text": status_text,
+                "last_checked_at": now.isoformat(),
+                "last_network_error": None,
+                "next_check_at": (now + timedelta(seconds=60)).isoformat(),
+                "reconciliation_deadline": deadline.isoformat(),
+                "status_checks": upload.status_checks,
+                "upload_attempts": upload.attempts,
+                "publishing_attempts": upload.publishing_attempts or 0
+            }
+            upload.reconciliation_metadata = json.dumps(diag_metadata)
 
             if elapsed_hours >= 24.0:
                 logger.error(f"[InstagramReconciler] Container {container_id} exceeded 24-hour Meta deadline ({elapsed_hours:.1f}h). Marking EXPIRED.")
@@ -256,16 +248,23 @@ class InstagramReconciler:
                 upload.error_code = "CONTAINER_EXPIRED"
                 upload.error_message = f"Container exceeded Meta's 24-hour processing lifetime ({elapsed_hours:.1f} hours elapsed)."
                 idempotency_manager.update_stage(db, upload.idempotency_key, "reconciler", PublishingState.FAILED)
-                return {"container_id": container_id, "status": "EXPIRED", "action": "marked_failed"}
+                return {"container_id": container_id, "status": "EXPIRED", "action": "marked_failed", "diagnostics": diag_metadata}
 
-            msg = f"Instagram container {container_id} is transcoding on Meta servers ({upload.attempts} checks). Status: {status_text}"
+            msg = f"Instagram container {container_id} is transcoding on Meta servers ({upload.status_checks} checks). Status: {status_text}"
             upload.error_message = msg
             idempotency_manager.update_stage(
                 db, upload.idempotency_key, "reconciler", PublishingState.RECONCILING,
                 external_post_id=container_id
             )
             logger.info(f"[InstagramReconciler] {msg}. Monitoring continues in background.")
-            return {"container_id": container_id, "status": "IN_PROGRESS", "action": "monitoring_continued", "checks": upload.attempts}
+            return {
+                "container_id": container_id,
+                "status": "IN_PROGRESS",
+                "action": "monitoring_continued",
+                "status_checks": upload.status_checks,
+                "upload_attempts": upload.attempts,
+                "diagnostics": diag_metadata
+            }
 
         # =====================================================================
         # 4. ERROR: Meta transcoding failure
@@ -302,6 +301,160 @@ class InstagramReconciler:
         else:
             logger.warning(f"[InstagramReconciler] Container {container_id} returned unrecognized status: {status_code}")
             return {"container_id": container_id, "status": status_code, "action": "unknown"}
+
+    def _publish_finished_container(
+        self,
+        db: Session,
+        upload: PlatformUpload,
+        container_id: str,
+        ig_id: str,
+        token: str,
+        now: datetime,
+        clip_id: Optional[int],
+        job: Optional[PublishingJob]
+    ) -> Dict[str, Any]:
+        """Publishes a FINISHED container to Instagram with safety checks against duplicate publishing."""
+        from backend.app.publishers.manager import log_publishing_audit
+        logger.info(f"[InstagramReconciler] Container {container_id} is FINISHED! Dispatches media_publish...")
+        upload.publishing_attempts = (upload.publishing_attempts or 0) + 1
+        try:
+            media_id = instagram_client.publish_container(ig_id, container_id, token)
+            verified = instagram_client.verify_media_published(media_id, token)
+
+            upload.status = "published"
+            upload.external_post_id = media_id
+            upload.external_url = verified["permalink"]
+            upload.uploaded_at = now
+            upload.error_code = None
+            upload.error_message = None
+
+            idempotency_manager.update_stage(
+                db, upload.idempotency_key, "reconciler", PublishingState.PUBLISHED,
+                external_post_id=media_id, external_url=verified["permalink"]
+            )
+            record_upload_success(db, "instagram", quota_units=0)
+            self._check_and_complete_job(db, job)
+
+            log_publishing_audit(
+                db, platform="instagram", publishing_job_id=upload.publishing_job_id,
+                clip_id=clip_id, stage="reconciliation_published", error=None, level="INFO",
+                attempts=upload.attempts,
+                user_message=f"Reconciler published Instagram Reel: {verified['permalink']}",
+                worker_id="reconciler", account_id=ig_id,
+                external_media_id=media_id, published_url=verified["permalink"],
+                idempotency_decision="RECONCILED_PUBLISHED", completed_at=now
+            )
+            return {
+                "container_id": container_id,
+                "status": "FINISHED",
+                "action": "published",
+                "media_id": media_id,
+                "url": verified["permalink"]
+            }
+        except Exception as e:
+            safe_err = redact_token(str(e))
+            # Check if container actually reached PUBLISHED state despite network timeout
+            try:
+                re_check = instagram_client.query_container_status(container_id, token=token, include_copyright=False)
+                if re_check.get("is_published"):
+                    verified = instagram_client.verify_media_published(container_id, token)
+                    upload.status = "published"
+                    upload.external_url = verified["permalink"]
+                    upload.uploaded_at = now
+                    upload.error_code = None
+                    upload.error_message = None
+                    idempotency_manager.update_stage(
+                        db, upload.idempotency_key, "reconciler", PublishingState.PUBLISHED,
+                        external_post_id=container_id, external_url=verified["permalink"]
+                    )
+                    record_upload_success(db, "instagram", quota_units=0)
+                    self._check_and_complete_job(db, job)
+                    return {
+                        "container_id": container_id,
+                        "status": "PUBLISHED",
+                        "action": "published",
+                        "url": verified["permalink"]
+                    }
+            except Exception:
+                pass
+            logger.error(f"[InstagramReconciler] Failed publishing FINISHED container {container_id}: {safe_err}")
+            upload.status = "reconciling"
+            upload.error_code = "RECONCILE_PUBLISH_FAILED"
+            upload.error_message = safe_err
+            return {"container_id": container_id, "status": "FINISHED", "action": "publish_failed", "error": safe_err}
+
+    def _handle_published_container(
+        self,
+        db: Session,
+        upload: PlatformUpload,
+        container_id: str,
+        token: str,
+        now: datetime,
+        job: Optional[PublishingJob]
+    ) -> Dict[str, Any]:
+        """Marks a container that is already PUBLISHED on Instagram as complete."""
+        logger.info(f"[InstagramReconciler] Container {container_id} is already PUBLISHED!")
+        verified = instagram_client.verify_media_published(container_id, token)
+
+        upload.status = "published"
+        upload.external_url = verified["permalink"]
+        upload.uploaded_at = upload.uploaded_at or now
+        upload.error_code = None
+        upload.error_message = None
+
+        idempotency_manager.update_stage(
+            db, upload.idempotency_key, "reconciler", PublishingState.PUBLISHED,
+            external_post_id=container_id, external_url=verified["permalink"]
+        )
+        self._check_and_complete_job(db, job)
+        return {"container_id": container_id, "status": "PUBLISHED", "action": "marked_published", "url": verified["permalink"]}
+
+    def _get_or_infer_container_created_at(self, db: Session, upload: PlatformUpload, container_id: str) -> datetime:
+        """Determines the actual creation timestamp of the container, falling back safely without using overall job time."""
+        # 1. Check existing metadata
+        if upload.reconciliation_metadata:
+            try:
+                meta = json.loads(upload.reconciliation_metadata)
+                if meta.get("container_created_at"):
+                    return datetime.fromisoformat(meta["container_created_at"])
+            except Exception:
+                pass
+
+        # 2. Check SystemLog for container creation
+        try:
+            from backend.app.models.schema import SystemLog
+            log_entry = db.query(SystemLog).filter(
+                SystemLog.message.like(f"%{container_id}%")
+            ).order_by(SystemLog.id.asc()).first()
+            if log_entry and log_entry.created_at:
+                return log_entry.created_at
+        except Exception:
+            pass
+
+        # 3. Fall back to upload's last_attempt_at or current time
+        return upload.last_attempt_at or datetime.utcnow()
+
+    def _find_sibling_containers(self, db: Session, upload: PlatformUpload) -> List[str]:
+        """Finds any other container IDs associated with this publishing job from system logs."""
+        import re
+        from backend.app.models.schema import SystemLog
+        cids: List[str] = []
+        if not upload.publishing_job_id:
+            return cids
+        try:
+            logs = db.query(SystemLog).filter(
+                (SystemLog.message.like(f"%Job #{upload.publishing_job_id}%")) |
+                (SystemLog.metadata_json.like(f'%\"publishing_job_id\": {upload.publishing_job_id}%')) |
+                (SystemLog.message.like("%container%"))
+            ).order_by(SystemLog.id.desc()).limit(50).all()
+            for l in logs:
+                text = (l.message or "") + " " + (l.metadata_json or "")
+                for m in re.findall(r'180\d{14}', text):
+                    if m not in cids and m != str(upload.external_post_id):
+                        cids.append(m)
+        except Exception as e:
+            logger.debug(f"[InstagramReconciler] Error finding sibling containers: {e}")
+        return cids
 
     def _check_and_complete_job(self, db: Session, job: Optional[PublishingJob]):
         """Checks if all platform uploads for the job have reached terminal published/paused state and completes the job."""

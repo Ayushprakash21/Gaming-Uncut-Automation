@@ -37,6 +37,14 @@ API_VERSION = "v21.0"
 GRAPH_URL = f"https://graph.facebook.com/{API_VERSION}"
 
 # ==========================================
+# Single Source of Truth: Polling Configuration
+# ==========================================
+DEFAULT_INITIAL_POLL_WAIT_SEC: float = 15.0
+DEFAULT_POLL_INTERVAL_SEC: float = 60.0
+DEFAULT_MAX_POLL_CHECKS: int = 5
+DEFAULT_MAX_MONITORING_WINDOW_SEC: int = 300
+
+# ==========================================
 # Typed Instagram Exceptions
 # ==========================================
 
@@ -333,11 +341,13 @@ class InstagramPublishClient:
         """Discovers the linked Instagram Business/Creator Account ID from the linked Facebook Page."""
         try:
             page_id = vault.get_secret("meta", "page_id")
+            headers = {"Authorization": f"Bearer {token}"}
             # 1. Check from configured page_id
             if page_id and page_id != "me":
                 res = requests.get(
                     f"{GRAPH_URL}/{page_id}",
-                    params={"fields": "instagram_business_account", "access_token": token},
+                    headers=headers,
+                    params={"fields": "instagram_business_account"},
                     timeout=10
                 ).json()
                 if "instagram_business_account" in res and "id" in res["instagram_business_account"]:
@@ -346,7 +356,8 @@ class InstagramPublishClient:
             # 2. Check from /me/accounts
             accounts = requests.get(
                 f"{GRAPH_URL}/me/accounts",
-                params={"fields": "id,name,instagram_business_account", "access_token": token},
+                headers=headers,
+                params={"fields": "id,name,instagram_business_account"},
                 timeout=10
             ).json().get("data", [])
 
@@ -421,11 +432,11 @@ class InstagramPublishClient:
         upload_url = init_res.get("uri")
         if not upload_url and not video_url:
             upload_url = f"https://rupload.facebook.com/ig-api-upload/{API_VERSION}/{container_id}"
-        logger.info(f"Stage 1 complete: Container created. ID: {container_id}, Upload URL: {upload_url}")
+        logger.info(f"Stage 1 complete: Container created. ID: {container_id}, Upload type: {'url' if video_url else 'resumable'}")
         log_instagram_audit(
             "INFO",
             f"Instagram Reel container created: {container_id}",
-            {"stage": "create_container", "container_id": container_id, "upload_type": "url" if video_url else "resumable", "upload_url": upload_url}
+            {"stage": "create_container", "container_id": container_id, "upload_type": "url" if video_url else "resumable"}
         )
         return {"container_id": container_id, "upload_url": upload_url}
 
@@ -501,7 +512,8 @@ class InstagramPublishClient:
     ) -> bool:
         """
         Stage 2: Streams video binary to Meta's rupload endpoint using chunked resumable protocol.
-        Uploads chunks (default 4MB) with byte offsets, preventing the ~45s proxy connection timeout.
+        Uploads chunks with exact byte offsets. Strictly verifies server acknowledgement.
+        Never treats Graph API container status as a substitute for binary upload confirmation.
         """
         if not video_path.exists():
             raise FileNotFoundError(f"Video file missing: {video_path}")
@@ -514,6 +526,31 @@ class InstagramPublishClient:
 
         current_offset = 0
 
+        # Helper to query rupload server acknowledged offset
+        def get_server_offset() -> Optional[int]:
+            try:
+                chk = requests.get(
+                    upload_url,
+                    headers={"Authorization": f"OAuth {token}"},
+                    timeout=15
+                )
+                if chk.status_code == 200:
+                    data = chk.json()
+                    if isinstance(data, dict) and "offset" in data:
+                        return int(data["offset"])
+            except Exception as ex:
+                logger.debug(f"Failed to query rupload offset: {redact_token(str(ex))}")
+            return None
+
+        # Check initial offset if resuming
+        initial_srv_offset = get_server_offset()
+        if initial_srv_offset is not None and 0 < initial_srv_offset < file_size:
+            logger.info(f"Resuming upload from rupload acknowledged offset: {initial_srv_offset}/{file_size}")
+            current_offset = initial_srv_offset
+        elif initial_srv_offset is not None and initial_srv_offset >= file_size:
+            logger.info(f"Rupload server already has full file ({initial_srv_offset}/{file_size} bytes).")
+            return True
+
         with open(video_path, "rb") as f:
             while current_offset < file_size:
                 f.seek(current_offset)
@@ -521,27 +558,9 @@ class InstagramPublishClient:
                 chunk_len = len(chunk_data)
 
                 success = False
-                chunk_error = None
+                last_error = None
 
                 for attempt in range(1, max_retries + 1):
-                    # On retry, query acknowledged offset from rupload server
-                    if attempt > 1:
-                        try:
-                            chk = requests.get(upload_url, headers={"Authorization": f"OAuth {token}"}, timeout=10)
-                            if chk.status_code == 200:
-                                srv_offset = int(chk.json().get("offset", 0))
-                                if srv_offset >= file_size:
-                                    logger.info(f"Server acknowledged full upload ({srv_offset}/{file_size}).")
-                                    return True
-                                if srv_offset > current_offset:
-                                    logger.info(f"Advancing offset to server acknowledged: {srv_offset}")
-                                    current_offset = srv_offset
-                                    f.seek(current_offset)
-                                    chunk_data = f.read(chunk_size)
-                                    chunk_len = len(chunk_data)
-                        except Exception:
-                            pass
-
                     headers = {
                         "Authorization": f"OAuth {token}",
                         "offset": str(current_offset),
@@ -552,98 +571,106 @@ class InstagramPublishClient:
 
                     try:
                         t0 = time.time()
-                        stream_res = requests.post(upload_url, headers=headers, data=chunk_data, timeout=60)
+                        stream_res = requests.post(
+                            upload_url,
+                            headers=headers,
+                            data=chunk_data,
+                            timeout=60
+                        )
                         dur = time.time() - t0
 
                         # HTTP 200/201 (completed) or 206 (partial chunk accepted)
                         if stream_res.status_code in (200, 201, 206):
-                            logger.info(f"Uploaded chunk offset {current_offset} ({chunk_len} bytes) in {dur:.1f}s -> HTTP {stream_res.status_code}")
-                            current_offset += chunk_len
-                            success = True
-                            break
-
-                        # Check if container transitioned to FINISHED / IN_PROGRESS on Graph API
-                        if container_id:
+                            res_offset = None
                             try:
-                                cchk = requests.get(
-                                    f"{GRAPH_URL}/{container_id}",
-                                    params={"fields": "status_code,status", "access_token": token},
-                                    timeout=10
-                                ).json()
-                                if cchk.get("status_code") in ("FINISHED", "IN_PROGRESS"):
-                                    logger.info(f"Container {container_id} status is already {cchk.get('status_code')}. Upload complete.")
-                                    return True
+                                r_json = stream_res.json()
+                                if isinstance(r_json, dict) and "offset" in r_json:
+                                    res_offset = int(r_json["offset"])
                             except Exception:
                                 pass
 
-                        # Parse Meta response
+                            if res_offset is not None and res_offset > current_offset:
+                                current_offset = res_offset
+                            else:
+                                current_offset += chunk_len
+
+                            logger.info(
+                                f"Uploaded chunk offset {current_offset - chunk_len} ({chunk_len} bytes) "
+                                f"in {dur:.1f}s -> HTTP {stream_res.status_code} (new offset: {current_offset}/{file_size})"
+                            )
+                            success = True
+                            break
+
+                        # Parse Meta error response
                         err_json = None
                         try:
                             err_json = stream_res.json()
-                            chunk_error = parse_instagram_error(
+                            last_error = parse_instagram_error(
                                 err_json,
                                 f"HTTP {stream_res.status_code} during Instagram binary chunk transfer",
                                 http_status=stream_res.status_code
                             )
                         except Exception:
-                            chunk_error = InstagramUploadFailedError(
+                            last_error = InstagramUploadFailedError(
                                 f"Instagram binary upload returned HTTP {stream_res.status_code}: {stream_res.text[:200]}",
                                 http_status=stream_res.status_code
                             )
 
-                        if isinstance(chunk_error, (InstagramTokenExpiredError, InstagramPermissionError)):
-                            raise chunk_error
+                        if isinstance(last_error, (InstagramTokenExpiredError, InstagramPermissionError)):
+                            raise last_error
 
-                        # Check for completion on final chunk or stop on non-retriable failure
-                        is_final_chunk = (current_offset + chunk_len >= file_size)
-                        if isinstance(err_json, dict) and err_json.get("debug_info", {}).get("retriable") is False:
-                            if is_final_chunk and container_id:
-                                # Meta's edge proxy sometimes returns HTTP 400 after 30s while asynchronous ingest finishes
-                                for _ in range(4):
-                                    time.sleep(3)
-                                    try:
-                                        cchk = requests.get(
-                                            f"{GRAPH_URL}/{container_id}",
-                                            params={"fields": "status_code,status", "access_token": token},
-                                            timeout=10
-                                        ).json()
-                                        if cchk.get("status_code") in ("FINISHED", "IN_PROGRESS"):
-                                            logger.info(f"Container {container_id} is {cchk.get('status_code')} following final chunk. Treating upload as complete.")
-                                            return True
-                                    except Exception:
-                                        pass
-                            logger.error(f"Meta server returned non-retriable error: {chunk_error.user_message}")
-                            raise chunk_error
-
-                        logger.warning(f"Chunk offset {current_offset} attempt {attempt}/{max_retries} failed: HTTP {stream_res.status_code} - {chunk_error.user_message}")
+                        logger.warning(
+                            f"Chunk offset {current_offset} attempt {attempt}/{max_retries} failed: "
+                            f"HTTP {stream_res.status_code} - {last_error.user_message}"
+                        )
 
                     except (requests.ConnectionError, requests.Timeout) as e:
-                        chunk_error = InstagramUploadFailedError(f"Network error during Instagram binary chunk transfer: {e}")
-                        logger.warning(f"Chunk offset {current_offset} attempt {attempt}/{max_retries} network error: {e}")
+                        safe_e = redact_token(str(e))
+                        last_error = InstagramUploadFailedError(f"Network error during Instagram binary chunk transfer: {safe_e}")
+                        logger.warning(f"Chunk offset {current_offset} attempt {attempt}/{max_retries} network error: {safe_e}")
+
+                    # On failure or retry, query rupload server to find out what was actually acknowledged
+                    srv_offset = get_server_offset()
+                    if srv_offset is not None:
+                        if srv_offset >= file_size:
+                            logger.info(f"Server verified full file receipt ({srv_offset}/{file_size} bytes).")
+                            current_offset = srv_offset
+                            success = True
+                            break
+                        elif srv_offset > current_offset:
+                            logger.info(f"Advancing offset to server acknowledged: {srv_offset} (was {current_offset})")
+                            current_offset = srv_offset
+                            f.seek(current_offset)
+                            chunk_data = f.read(chunk_size)
+                            chunk_len = len(chunk_data)
 
                     time.sleep(2 ** attempt)
 
                 if not success:
-                    # Final fallback: did container finish on Graph API?
-                    if container_id:
-                        try:
-                            cchk = requests.get(
-                                f"{GRAPH_URL}/{container_id}",
-                                params={"fields": "status_code,status", "access_token": token},
-                                timeout=10
-                            ).json()
-                            if cchk.get("status_code") in ("FINISHED", "IN_PROGRESS"):
-                                logger.info(f"Container {container_id} is {cchk.get('status_code')}. Treating upload as complete.")
-                                return True
-                        except Exception:
-                            pass
+                    # Final verification with rupload server before giving up
+                    srv_offset = get_server_offset()
+                    if srv_offset is not None and srv_offset >= file_size:
+                        logger.info(f"Server confirmed complete receipt ({srv_offset}/{file_size} bytes).")
+                        current_offset = srv_offset
+                        break
 
                     log_instagram_audit(
                         "ERROR",
-                        f"Instagram binary chunk transfer failed at offset {current_offset}: {chunk_error.user_message if chunk_error else 'Unknown'}",
+                        f"Instagram binary chunk transfer failed at offset {current_offset}/{file_size}: {last_error.user_message if last_error else 'Unknown'}",
                         {"stage": "transfer_binary", "offset": current_offset, "file_size": file_size}
                     )
-                    raise chunk_error or InstagramUploadFailedError(f"Instagram binary transfer failed at offset {current_offset}")
+                    raise last_error or InstagramUploadFailedError(
+                        f"Instagram binary transfer failed at offset {current_offset}/{file_size}"
+                    )
+
+        # Final sanity check: acknowledged bytes must equal or exceed file size
+        if current_offset < file_size:
+            srv_offset = get_server_offset()
+            if srv_offset is None or srv_offset < file_size:
+                raise InstagramUploadFailedError(
+                    f"Binary upload terminated prematurely: transferred {current_offset} of {file_size} bytes. "
+                    "Server did not acknowledge full file."
+                )
 
         log_instagram_audit(
             "INFO",
@@ -932,20 +959,27 @@ class InstagramPublishClient:
         video_url: Optional[str] = None,
         stage_callback: Optional[Callable[[str], None]] = None,
         on_container_created: Optional[Callable[[str], None]] = None,
-        poll_interval_sec: int = 5,
-        max_poll_checks: int = 60,
+        poll_interval_sec: float = DEFAULT_POLL_INTERVAL_SEC,
+        max_poll_checks: int = DEFAULT_MAX_POLL_CHECKS,
         max_retries: int = 3
     ) -> Dict[str, Any]:
         """
         Executes the complete 5-stage Instagram Reels publishing workflow:
         Stage 1: Container Creation
         Stage 2: Binary Streaming (if resumable)
-        Stage 3: Container Processing Status Polling (strictly awaits FINISHED)
+        Stage 3: Container Processing Status Polling (strictly awaits FINISHED, bounded 5-min window)
         Stage 4: Final Media Publishing
         Stage 5: Final Media Verification
         """
         if not video_url and not video_path:
             raise ValueError("Either video_path or video_url must be provided.")
+
+        # Guard against accidental caller overrides using legacy values (5s/60 checks)
+        eff_interval = float(poll_interval_sec)
+        eff_checks = int(max_poll_checks)
+        if eff_interval >= 1.0:
+            eff_interval = max(DEFAULT_POLL_INTERVAL_SEC, eff_interval)
+            eff_checks = min(DEFAULT_MAX_POLL_CHECKS, eff_checks) if eff_checks > 1 else eff_checks
 
         vpath = None
         upload_path = None
@@ -988,7 +1022,13 @@ class InstagramPublishClient:
             # Stage 3: Container Processing Polling
             if stage_callback:
                 stage_callback("instagram_processing")
-            self.poll_container_status(container_id, token, poll_interval_sec=poll_interval_sec, max_checks=max_poll_checks)
+            self.poll_container_status(
+                container_id,
+                token,
+                max_wait_sec=DEFAULT_MAX_MONITORING_WINDOW_SEC,
+                poll_interval=eff_interval,
+                max_checks=eff_checks
+            )
 
             # Stage 4: Media Publishing
             if stage_callback:
@@ -1088,7 +1128,8 @@ class InstagramPublishClient:
             if ig_id:
                 ig_res = requests.get(
                     f"{GRAPH_URL}/{ig_id}",
-                    params={"fields": "id,name,username", "access_token": token},
+                    headers=headers,
+                    params={"fields": "id,name,username"},
                     timeout=10
                 ).json()
                 if "id" in ig_res:

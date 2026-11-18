@@ -181,6 +181,9 @@ class PlatformUpload(Base):
     error_message = Column(Text, nullable=True)
     error_code = Column(String(50), nullable=True)
     attempts = Column(Integer, default=0)
+    status_checks = Column(Integer, default=0)
+    publishing_attempts = Column(Integer, default=0)
+    reconciliation_metadata = Column(Text, nullable=True)
     last_attempt_at = Column(DateTime, nullable=True)
     uploaded_at = Column(DateTime, nullable=True)
 
