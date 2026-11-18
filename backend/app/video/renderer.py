@@ -101,7 +101,7 @@ class VideoRenderer:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Enforce maximum 180 seconds for YouTube Shorts compliance
-        capped_duration = min(180.0, max(5.0, float(duration_sec)))
+        capped_duration = min(180.0, max(1.0, float(duration_sec)))
 
         # Probe input video orientation and dimensions
         probe = self.probe_video(input_path)
@@ -154,25 +154,27 @@ class VideoRenderer:
         ]
 
         if self.encoder == "h264_nvenc":
-            cmd.extend(["-preset", "p5", "-b:v", "8M", "-maxrate", "12M", "-bufsize", "16M"])
+            cmd.extend(["-preset", "p5", "-b:v", "3.5M", "-maxrate", "5M", "-bufsize", "7M", "-g", str(int(settings.TARGET_FPS)), "-bf", "0"])
         else:
-            cmd.extend(["-preset", "fast", "-crf", "20"])
+            cmd.extend(["-preset", "fast", "-b:v", "3.5M", "-maxrate", "5M", "-bufsize", "7M", "-g", str(int(settings.TARGET_FPS)), "-bf", "0"])
 
         # Audio loudness normalization
         if normalize_audio:
             cmd.extend(["-af", "loudnorm=I=-16:LRA=11:TP=-1.5"])
 
         # Mandatory Shorts Profile Flags: 1080x1920 9:16 H.264, AAC audio, yuv420p, +faststart
-        # Enforce 48kHz stereo AAC and -shortest for strict YouTube Shorts and Meta/Instagram Reels compliance
+        # Enforce 48kHz stereo AAC and clean monotonic timestamps for YouTube Shorts and Meta Reels compliance
         cmd.extend([
             "-c:a", "aac",
-            "-b:a", "192k",
+            "-b:a", "160k",
             "-ar", "48000",
             "-ac", "2",
-            "-shortest",
+            "-avoid_negative_ts", "make_zero",
+            "-fflags", "+genpts",
             "-r", str(settings.TARGET_FPS),
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
+            "-t", str(capped_duration),
             str(output_path)
         ])
 

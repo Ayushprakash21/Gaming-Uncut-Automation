@@ -171,16 +171,30 @@ def is_platform_authorized(platform: str) -> Tuple[bool, Optional[str]]:
             return False, "YouTube channel identity not verified. Connect YouTube account in Settings."
         return True, None
     elif platform == "instagram":
-        token = vault.get_secret("meta", "page_access_token")
+        try:
+            from backend.app.publishers.meta_token_manager import meta_token_manager
+            health = meta_token_manager.inspect_health()
+            if health.get("configured") and (health.get("is_expired") or not health.get("is_valid", True)):
+                return False, health.get("last_auth_error") or "Meta Access Token has expired (Code 190, Subcode 463)."
+        except Exception:
+            pass
+        token = vault.get_secret("meta", "system_user_token") or vault.get_secret("meta", "page_access_token")
         ig_id = vault.get_secret("meta", "instagram_account_id")
         if not token or not ig_id:
-            return False, "Instagram Business account not connected. Configure Meta Page token & IG ID in Settings."
+            return False, "Instagram Business account not connected. Configure Meta token & IG ID in Settings."
         return True, None
     elif platform == "facebook":
-        token = vault.get_secret("meta", "page_access_token")
+        try:
+            from backend.app.publishers.meta_token_manager import meta_token_manager
+            health = meta_token_manager.inspect_health()
+            if health.get("configured") and (health.get("is_expired") or not health.get("is_valid", True)):
+                return False, health.get("last_auth_error") or "Meta Access Token has expired (Code 190, Subcode 463)."
+        except Exception:
+            pass
+        token = vault.get_secret("meta", "system_user_token") or vault.get_secret("meta", "page_access_token")
         page_id = vault.get_secret("meta", "page_id")
         if not token:
-            return False, "Facebook Page not authorized. Configure Meta Page access token in Settings."
+            return False, "Facebook Page not authorized. Configure Meta access token in Settings."
         if not page_id:
             return False, "Facebook Page ID not configured. Configure Facebook Page ID in Settings."
         return True, None

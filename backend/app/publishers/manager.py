@@ -171,6 +171,11 @@ class PublishingManager:
                 db.commit()
                 raise FileNotFoundError(f"Clip video file missing: {video_path}")
 
+            # Concurrency Guard: Prevent race conditions or multiple workers uploading the same job simultaneously
+            if job.status == "publishing":
+                logger.warning(f"Publishing Job #{job.id} is already in 'publishing' status. Skipping duplicate dispatch.")
+                return {"status": "already_in_progress", "job_id": job.id, "message": f"Job #{job.id} is already actively uploading."}
+
             job.status = "publishing"
             job.attempts += 1
             db.commit()
@@ -341,12 +346,14 @@ class PublishingManager:
                         ig_upload.status = "failed"
                         ig_upload.error_code = str(e.code or "190")
                         ig_upload.error_message = e.user_message
-                        logger.error(f"Instagram upload failed due to expired token: {e.user_message}")
+                        logger.error(f"Instagram upload paused due to expired token: {e.user_message}")
                         log_publishing_audit(
                             db, platform="instagram", publishing_job_id=job.id, clip_id=clip.id,
                             stage=ig_stage[0], error=e, level="ERROR", attempts=ig_upload.attempts,
                             error_code=str(e.code or "190"), user_message=e.user_message
                         )
+                        from backend.app.publishers.meta_token_manager import meta_token_manager
+                        meta_token_manager.mark_auth_expired("instagram", str(e.code or "190"), str(getattr(e, "subcode", 463)), e.user_message)
                     except InstagramPermissionError as e:
                         ig_upload.status = "failed"
                         ig_upload.error_code = str(e.code or "200")
@@ -493,12 +500,14 @@ class PublishingManager:
                         fb_upload.status = "failed"
                         fb_upload.error_code = str(e.code or "190")
                         fb_upload.error_message = e.user_message
-                        logger.error(f"Facebook upload failed due to expired token: {e.user_message}")
+                        logger.error(f"Facebook upload paused due to expired token: {e.user_message}")
                         log_publishing_audit(
                             db, platform="facebook", publishing_job_id=job.id, clip_id=clip.id,
                             stage=fb_stage[0], error=e, level="ERROR", attempts=fb_upload.attempts,
                             error_code=str(e.code or "190"), user_message=e.user_message
                         )
+                        from backend.app.publishers.meta_token_manager import meta_token_manager
+                        meta_token_manager.mark_auth_expired("facebook", str(e.code or "190"), str(getattr(e, "subcode", 463)), e.user_message)
                     except FacebookPermissionError as e:
                         fb_upload.status = "failed"
                         fb_upload.error_code = str(e.code or "200")

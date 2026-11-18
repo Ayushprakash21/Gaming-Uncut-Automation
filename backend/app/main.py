@@ -5,16 +5,21 @@ Initializes Database, Scheduler, CORS, Static Media Mounts, and REST API.
 
 from pathlib import Path
 import socket
-from fastapi import FastAPI, Response, HTTPException, Request
+import logging
+from fastapi import FastAPI, Response, HTTPException, Request, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.app.core.config import settings
 from backend.app.database.session import engine, Base, ensure_schema_compatibility
 from backend.app.api.router import router as api_router
 from backend.app.scheduler.manager import task_scheduler
 from backend.app.services.pipeline_service import pipeline_service
+
+logger = logging.getLogger("gaming_uncut.api")
 
 # Create tables and guarantee column compatibility
 Base.metadata.create_all(bind=engine)
@@ -25,6 +30,90 @@ app = FastAPI(
     description="NO FILTER. JUST GAMEPLAY. Autonomous AI Gaming Video Production & Multi-Platform Dispatch.",
     version=settings.VERSION
 )
+
+# Standardized Error Code Mapping
+HTTP_STATUS_CODES = {
+    400: "BAD_REQUEST",
+    401: "UNAUTHORIZED",
+    403: "FORBIDDEN",
+    404: "NOT_FOUND",
+    405: "METHOD_NOT_ALLOWED",
+    408: "REQUEST_TIMEOUT",
+    409: "CONFLICT",
+    422: "VALIDATION_ERROR",
+    429: "RATE_LIMIT_EXCEEDED",
+    500: "INTERNAL_SERVER_ERROR",
+    502: "BAD_GATEWAY",
+    503: "SERVICE_UNAVAILABLE",
+    504: "GATEWAY_TIMEOUT",
+}
+
+@app.exception_handler(StarletteHTTPException)
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    code_str = HTTP_STATUS_CODES.get(exc.status_code, f"HTTP_{exc.status_code}")
+    msg = str(exc.detail) if exc.detail else "An error occurred."
+    details = None
+    if isinstance(exc.detail, dict):
+        msg = exc.detail.get("message") or exc.detail.get("msg") or str(exc.detail)
+        details = exc.detail.get("details")
+
+    # If it's a non-API route with GET on missing page, let SPA serve index.html if available
+    if not request.url.path.startswith("/api") and exc.status_code == 404 and request.method == "GET":
+        f_dist = settings.ROOT_DIR / "frontend" / "dist"
+        if f_dist.exists() and (f_dist / "index.html").exists():
+            return HTMLResponse((f_dist / "index.html").read_text(encoding="utf-8"))
+
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "success": False,
+            "error": {
+                "code": code_str,
+                "message": msg,
+                "details": details
+            },
+            "detail": msg
+        }
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    err_msgs = []
+    for err in exc.errors():
+        loc = " -> ".join(str(l) for l in err.get("loc", []))
+        m = err.get("msg", "Invalid value")
+        err_msgs.append(f"{loc}: {m}" if loc else m)
+
+    clean_msg = "Validation failed: " + "; ".join(err_msgs) if err_msgs else "Invalid request data."
+    return JSONResponse(
+        status_code=422,
+        content={
+            "success": False,
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": clean_msg,
+                "details": err_msgs
+            },
+            "detail": clean_msg
+        }
+    )
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled server exception processing %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "An internal server error occurred.",
+                "details": None
+            },
+            "detail": "An internal server error occurred."
+        }
+    )
 
 # CORS Policy: Restrict to local frontend origins
 allowed_origins = [

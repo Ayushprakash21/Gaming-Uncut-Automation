@@ -14,11 +14,18 @@ Implements the complete 5-stage publishing lifecycle:
 import time
 import json
 import logging
+import subprocess
 import requests
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional, Callable, Union
+from typing import Dict, Any, Optional, Callable, Union, Tuple
+import socket
 from urllib.parse import urlparse
+import urllib3.util.connection as urllib_conn
+try:
+    urllib_conn.allowed_gai_family = lambda: socket.AF_INET
+except Exception:
+    pass
 
 from backend.app.security.vault import vault
 from backend.app.publishers.quota_tracker import InstagramRateLimitError as BaseInstagramRateLimitError
@@ -265,14 +272,14 @@ class InstagramPublishClient:
     """Enterprise-grade Meta Graph API client for Instagram Professional Reels publishing."""
 
     def _get_auth(self) -> Dict[str, str]:
-        token = vault.get_secret("meta", "page_access_token")
+        token = vault.get_secret("meta", "system_user_token") or vault.get_secret("meta", "page_access_token")
         ig_id = vault.get_secret("meta", "instagram_account_id")
 
         if not token or not token.strip():
             raise InstagramConfigError(
-                "Meta Page Access Token is not set in vault. Please configure credentials in Settings.",
+                "Meta Access Token is not set in vault. Please configure credentials in Settings.",
                 code=401,
-                user_message="Meta Page Access Token is missing."
+                user_message="Meta Access Token is missing."
             )
 
         token = token.strip()
@@ -360,11 +367,17 @@ class InstagramPublishClient:
             data["upload_type"] = "resumable"
             logger.info(f"Stage 1: Initializing Instagram Reel container via Resumable Protocol for Account ID '{ig_id}'")
 
-        try:
-            res = requests.post(f"{GRAPH_URL}/{ig_id}/media", data=data, timeout=30)
-            init_res = res.json()
-        except requests.RequestException as e:
-            raise InstagramUploadFailedError(f"Network error creating Instagram container: {e}")
+        init_res = None
+        for attempt in range(1, 4):
+            try:
+                res = requests.post(f"{GRAPH_URL}/{ig_id}/media", data=data, timeout=30)
+                init_res = res.json()
+                break
+            except requests.RequestException as e:
+                logger.warning(f"Container creation network attempt {attempt}/3 failed: {e}")
+                if attempt == 3:
+                    raise InstagramUploadFailedError(f"Network error creating Instagram container: {e}")
+                time.sleep(2 ** attempt)
 
         if "id" not in init_res:
             err = parse_instagram_error(init_res, "Instagram container creation failed")
@@ -388,18 +401,72 @@ class InstagramPublishClient:
         return {"container_id": container_id, "upload_url": upload_url}
 
     # ==========================================
-    # Stage 2: Video Binary Transfer (Resumable)
+    # Pre-Upload Video Optimization
+    # ==========================================
+    def optimize_video_for_reels(self, video_path: Path) -> Tuple[Path, bool]:
+        """
+        Ensures video strictly adheres to Meta Instagram Reels requirements:
+        - H.264 High profile, CFR 60fps, closed GOP (-bf 0, -g 60)
+        - BT.709 SDR color tags, format=yuv420p
+        - Bitrate ~3.2M, maxrate 4.5M, bufsize 6M (keeps 60s files ~22MB)
+        - 48kHz stereo AAC audio 160k
+        - Clean monotonic timestamps (-avoid_negative_ts make_zero -fflags +genpts)
+        - Clamped duration strictly <= 59.8s
+        - Faststart (+faststart)
+        Returns (optimized_video_path, is_temp_file).
+        """
+        if not video_path.exists():
+            raise FileNotFoundError(f"Video file missing: {video_path}")
+
+        file_size = video_path.stat().st_size
+        if file_size <= 22 * 1024 * 1024 and "_ig_opt" in video_path.name:
+            return video_path, False
+
+        out_dir = video_path.parent
+        opt_file = out_dir / f"{video_path.stem}_ig_opt.mp4"
+        logger.info(f"Optimizing video for Instagram Reels: {video_path.name} -> {opt_file.name}")
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(video_path),
+            "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+            "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+            "-c:v", "libx264", "-preset", "veryfast",
+            "-b:v", "3.2M", "-maxrate", "4.5M", "-bufsize", "6M",
+            "-g", "60", "-bf", "0",
+            "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
+            "-t", "59.8",
+            "-avoid_negative_ts", "make_zero", "-fflags", "+genpts",
+            "-movflags", "+faststart",
+            str(opt_file)
+        ]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode == 0 and opt_file.exists():
+                logger.info(f"Instagram optimization completed: {opt_file.name} ({opt_file.stat().st_size} bytes)")
+                return opt_file, True
+            else:
+                logger.warning(f"Optimization non-zero exit ({res.returncode}): {res.stderr[-200:] if res.stderr else 'unknown'}")
+                return video_path, False
+        except Exception as e:
+            logger.warning(f"Video optimization failed (using source file): {e}")
+            return video_path, False
+
+    # ==========================================
+    # Stage 2: Video Binary Transfer (Chunked Resumable)
     # ==========================================
     def transfer_binary(
         self,
         upload_url: str,
         video_path: Path,
         token: str,
-        max_retries: int = 3
+        max_retries: int = 3,
+        chunk_size: int = 4 * 1024 * 1024,
+        container_id: Optional[str] = None
     ) -> bool:
         """
-        Stage 2: Streams video binary to Meta's rupload endpoint with byte offsets and bounded retries.
-        Queries server-side offset prior to retrying and handles non-retriable rejections cleanly.
+        Stage 2: Streams video binary to Meta's rupload endpoint using chunked resumable protocol.
+        Uploads chunks (default 4MB) with byte offsets, preventing the ~45s proxy connection timeout.
         """
         if not video_path.exists():
             raise FileNotFoundError(f"Video file missing: {video_path}")
@@ -408,101 +475,147 @@ class InstagramPublishClient:
         if file_size <= 0:
             raise ValueError(f"Video file is empty: {video_path}")
 
-        logger.info(f"Stage 2: Transferring binary ({file_size} bytes) to Instagram upload endpoint")
-        last_error = None
+        logger.info(f"Stage 2: Transferring binary ({file_size} bytes, {chunk_size // 1024 // 1024}MB chunks) to Instagram upload endpoint")
 
-        for attempt in range(1, max_retries + 1):
-            current_offset = 0
+        current_offset = 0
 
-            # On retries, query the acknowledged byte offset from Meta's rupload server
-            if attempt > 1:
-                try:
-                    chk_res = requests.get(
-                        upload_url,
-                        headers={"Authorization": f"OAuth {token}"},
-                        timeout=15
-                    )
-                    if chk_res.status_code == 200:
-                        chk_data = chk_res.json()
-                        current_offset = int(chk_data.get("offset", 0))
-                        logger.info(f"Ruploader acknowledged byte offset: {current_offset}/{file_size}")
-                        if current_offset >= file_size:
-                            logger.info("Stage 2 complete: Binary transfer verified complete on server.")
-                            return True
-                    else:
-                        chk_json = chk_res.json() if chk_res.text.strip().startswith("{") else chk_res.text
-                        offset_err = parse_instagram_error(chk_json, f"Offset check returned HTTP {chk_res.status_code}", http_status=chk_res.status_code)
-                        if isinstance(offset_err, (InstagramTokenExpiredError, InstagramPermissionError)):
-                            raise offset_err
-                        if "not in the status" in str(offset_err).lower():
-                            logger.error(f"Container session invalid for upload: {offset_err.user_message}")
-                            raise offset_err
-                except (InstagramTokenExpiredError, InstagramPermissionError, InstagramUploadFailedError, InstagramProcessingFailedError):
-                    raise
-                except Exception as e:
-                    logger.warning(f"Could not verify server offset before attempt {attempt}: {e}")
+        with open(video_path, "rb") as f:
+            while current_offset < file_size:
+                f.seek(current_offset)
+                chunk_data = f.read(chunk_size)
+                chunk_len = len(chunk_data)
 
-            headers = {
-                "Authorization": f"OAuth {token}",
-                "offset": str(current_offset),
-                "file_size": str(file_size),
-                "Content-Type": "application/octet-stream"
-            }
+                success = False
+                chunk_error = None
 
-            try:
-                with open(video_path, "rb") as f:
-                    if current_offset > 0:
-                        f.seek(current_offset)
-                    stream_res = requests.post(upload_url, headers=headers, data=f, timeout=300)
+                for attempt in range(1, max_retries + 1):
+                    # On retry, query acknowledged offset from rupload server
+                    if attempt > 1:
+                        try:
+                            chk = requests.get(upload_url, headers={"Authorization": f"OAuth {token}"}, timeout=10)
+                            if chk.status_code == 200:
+                                srv_offset = int(chk.json().get("offset", 0))
+                                if srv_offset >= file_size:
+                                    logger.info(f"Server acknowledged full upload ({srv_offset}/{file_size}).")
+                                    return True
+                                if srv_offset > current_offset:
+                                    logger.info(f"Advancing offset to server acknowledged: {srv_offset}")
+                                    current_offset = srv_offset
+                                    f.seek(current_offset)
+                                    chunk_data = f.read(chunk_size)
+                                    chunk_len = len(chunk_data)
+                        except Exception:
+                            pass
 
-                if stream_res.status_code in (200, 201):
-                    logger.info("Stage 2 complete: Video binary transfer successful.")
+                    headers = {
+                        "Authorization": f"OAuth {token}",
+                        "offset": str(current_offset),
+                        "file_size": str(file_size),
+                        "Content-Type": "application/octet-stream",
+                        "Content-Length": str(chunk_len)
+                    }
+
+                    try:
+                        t0 = time.time()
+                        stream_res = requests.post(upload_url, headers=headers, data=chunk_data, timeout=60)
+                        dur = time.time() - t0
+
+                        # HTTP 200/201 (completed) or 206 (partial chunk accepted)
+                        if stream_res.status_code in (200, 201, 206):
+                            logger.info(f"Uploaded chunk offset {current_offset} ({chunk_len} bytes) in {dur:.1f}s -> HTTP {stream_res.status_code}")
+                            current_offset += chunk_len
+                            success = True
+                            break
+
+                        # Check if container transitioned to FINISHED / IN_PROGRESS on Graph API
+                        if container_id:
+                            try:
+                                cchk = requests.get(
+                                    f"{GRAPH_URL}/{container_id}",
+                                    params={"fields": "status_code,status", "access_token": token},
+                                    timeout=10
+                                ).json()
+                                if cchk.get("status_code") in ("FINISHED", "IN_PROGRESS"):
+                                    logger.info(f"Container {container_id} status is already {cchk.get('status_code')}. Upload complete.")
+                                    return True
+                            except Exception:
+                                pass
+
+                        # Parse Meta response
+                        err_json = None
+                        try:
+                            err_json = stream_res.json()
+                            chunk_error = parse_instagram_error(
+                                err_json,
+                                f"HTTP {stream_res.status_code} during Instagram binary chunk transfer",
+                                http_status=stream_res.status_code
+                            )
+                        except Exception:
+                            chunk_error = InstagramUploadFailedError(
+                                f"Instagram binary upload returned HTTP {stream_res.status_code}: {stream_res.text[:200]}",
+                                http_status=stream_res.status_code
+                            )
+
+                        if isinstance(chunk_error, (InstagramTokenExpiredError, InstagramPermissionError)):
+                            raise chunk_error
+
+                        # Check for completion on final chunk or stop on non-retriable failure
+                        is_final_chunk = (current_offset + chunk_len >= file_size)
+                        if isinstance(err_json, dict) and err_json.get("debug_info", {}).get("retriable") is False:
+                            if is_final_chunk and container_id:
+                                # Meta's edge proxy sometimes returns HTTP 400 after 30s while asynchronous ingest finishes
+                                for _ in range(4):
+                                    time.sleep(3)
+                                    try:
+                                        cchk = requests.get(
+                                            f"{GRAPH_URL}/{container_id}",
+                                            params={"fields": "status_code,status", "access_token": token},
+                                            timeout=10
+                                        ).json()
+                                        if cchk.get("status_code") in ("FINISHED", "IN_PROGRESS"):
+                                            logger.info(f"Container {container_id} is {cchk.get('status_code')} following final chunk. Treating upload as complete.")
+                                            return True
+                                    except Exception:
+                                        pass
+                            logger.error(f"Meta server returned non-retriable error: {chunk_error.user_message}")
+                            raise chunk_error
+
+                        logger.warning(f"Chunk offset {current_offset} attempt {attempt}/{max_retries} failed: HTTP {stream_res.status_code} - {chunk_error.user_message}")
+
+                    except (requests.ConnectionError, requests.Timeout) as e:
+                        chunk_error = InstagramUploadFailedError(f"Network error during Instagram binary chunk transfer: {e}")
+                        logger.warning(f"Chunk offset {current_offset} attempt {attempt}/{max_retries} network error: {e}")
+
+                    time.sleep(2 ** attempt)
+
+                if not success:
+                    # Final fallback: did container finish on Graph API?
+                    if container_id:
+                        try:
+                            cchk = requests.get(
+                                f"{GRAPH_URL}/{container_id}",
+                                params={"fields": "status_code,status", "access_token": token},
+                                timeout=10
+                            ).json()
+                            if cchk.get("status_code") in ("FINISHED", "IN_PROGRESS"):
+                                logger.info(f"Container {container_id} is {cchk.get('status_code')}. Treating upload as complete.")
+                                return True
+                        except Exception:
+                            pass
+
                     log_instagram_audit(
-                        "INFO",
-                        f"Instagram binary transfer completed ({file_size} bytes).",
-                        {"stage": "transfer_binary", "bytes": file_size}
+                        "ERROR",
+                        f"Instagram binary chunk transfer failed at offset {current_offset}: {chunk_error.user_message if chunk_error else 'Unknown'}",
+                        {"stage": "transfer_binary", "offset": current_offset, "file_size": file_size}
                     )
-                    return True
-
-                # Parse Meta response on non-200
-                err_json = None
-                try:
-                    err_json = stream_res.json()
-                    last_error = parse_instagram_error(
-                        err_json,
-                        f"HTTP {stream_res.status_code} during Instagram binary transfer",
-                        http_status=stream_res.status_code
-                    )
-                except Exception:
-                    last_error = InstagramUploadFailedError(
-                        f"Instagram binary upload returned HTTP {stream_res.status_code}: {stream_res.text[:200]}",
-                        http_status=stream_res.status_code
-                    )
-
-                # Stop retrying if the error is non-retriable
-                if isinstance(last_error, (InstagramTokenExpiredError, InstagramPermissionError)):
-                    logger.error(f"Fatal auth error during binary transfer: {last_error.user_message}")
-                    raise last_error
-
-                if isinstance(err_json, dict) and err_json.get("debug_info", {}).get("retriable") is False:
-                    logger.error(f"Meta server returned non-retriable error: {last_error.user_message}")
-                    break
-
-            except (requests.ConnectionError, requests.Timeout) as e:
-                last_error = InstagramUploadFailedError(f"Network error during Instagram binary transfer: {e}")
-                logger.warning(f"Binary transfer attempt {attempt}/{max_retries} failed: {e}")
-
-            if attempt < max_retries:
-                backoff_sec = 2 ** attempt
-                logger.info(f"Retrying Instagram binary transfer in {backoff_sec}s...")
-                time.sleep(backoff_sec)
+                    raise chunk_error or InstagramUploadFailedError(f"Instagram binary transfer failed at offset {current_offset}")
 
         log_instagram_audit(
-            "ERROR",
-            f"Instagram binary transfer failed: {last_error.user_message if last_error else 'Unknown'}",
-            {"stage": "transfer_binary", "error": str(last_error)}
+            "INFO",
+            f"Instagram binary transfer completed ({file_size} bytes).",
+            {"stage": "transfer_binary", "bytes": file_size}
         )
-        raise last_error or InstagramUploadFailedError("Instagram video binary transfer failed after retries.")
+        return True
 
     # ==========================================
     # Stage 3: Container Processing Status Polling
@@ -511,8 +624,8 @@ class InstagramPublishClient:
         self,
         container_id: str,
         token: str,
-        max_wait_sec: int = 90,
-        poll_interval: float = 3.0,
+        max_wait_sec: int = 300,
+        poll_interval: float = 5.0,
         poll_interval_sec: Optional[float] = None,
         max_checks: Optional[int] = None
     ) -> Dict[str, Any]:
@@ -672,7 +785,7 @@ class InstagramPublishClient:
         video_url: Optional[str] = None,
         stage_callback: Optional[Callable[[str], None]] = None,
         poll_interval_sec: int = 5,
-        max_poll_checks: int = 40,
+        max_poll_checks: int = 60,
         max_retries: int = 3
     ) -> Dict[str, Any]:
         """
@@ -687,56 +800,68 @@ class InstagramPublishClient:
             raise ValueError("Either video_path or video_url must be provided.")
 
         vpath = None
+        upload_path = None
+        is_temp = False
         if video_path is not None:
             vpath = Path(video_path)
             if not vpath.exists():
                 raise FileNotFoundError(f"Video file missing: {vpath}")
+            # Pre-upload optimization for Reels specs and fast edge upload
+            upload_path, is_temp = self.optimize_video_for_reels(vpath)
 
         auth = self._get_auth()
         token = auth["token"]
         ig_id = auth["ig_id"]
 
-        # Stage 1: Container Creation
-        if stage_callback:
-            stage_callback("upload_initialized")
-        container_data = self.create_media_container(ig_id, token, caption, video_url=video_url)
-        container_id = container_data["container_id"]
-        upload_url = container_data.get("upload_url")
-
-        # Stage 2: Binary Streaming (if resumable)
-        if upload_url:
-            if not vpath:
-                raise ValueError("Resumable upload initialized but no local video_path was provided for binary streaming.")
+        try:
+            # Stage 1: Container Creation
             if stage_callback:
-                stage_callback("video_transferring")
-            self.transfer_binary(upload_url, vpath, token, max_retries=max_retries)
+                stage_callback("upload_initialized")
+            container_data = self.create_media_container(ig_id, token, caption, video_url=video_url)
+            container_id = container_data["container_id"]
+            upload_url = container_data.get("upload_url")
+
+            # Stage 2: Binary Streaming (if resumable)
+            if upload_url:
+                if not upload_path:
+                    raise ValueError("Resumable upload initialized but no local video_path was provided for binary streaming.")
+                if stage_callback:
+                    stage_callback("video_transferring")
+                self.transfer_binary(upload_url, upload_path, token, max_retries=max_retries, container_id=container_id)
+                if stage_callback:
+                    stage_callback("transfer_completed")
+
+            # Stage 3: Container Processing Polling
             if stage_callback:
-                stage_callback("transfer_completed")
+                stage_callback("instagram_processing")
+            self.poll_container_status(container_id, token, poll_interval_sec=poll_interval_sec, max_checks=max_poll_checks)
 
-        # Stage 3: Container Processing Polling
-        if stage_callback:
-            stage_callback("instagram_processing")
-        self.poll_container_status(container_id, token, poll_interval_sec=poll_interval_sec, max_checks=max_poll_checks)
+            # Stage 4: Media Publishing
+            if stage_callback:
+                stage_callback("publishing")
+            media_id = self.publish_container(ig_id, container_id, token)
 
-        # Stage 4: Media Publishing
-        if stage_callback:
-            stage_callback("publishing")
-        media_id = self.publish_container(ig_id, container_id, token)
+            # Stage 5: Final Media Verification
+            verified = self.verify_media_published(media_id, token)
 
-        # Stage 5: Final Media Verification
-        verified = self.verify_media_published(media_id, token)
+            if stage_callback:
+                stage_callback("published")
 
-        if stage_callback:
-            stage_callback("published")
-
-        return {
-            "platform": "instagram",
-            "post_id": media_id,
-            "url": verified["permalink"],
-            "container_id": container_id,
-            "shortcode": verified.get("shortcode"),
-            "published_at": datetime.utcnow().isoformat()
-        }
+            return {
+                "platform": "instagram",
+                "post_id": media_id,
+                "url": verified["permalink"],
+                "container_id": container_id,
+                "shortcode": verified.get("shortcode"),
+                "published_at": datetime.utcnow().isoformat()
+            }
+        finally:
+            if is_temp and upload_path and upload_path.exists():
+                try:
+                    upload_path.unlink()
+                    logger.debug(f"Cleaned up temporary Instagram Reel copy: {upload_path.name}")
+                except Exception as e:
+                    logger.debug(f"Failed to remove temp file {upload_path}: {e}")
 
     # ==========================================
     # Diagnostic / Test Connection
@@ -748,14 +873,14 @@ class InstagramPublishClient:
         2. Instagram Professional Account ID resolution and name
         3. Permission inspection (instagram_content_publish, pages_show_list, etc.)
         """
-        token = vault.get_secret("meta", "page_access_token")
+        token = vault.get_secret("meta", "system_user_token") or vault.get_secret("meta", "page_access_token")
         ig_id = vault.get_secret("meta", "instagram_account_id")
 
         if not token or not token.strip():
             return {
                 "configured": False,
                 "authenticated": False,
-                "message": "Meta Page Access Token is not set in vault.",
+                "message": "Meta Access Token is not set in vault.",
                 "permissions": [],
                 "missing_permissions": ["instagram_content_publish", "pages_show_list"]
             }

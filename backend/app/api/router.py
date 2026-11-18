@@ -84,7 +84,9 @@ class ConnectionUpdateRequest(BaseModel):
     meta_app_id: Optional[str] = None
     meta_app_secret: Optional[str] = None
     meta_page_token: Optional[str] = None
+    meta_page_id: Optional[str] = None
     meta_ig_id: Optional[str] = None
+    meta_token_type: Optional[str] = "system_user"
 
 class BatchRegenerateMetadataRequest(BaseModel):
     clip_ids: Optional[List[int]] = None
@@ -811,10 +813,14 @@ def get_connections():
     yt_client_cfg = vault.get_json("google", "client_config") is not None
     # YouTube is only Connected when OAuth tokens exist AND the channel is verified!
     yt_auth = bool(verified_channel and vault.get_json("google", "oauth_tokens"))
+    from backend.app.publishers.meta_token_manager import meta_token_manager
+    meta_health = meta_token_manager.inspect_health()
     meta_app = vault.get_secret("meta", "app_id") is not None
-    meta_token = vault.get_secret("meta", "page_access_token") is not None
+    meta_token = meta_health.get("is_valid", False)
+    meta_page_id = vault.get_secret("meta", "page_id")
     ig_account = vault.get_secret("meta", "instagram_account_id")
-    ig_configured = bool(meta_token and ig_account)
+    ig_configured = bool(meta_health.get("instagram_ready", False))
+    fb_configured = bool(meta_health.get("facebook_ready", False))
     gemini_key = vault.get_gemini_api_key() is not None
 
     return {
@@ -829,19 +835,24 @@ def get_connections():
         },
         "instagram": {
             "connected": ig_configured,
-            "status": "connected" if ig_configured else "not_configured",
-            "status_label": "Connected" if ig_configured else "Not Connected",
-            "account_id": ig_account or ""
+            "status": meta_health.get("instagram_status", "not_configured"),
+            "status_label": "Connected" if ig_configured else ("Expired" if meta_health.get("is_expired") else "Not Connected"),
+            "account_id": ig_account or "",
+            "username": meta_health.get("instagram_username") or ""
         },
         "facebook": {
-            "connected": meta_token,
-            "status": "connected" if meta_token else "not_configured",
-            "status_label": "Connected" if meta_token else "Not Connected"
+            "connected": fb_configured,
+            "status": meta_health.get("facebook_status", "not_configured"),
+            "status_label": "Connected" if fb_configured else ("Expired" if meta_health.get("is_expired") else "Not Connected"),
+            "page_id": meta_page_id or "",
+            "page_name": meta_health.get("page_name") or ""
         },
         "meta": {
             "app_configured": meta_app,
-            "token_configured": meta_token,
-            "instagram_account_id": ig_account or ""
+            "token_configured": bool(vault.get_secret("meta", "system_user_token") or vault.get_secret("meta", "page_access_token")),
+            "page_id": meta_page_id or "",
+            "instagram_account_id": ig_account or "",
+            "health": meta_health
         },
         "gemini": {
             "api_key_configured": gemini_key,
@@ -849,6 +860,33 @@ def get_connections():
             "status_label": "Configured" if gemini_key else "Not Configured"
         }
     }
+
+@router.get("/settings/meta/health")
+def get_meta_token_health():
+    """Returns official live health, expiration, type, and permissions for Meta token."""
+    from backend.app.publishers.meta_token_manager import meta_token_manager
+    return meta_token_manager.inspect_health(force_refresh=False)
+
+@router.post("/settings/meta/verify")
+def verify_meta_connection(db: Session = Depends(get_db)):
+    """Triggers live introspection and verification of Meta credentials via official debug_token."""
+    from backend.app.publishers.meta_token_manager import meta_token_manager
+    health = meta_token_manager.inspect_health(force_refresh=True)
+    resumed = 0
+    if health.get("is_valid"):
+        resumed = meta_token_manager.resume_queued_jobs_after_reconnect(db)
+    return {
+        "success": health.get("is_valid", False),
+        "health": health,
+        "resumed_jobs": resumed,
+        "message": "Meta credentials verified successfully." if health.get("is_valid") else f"Verification failed: {health.get('last_auth_error') or 'Token invalid'}"
+    }
+
+@router.post("/settings/meta/refresh")
+def refresh_meta_token():
+    """Refreshes expiring Meta token where supported using official fb_exchange_token."""
+    from backend.app.publishers.meta_token_manager import meta_token_manager
+    return meta_token_manager.refresh_token()
 
 @router.get("/settings/facebook/status")
 @router.post("/settings/facebook/test")
@@ -961,16 +999,36 @@ def get_youtube_channel_info():
     return {"authenticated": True, "channel": channel}
 
 @router.post("/settings/connections")
-def update_connections(req: ConnectionUpdateRequest):
+def update_connections(req: ConnectionUpdateRequest, db: Session = Depends(get_db)):
     if req.gemini_api_key:
         vault.set_gemini_api_key(req.gemini_api_key)
-    if req.meta_app_id and req.meta_page_token:
+    if req.meta_page_token:
+        app_id = (req.meta_app_id or vault.get_secret("meta", "app_id") or "").strip()
+        app_secret = (req.meta_app_secret or vault.get_secret("meta", "app_secret") or "").strip()
+        page_id = (req.meta_page_id or vault.get_secret("meta", "page_id") or "").strip()
+        ig_id = (req.meta_ig_id or vault.get_secret("meta", "instagram_account_id") or "").strip()
         vault.import_meta_credentials(
-            req.meta_app_id,
-            req.meta_app_secret or "",
-            req.meta_page_token,
-            req.meta_ig_id or ""
+            app_id,
+            app_secret,
+            req.meta_page_token.strip(),
+            ig_id,
+            page_id,
+            token_type=req.meta_token_type or "system_user"
         )
+        from backend.app.publishers.meta_token_manager import meta_token_manager
+        health = meta_token_manager.inspect_health(force_refresh=True)
+        if health.get("is_valid"):
+            resumed = meta_token_manager.resume_queued_jobs_after_reconnect(db)
+            return {
+                "status": "success",
+                "message": f"Meta credentials verified. Resumed {resumed} queued publishing jobs.",
+                "health": health
+            }
+        return {
+            "status": "warning" if not health.get("is_valid") else "success",
+            "message": "Credentials stored. Token status: " + (health.get("last_auth_error") or "Check token scopes"),
+            "health": health
+        }
     return {"status": "success", "message": "Credentials securely stored in Vault."}
 
 @router.post("/settings/import-google-secrets")
@@ -1245,6 +1303,14 @@ class AuthorizeSourceRequest(BaseModel):
 
 class ProcessDiscoveredVideoRequest(BaseModel):
     local_file_path: Optional[str] = None
+    auto_authorize: bool = True
+
+class CreateClipsRequest(BaseModel):
+    video_ids: Optional[List[int]] = None
+    videos: Optional[List[Dict[str, Any]]] = None
+    local_file_paths: Optional[Dict[str, str]] = None
+    target_duration: Optional[int] = 60
+    game_name: Optional[str] = None
 
 class DiscoverySourceRequest(BaseModel):
     id: Optional[int] = None
@@ -1276,6 +1342,13 @@ class DiscoveryScheduleUpdateRequest(BaseModel):
     auto_approve_clips: Optional[bool] = None
     auto_publish: Optional[bool] = None
 
+def _safe_isoformat(val):
+    if val is None:
+        return None
+    if hasattr(val, "isoformat"):
+        return val.isoformat()
+    return str(val)
+
 def _handle_manual_search(
     query: Optional[str],
     game_titles: Optional[List[str]],
@@ -1288,7 +1361,7 @@ def _handle_manual_search(
     db: Session
 ):
     from backend.app.discovery.service import discovery_service
-    from datetime import timedelta
+    from datetime import timedelta, timezone
     pub_after = None
     if published_after_raw:
         now = datetime.utcnow()
@@ -1301,7 +1374,8 @@ def _handle_manual_search(
             pub_after = now - timedelta(days=30)
         else:
             try:
-                pub_after = datetime.fromisoformat(published_after_raw.replace("Z", "+00:00"))
+                parsed = datetime.fromisoformat(published_after_raw.replace("Z", "+00:00"))
+                pub_after = parsed.astimezone(timezone.utc).replace(tzinfo=None) if parsed.tzinfo else parsed
             except Exception:
                 pass
 
@@ -1313,10 +1387,12 @@ def _handle_manual_search(
             channel_id=channel_id,
             published_after=pub_after,
             duration_filter=duration_filter,
-            min_views=min_views,
+            min_views=min_views if min_views is not None else 0,
             page_token=page_token,
             max_results=max_results
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1368,22 +1444,30 @@ def import_discovered_videos(req: ImportVideosRequest, db: Session = Depends(get
     from backend.app.discovery.service import discovery_service
     if not req.videos:
         raise HTTPException(status_code=400, detail="No videos provided for import.")
-    imported = discovery_service.import_videos_to_queue(
-        db=db,
-        videos=req.videos,
-        discovery_mode="manual",
-        search_id=req.search_id
-    )
-    return {
-        "status": "success",
-        "imported_count": len(imported),
-        "items": [{
-            "id": v.id,
-            "youtube_video_id": v.youtube_video_id,
-            "title": v.title,
-            "status": v.status
-        } for v in imported]
-    }
+    try:
+        imported = discovery_service.import_videos_to_queue(
+            db=db,
+            videos=req.videos,
+            discovery_mode="manual",
+            search_id=req.search_id
+        )
+        return {
+            "success": True,
+            "status": "success",
+            "imported_count": len(imported),
+            "items": [{
+                "id": v.id,
+                "youtube_video_id": v.youtube_video_id,
+                "title": v.title,
+                "status": v.status
+            } for v in imported]
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Failed to import discovered videos: {str(e)}")
 
 @router.get("/discovery/queue")
 def get_discovery_queue(
@@ -1395,39 +1479,79 @@ def get_discovery_queue(
 ):
     """Retrieves paginated discovery queue items."""
     from backend.app.discovery.service import discovery_service
-    items, total = discovery_service.get_queue(
-        db=db, status=status, search=search, limit=limit, offset=offset
-    )
-    return {
-        "total": total,
-        "items": [{
-            "id": it.id,
-            "youtube_video_id": it.youtube_video_id,
-            "title": it.title,
-            "channel_id": it.channel_id,
-            "channel_title": it.channel_title,
-            "published_at": it.published_at.isoformat() if it.published_at else None,
-            "duration_sec": it.duration_sec,
-            "view_count": it.view_count,
-            "thumbnail_url": it.thumbnail_url,
-            "youtube_url": it.youtube_url,
-            "game_title": it.game_title,
-            "discovery_mode": it.discovery_mode,
-            "status": it.status,
-            "processing_job_id": it.processing_job_id,
-            "clips_count": it.clips_count,
-            "error_message": it.error_message,
-            "authorization": {
-                "auth_type": it.authorization.auth_type,
-                "authorized_by": it.authorization.authorized_by,
-                "source_owner": it.authorization.source_owner,
-                "permitted_scope": it.authorization.permitted_scope,
-                "evidence_url": it.authorization.evidence_url,
-                "confirmed_at": it.authorization.confirmed_at.isoformat() if it.authorization.confirmed_at else None
-            } if it.authorization else None,
-            "created_at": it.created_at.isoformat() if it.created_at else None
-        } for it in items]
-    }
+    try:
+        items, total = discovery_service.get_queue(
+            db=db, status=status, search=search, limit=limit, offset=offset
+        )
+        return {
+            "success": True,
+            "total": total,
+            "items": [{
+                "id": it.id,
+                "youtube_video_id": it.youtube_video_id,
+                "title": it.title,
+                "channel_id": it.channel_id,
+                "channel_title": it.channel_title,
+                "published_at": _safe_isoformat(it.published_at),
+                "duration_sec": it.duration_sec,
+                "view_count": it.view_count,
+                "thumbnail_url": it.thumbnail_url,
+                "youtube_url": it.youtube_url,
+                "game_title": it.game_title,
+                "discovery_mode": it.discovery_mode,
+                "status": it.status,
+                "processing_job_id": it.processing_job_id,
+                "clips_count": len(it.processing_job.clips) if (it.processing_job and it.processing_job.clips) else it.clips_count,
+                "job_progress_pct": it.processing_job.progress_pct if it.processing_job else 0,
+                "job_current_step": it.processing_job.current_step if it.processing_job else None,
+                "job_status": it.processing_job.status if it.processing_job else None,
+                "error_message": it.error_message,
+                "source_alternatives": [
+                    {"type": "local_file", "label": "Attach Local Video File", "description": "Select or enter an MP4/MKV file on your system."},
+                    {"type": "creator_upload", "label": "Upload Creator Video", "description": "Provide a video file provided by the content creator."},
+                    {"type": "authorised_integration", "label": "Connect Authorized Source", "description": "Link your authorized gameplay capture feed."},
+                    {"type": "permitted_stream", "label": "Use Permitted Source Stream", "description": "Input a direct accessible video stream URL."}
+                ] if it.status in ["failed", "acquisition_failed", "source_restricted", "authorization_required"] else [],
+                "authorization": {
+                    "auth_type": it.authorization.auth_type,
+                    "authorized_by": it.authorization.authorized_by,
+                    "source_owner": it.authorization.source_owner,
+                    "permitted_scope": it.authorization.permitted_scope,
+                    "evidence_url": it.authorization.evidence_url,
+                    "confirmed_at": _safe_isoformat(it.authorization.confirmed_at)
+                } if it.authorization else None,
+                "created_at": _safe_isoformat(it.created_at)
+            } for it in items]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load discovery queue: {str(e)}")
+
+@router.post("/discovery/create-clips")
+def create_clips_endpoint(req: CreateClipsRequest, db: Session = Depends(get_db)):
+    """Streamlined bulk/single clipping workflow directly from video discovery without popups."""
+    from backend.app.discovery.service import discovery_service
+    try:
+        queued = discovery_service.create_clips_for_videos(
+            db=db,
+            video_ids=req.video_ids,
+            videos=req.videos,
+            local_file_paths=req.local_file_paths,
+            target_duration=req.target_duration or 60,
+            game_name=req.game_name
+        )
+        return {
+            "success": True,
+            "queued_count": len([q for q in queued if q.get("status") == "queued"]),
+            "queued_jobs": queued,
+            "message": f"Successfully enqueued {len([q for q in queued if q.get('status') == 'queued'])} video(s) for AI highlight clipping."
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/discovery/queue/{video_id}/authorize")
 def authorize_discovered_video(
@@ -1464,20 +1588,26 @@ def process_discovered_video(
     req: Optional[ProcessDiscoveredVideoRequest] = None,
     db: Session = Depends(get_db)
 ):
-    """Enqueues an authorized discovered video into the AI clipping pipeline."""
+    """Enqueues a discovered video into the AI clipping pipeline without mandatory popups."""
     from backend.app.discovery.service import discovery_service
     try:
         local_path = req.local_file_path if req else None
+        auto_auth = req.auto_authorize if (req and req.auto_authorize is not None) else True
         job = discovery_service.enqueue_for_processing(
             db=db,
             discovered_video_id=video_id,
-            local_file_path=local_path
+            local_file_path=local_path,
+            auto_authorize=auto_auth
         )
         return {
             "status": "success",
             "job_id": job.id,
             "message": f"Video enqueued for AI pipeline as Job #{job.id}."
         }
+    except PermissionError as pe:
+        raise HTTPException(status_code=403, detail=str(pe))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except PermissionError as pe:
         raise HTTPException(status_code=403, detail=str(pe))
     except Exception as e:

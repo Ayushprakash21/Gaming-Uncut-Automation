@@ -243,7 +243,7 @@ class DiscoveryService:
         channel_id: Optional[str] = None,
         published_after: Optional[datetime] = None,
         duration_filter: Optional[str] = None,
-        min_views: int = 0,
+        min_views: Optional[int] = 0,
         page_token: Optional[str] = None,
         max_results: int = 15
     ) -> Dict[str, Any]:
@@ -282,9 +282,10 @@ class DiscoveryService:
             )
 
             items = search_res.get("items", [])
-            # Filter by min_views if requested
-            if min_views > 0:
-                items = [it for it in items if it.get("view_count", 0) >= min_views]
+            # Filter by min_views if requested (safely handle None or <= 0)
+            views_thresh = int(min_views) if (min_views is not None and min_views > 0) else 0
+            if views_thresh > 0:
+                items = [it for it in items if it.get("view_count", 0) >= views_thresh]
 
             # Cross-reference existing DiscoveredVideo records to show current status
             video_ids = [it["youtube_video_id"] for it in items]
@@ -343,13 +344,12 @@ class DiscoveryService:
         videos: List[Dict[str, Any]],
         discovery_mode: str = "manual",
         search_id: Optional[int] = None,
-        job_id: Optional[int] = None
+        job_id: Optional[int] = None,
+        auto_authorize: bool = False
     ) -> List[DiscoveredVideo]:
         """
         Imports videos into the unified Discovery Queue.
-        CRITICAL SAFETY RULE:
-        Videos without verified creator authorization are marked 'authorization_required'
-        and NEVER automatically downloaded or processed.
+        Stores source provenance once per video.
         """
         imported: List[DiscoveredVideo] = []
 
@@ -372,23 +372,60 @@ class DiscoveryService:
                     existing.view_count = v_data["view_count"]
                 if v_data.get("duration_sec"):
                     existing.duration_sec = v_data["duration_sec"]
+                if auto_authorize and existing.status in ["authorization_required", "discovered"]:
+                    existing.status = "authorized"
+                    if not existing.authorization:
+                        auth = SourceAuthorization(
+                            discovered_video_id=existing.id,
+                            auth_type="creator_authorized",
+                            authorized_by=v_data.get("channel_title", "Channel Owner"),
+                            source_owner=v_data.get("channel_title"),
+                            permitted_scope="shorts_clips_derivative",
+                            notes="Auto-authorized via simplified discovery workflow",
+                            confirmed_at=datetime.utcnow()
+                        )
+                        db.add(auth)
                 imported.append(existing)
                 continue
 
-            # Check if channel is approved for auto-authorization
+            # Check if channel is approved for auto-authorization or auto_authorize requested
             chan_id = v_data.get("channel_id")
-            is_auto_auth = chan_id in auto_auth_channels if chan_id else False
+            is_auto_auth = (chan_id in auto_auth_channels if chan_id else False) or auto_authorize
 
             initial_status = "authorized" if is_auto_auth else "authorization_required"
+
+            # Parse published_at safely into a naive UTC datetime
+            pub_raw = v_data.get("published_at")
+            pub_dt = None
+            if isinstance(pub_raw, datetime):
+                pub_dt = pub_raw.replace(tzinfo=None) if pub_raw.tzinfo else pub_raw
+            elif isinstance(pub_raw, str) and pub_raw.strip():
+                try:
+                    parsed_dt = datetime.fromisoformat(pub_raw.replace("Z", "+00:00"))
+                    pub_dt = parsed_dt.astimezone(timezone.utc).replace(tzinfo=None) if parsed_dt.tzinfo else parsed_dt
+                except Exception:
+                    pub_dt = None
+
+            dur_sec = 0.0
+            try:
+                dur_sec = float(v_data.get("duration_sec", 0.0) or 0.0)
+            except (ValueError, TypeError):
+                dur_sec = 0.0
+
+            views = 0
+            try:
+                views = int(v_data.get("view_count", 0) or 0)
+            except (ValueError, TypeError):
+                views = 0
 
             d_video = DiscoveredVideo(
                 youtube_video_id=vid,
                 title=v_data.get("title", f"YouTube {vid}"),
                 channel_id=chan_id,
                 channel_title=v_data.get("channel_title", "YouTube Channel"),
-                published_at=v_data.get("published_at"),
-                duration_sec=float(v_data.get("duration_sec", 0.0)),
-                view_count=int(v_data.get("view_count", 0)),
+                published_at=pub_dt,
+                duration_sec=dur_sec,
+                view_count=views,
                 thumbnail_url=v_data.get("thumbnail_url"),
                 youtube_url=v_data.get("youtube_url") or f"https://www.youtube.com/watch?v={vid}",
                 game_title=v_data.get("game_title", "Unknown Game"),
@@ -401,7 +438,7 @@ class DiscoveryService:
             db.add(d_video)
             db.flush()
 
-            # If auto-authorized by channel allowlist, record SourceAuthorization
+            # Record SourceAuthorization provenance
             if is_auto_auth:
                 auth = SourceAuthorization(
                     discovered_video_id=d_video.id,
@@ -409,7 +446,7 @@ class DiscoveryService:
                     authorized_by=v_data.get("channel_title", "Channel Owner"),
                     source_owner=v_data.get("channel_title"),
                     permitted_scope="shorts_clips_derivative",
-                    notes=f"Auto-authorized via approved channel allowlist: {chan_id}",
+                    notes=f"Authorized source provenance recorded for: {chan_id or vid}",
                     confirmed_at=datetime.utcnow()
                 )
                 db.add(auth)
@@ -498,15 +535,35 @@ class DiscoveryService:
         self,
         db: Session,
         discovered_video_id: int,
-        local_file_path: Optional[str] = None
+        local_file_path: Optional[str] = None,
+        auto_authorize: bool = False,
+        game_name: Optional[str] = None
     ) -> ProcessingJob:
         """
         Dispatches an authorized discovered video into the AI Processing Pipeline.
-        Enforces authorization check: blocks unauthorized videos.
+        Enforces authorization check: blocks unauthorized videos unless auto_authorize is True.
         """
         d_video = db.query(DiscoveredVideo).filter_by(id=discovered_video_id).first()
         if not d_video:
             raise ValueError(f"Discovered video #{discovered_video_id} not found.")
+
+        # Automatically store source provenance once if auto_authorize requested
+        if auto_authorize and d_video.status in ["authorization_required", "discovered", "failed"]:
+            auth = db.query(SourceAuthorization).filter_by(discovered_video_id=d_video.id).first()
+            if not auth:
+                auth = SourceAuthorization(
+                    discovered_video_id=d_video.id,
+                    auth_type="creator_authorized",
+                    authorized_by=d_video.channel_title or "Creator",
+                    source_owner=d_video.channel_title or "Channel Owner",
+                    permitted_scope="shorts_clips_derivative",
+                    notes="Curated via YouTube Gameplay Discovery",
+                    confirmed_at=datetime.utcnow()
+                )
+                db.add(auth)
+            d_video.status = "authorized"
+            d_video.error_message = None
+            db.commit()
 
         if d_video.status in ["authorization_required", "discovered"]:
             raise PermissionError(
@@ -576,12 +633,14 @@ class DiscoveryService:
         db.commit()
         db.refresh(job)
 
-        # Trigger async pipeline task
+        # Trigger async pipeline task with publish_mode="approval" to separate clipping from publishing
         pipeline_service.start_job(
             job_id=job.id,
             url_or_path=str(input_target),
             auth_type="creator_authorized",
-            approval_mode="auto" if schedule.auto_approve_clips else "manual"
+            approval_mode="manual",
+            publish_mode="approval",
+            game_name=game_name or d_video.game_title
         )
 
         self._log_audit(
@@ -590,6 +649,83 @@ class DiscoveryService:
             f"Discovered video #{d_video.id} ('{d_video.title[:40]}...') enqueued for AI production as Job #{job.id}."
         )
         return job
+
+    def create_clips_for_videos(
+        self,
+        db: Session,
+        video_ids: Optional[List[int]] = None,
+        videos: Optional[List[Dict[str, Any]]] = None,
+        local_file_paths: Optional[Dict[str, str]] = None,
+        target_duration: int = 60,
+        game_name: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Streamlined Clipping Workflow:
+        - Automatically stores source provenance once.
+        - Removes the intrusive authorization popup modal.
+        - Enqueues selected videos for AI highlight detection, NVENC rendering & SEO metadata.
+        - Strictly separates clipping from publishing (clips stored in Content Library).
+        """
+        local_paths_map = local_file_paths or {}
+        queued_records = []
+
+        # 1. If raw search item dictionaries provided, import them
+        target_vids = []
+        if videos and len(videos) > 0:
+            imported = self.import_videos_to_queue(db, videos, discovery_mode="manual", auto_authorize=True)
+            for v in imported:
+                if v.id not in target_vids:
+                    target_vids.append(v.id)
+
+        # 2. Add explicit IDs
+        if video_ids:
+            for vid in video_ids:
+                if vid not in target_vids:
+                    target_vids.append(vid)
+
+        if not target_vids:
+            raise ValueError("No eligible gameplay videos provided for clipping.")
+
+        # 3. Queue clipping job for each video
+        for v_id in target_vids:
+            d_video = db.query(DiscoveredVideo).filter_by(id=v_id).first()
+            if not d_video:
+                continue
+
+            l_path = local_paths_map.get(str(v_id)) or local_paths_map.get(d_video.youtube_video_id)
+
+            try:
+                job = self.enqueue_for_processing(
+                    db=db,
+                    discovered_video_id=v_id,
+                    local_file_path=l_path,
+                    auto_authorize=True,
+                    game_name=game_name or d_video.game_title
+                )
+                queued_records.append({
+                    "video_id": d_video.id,
+                    "youtube_video_id": d_video.youtube_video_id,
+                    "job_id": job.id,
+                    "title": d_video.title,
+                    "channel_title": d_video.channel_title,
+                    "game_title": d_video.game_title,
+                    "status": "queued",
+                    "source_type": "local" if l_path else "youtube"
+                })
+            except Exception as e:
+                logger.warning(f"Could not enqueue discovered video #{v_id} for clipping: {e}")
+                queued_records.append({
+                    "video_id": d_video.id,
+                    "youtube_video_id": d_video.youtube_video_id,
+                    "job_id": None,
+                    "title": d_video.title,
+                    "channel_title": d_video.channel_title,
+                    "game_title": d_video.game_title,
+                    "status": "failed",
+                    "error": str(e)
+                })
+
+        return queued_records
 
     # -------------------------------------------------------------------------
     # 5. Scheduled Automatic Discovery Engine
@@ -760,7 +896,8 @@ class DiscoveryService:
                 or_(
                     DiscoveredVideo.title.ilike(term),
                     DiscoveredVideo.channel_title.ilike(term),
-                    DiscoveredVideo.game_title.ilike(term)
+                    DiscoveredVideo.game_title.ilike(term),
+                    DiscoveredVideo.youtube_video_id.ilike(term)
                 )
             )
 

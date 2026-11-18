@@ -7,6 +7,7 @@ export const PublishingQueuePage: React.FC = () => {
   const [items, setItems] = useState<PublishingQueueItem[]>([])
   const [loading, setLoading] = useState(false)
   const [expandedItemId, setExpandedItemId] = useState<number | null>(null)
+  const [dispatching, setDispatching] = useState<Record<number, boolean>>({})
 
   const load = async () => {
     setLoading(true)
@@ -25,8 +26,16 @@ export const PublishingQueuePage: React.FC = () => {
   }, [])
 
   const handleForceDispatch = async (jobId: number) => {
-    await dispatchPublishingJob(jobId)
-    setTimeout(load, 1000)
+    if (dispatching[jobId]) return
+    setDispatching((prev) => ({ ...prev, [jobId]: true }))
+    try {
+      await dispatchPublishingJob(jobId)
+    } finally {
+      setTimeout(() => {
+        setDispatching((prev) => ({ ...prev, [jobId]: false }))
+        load()
+      }, 1500)
+    }
   }
 
   const getPlatformIcon = (platform: string) => {
@@ -206,9 +215,18 @@ export const PublishingQueuePage: React.FC = () => {
                         ) : (
                           <button
                             onClick={() => handleForceDispatch(item.job_id)}
-                            className="bg-purple-600 hover:bg-purple-500 text-white text-[11px] font-semibold px-2.5 py-1 rounded shadow transition"
+                            disabled={['video_transferring', 'uploading', 'instagram_processing', 'upload_initialized', 'transfer_completed', 'publishing'].includes(item.status) || !!dispatching[item.job_id]}
+                            className={`text-[11px] font-semibold px-2.5 py-1 rounded shadow transition ${
+                              ['video_transferring', 'uploading', 'instagram_processing', 'upload_initialized', 'transfer_completed', 'publishing'].includes(item.status) || !!dispatching[item.job_id]
+                                ? 'bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-700'
+                                : 'bg-purple-600 hover:bg-purple-500 text-white'
+                            }`}
                           >
-                            {isReviewRequired ? 'Approve & Publish' : 'Publish Now'}
+                            {!!dispatching[item.job_id] || ['video_transferring', 'uploading', 'instagram_processing', 'upload_initialized', 'transfer_completed', 'publishing'].includes(item.status)
+                              ? 'Publishing...'
+                              : isReviewRequired
+                              ? 'Approve & Publish'
+                              : 'Publish Now'}
                           </button>
                         )}
                       </td>

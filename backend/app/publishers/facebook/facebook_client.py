@@ -212,14 +212,14 @@ class FacebookPublishClient:
     """Enterprise-grade Meta Graph API client for Facebook Page Reels publishing."""
 
     def _get_auth(self) -> Dict[str, str]:
-        token = vault.get_secret("meta", "page_access_token")
+        token = vault.get_secret("meta", "system_user_token") or vault.get_secret("meta", "page_access_token")
         page_id = vault.get_secret("meta", "page_id")
 
         if not token or not token.strip():
             raise FacebookConfigError(
-                "Meta Page Access Token is not configured in Vault. Please configure credentials in Settings.",
+                "Meta Access Token is not configured in Vault. Please configure credentials in Settings.",
                 code=401,
-                user_message="Meta Page Access Token is missing."
+                user_message="Meta Access Token is missing."
             )
 
         token = token.strip()
@@ -578,7 +578,7 @@ class FacebookPublishClient:
         3. Verifies Page existence, name, category, and Page token via GET /{page_id}.
         4. Inspects granted permissions via GET /me/permissions.
         """
-        token = vault.get_secret("meta", "page_access_token")
+        token = vault.get_secret("meta", "system_user_token") or vault.get_secret("meta", "page_access_token")
         page_id = vault.get_secret("meta", "page_id")
         app_id = vault.get_secret("meta", "app_id")
 
@@ -587,7 +587,7 @@ class FacebookPublishClient:
                 "authenticated": False,
                 "status": "not_configured",
                 "error_code": "MISSING_TOKEN",
-                "message": "Meta Page Access Token is not configured in Settings."
+                "message": "Meta Access Token is not configured in Settings."
             }
 
         token = token.strip()

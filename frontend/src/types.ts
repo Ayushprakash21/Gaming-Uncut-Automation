@@ -144,6 +144,39 @@ export interface VerifiedYouTubeChannel {
   verified_at?: string;
 }
 
+export interface MetaTokenHealth {
+  configured: boolean;
+  authenticated: boolean;
+  status: string;
+  status_label: string;
+  token_type: string;
+  is_valid: boolean;
+  is_expired: boolean;
+  is_permanent: boolean;
+  expiring_soon: boolean;
+  expires_at?: number | null;
+  expires_at_iso?: string | null;
+  expires_in_days?: number | null;
+  data_access_expires_at?: number | null;
+  can_refresh: boolean;
+  app_id?: string;
+  app_matches?: boolean;
+  application_name?: string;
+  page_id?: string;
+  page_name?: string;
+  instagram_account_id?: string;
+  instagram_username?: string;
+  facebook_ready: boolean;
+  instagram_ready: boolean;
+  facebook_status: string;
+  instagram_status: string;
+  permissions: string[];
+  missing_facebook_scopes: string[];
+  missing_instagram_scopes: string[];
+  last_verified_at?: string | null;
+  last_auth_error?: string | null;
+}
+
 export interface ConnectionsData {
   youtube: {
     client_configured: boolean;
@@ -159,18 +192,21 @@ export interface ConnectionsData {
     status: string;
     status_label: string;
     account_id: string;
+    username?: string;
   };
   facebook: {
     connected: boolean;
     status: string;
     status_label: string;
     page_id?: string;
+    page_name?: string;
   };
   meta: {
     app_configured: boolean;
     token_configured: boolean;
     page_id?: string;
     instagram_account_id: string;
+    health?: MetaTokenHealth;
   };
   gemini: {
     api_key_configured: boolean;
@@ -195,7 +231,11 @@ export interface DiscoveredVideoItem {
   status: string;
   processing_job_id?: number | null;
   clips_count: number;
+  job_progress_pct?: number;
+  job_current_step?: string | null;
+  job_status?: string | null;
   error_message?: string | null;
+  source_alternatives?: Array<{ type: string; label: string; description: string }>;
   authorization?: {
     auth_type: string;
     authorized_by?: string;

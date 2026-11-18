@@ -92,6 +92,18 @@ def mock_external_publishers(monkeypatch):
     from backend.app.publishers.youtube.youtube_client import youtube_client
     from backend.app.publishers.instagram.instagram_client import instagram_client
     from backend.app.publishers.facebook.facebook_client import facebook_client
+    from backend.app.models.schema import PlatformQuotaState
+
+    # Ensure clean quota/pause state and clean token health cache for each test
+    try:
+        vault.delete_secret("meta", "token_health_cache")
+        with SessionLocal() as db:
+            for s in db.query(PlatformQuotaState).all():
+                s.pause_until = None
+                s.last_restriction_type = None
+            db.commit()
+    except Exception:
+        pass
 
     def mock_yt_upload(*args, **kwargs):
         video_path = kwargs.get("video_path") or (args[0] if args else None)
