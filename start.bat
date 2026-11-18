@@ -181,9 +181,15 @@ echo ==================================================================
 echo.
 
 "%PYTHON_EXE%" run.py
+set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.
 echo ==================================================================
-echo [*] Gaming Uncut Automation server has stopped.
+if !EXIT_CODE! neq 0 (
+    echo [X] Server terminated with error code !EXIT_CODE!.
+    echo     Check logs\app.log for detailed tracebacks.
+) else (
+    echo [*] Gaming Uncut Automation server has stopped cleanly.
+)
 echo ==================================================================
 pause
