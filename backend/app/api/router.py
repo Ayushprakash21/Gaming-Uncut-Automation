@@ -808,6 +808,13 @@ def list_publishing_queue(db: Session = Depends(get_db)):
         job = u.publishing_job
         clip = job.clip if job else None
         meta = clip.metadata_rel if clip else None
+
+        size_mb = None
+        if clip and clip.output_path:
+            p = Path(clip.output_path)
+            if p.exists():
+                size_mb = round(p.stat().st_size / (1024 * 1024), 2)
+
         results.append({
             "id": u.id,
             "job_id": u.publishing_job_id,
@@ -815,13 +822,65 @@ def list_publishing_queue(db: Session = Depends(get_db)):
             "platform": u.platform,
             "status": u.status,
             "external_url": u.external_url,
+            "error_code": u.error_code,
             "error_message": u.error_message,
             "attempts": u.attempts,
             "title": meta.title if meta else "Clip",
             "scheduled_time": job.scheduled_time if job else None,
-            "uploaded_at": u.uploaded_at
+            "uploaded_at": u.uploaded_at,
+            "file_size_mb": size_mb,
+            "duration_sec": clip.duration_sec if clip else None,
+            "resolution": f"{clip.width}x{clip.height}" if clip and clip.width else None
         })
     return results
+
+@router.get("/publishing/diagnostics/{job_id}")
+def get_publishing_diagnostics(job_id: int, db: Session = Depends(get_db)):
+    pub_job = db.query(PublishingJob).filter_by(id=job_id).first()
+    if not pub_job:
+        raise HTTPException(status_code=404, detail=f"Publishing job #{job_id} not found.")
+
+    clip = pub_job.clip
+    meta = clip.metadata_rel if clip else None
+    uploads = db.query(PlatformUpload).filter_by(publishing_job_id=job_id).all()
+
+    from backend.app.publishers.instagram.diagnostics import inspect_video_for_instagram
+    from backend.app.publishers.instagram.validator import instagram_video_validator
+
+    orig_path = Path(clip.output_path) if clip and clip.output_path else None
+    orig_diag = inspect_video_for_instagram(orig_path) if orig_path and orig_path.exists() else None
+
+    # Check for normalized instagram file
+    norm_path = settings.OUTPUT_DIR / "instagram" / f"{orig_path.stem}_instagram.mp4" if orig_path else None
+    norm_diag = inspect_video_for_instagram(norm_path) if norm_path and norm_path.exists() else None
+
+    logs = db.query(SystemLog).filter(
+        SystemLog.message.like(f"%Job #{job_id}%") | SystemLog.message.like(f"%Clip #{clip.id}%")
+    ).order_by(SystemLog.id.desc()).limit(20).all()
+
+    return {
+        "job_id": job_id,
+        "clip_id": clip.id if clip else None,
+        "title": meta.title if meta else "Clip",
+        "original_specs": orig_diag,
+        "normalized_specs": norm_diag,
+        "uploads": [
+            {
+                "platform": u.platform,
+                "status": u.status,
+                "attempts": u.attempts,
+                "error_code": u.error_code,
+                "error_message": u.error_message,
+                "external_url": u.external_url,
+                "uploaded_at": u.uploaded_at
+            }
+            for u in uploads
+        ],
+        "audit_logs": [
+            {"id": l.id, "level": l.level, "module": l.module, "message": l.message, "created_at": l.created_at}
+            for l in logs
+        ]
+    }
 
 @router.post("/publishing/dispatch/{job_id}")
 def force_dispatch(

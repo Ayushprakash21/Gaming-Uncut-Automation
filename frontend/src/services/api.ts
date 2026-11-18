@@ -215,6 +215,10 @@ export async function dispatchPublishingJob(jobId: number, allowRepublish: boole
   })
 }
 
+export async function fetchPublishingDiagnostics(jobId: number): Promise<any> {
+  return safeFetch<any>(`${API_BASE}/publishing/diagnostics/${jobId}`)
+}
+
 export async function fetchConnections(): Promise<ConnectionsData> {
   return safeFetch<ConnectionsData>(`${API_BASE}/settings/connections`)
 }

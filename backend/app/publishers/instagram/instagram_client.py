@@ -93,6 +93,10 @@ class InstagramUploadFailedError(InstagramAPIError):
     """Raised when binary transfer or media publishing fails."""
     pass
 
+class InstagramValidationError(InstagramAPIError):
+    """Raised when video asset fails Meta Instagram Reels pre-upload validation."""
+    pass
+
 
 def parse_instagram_error(
     res_data: Any,
@@ -401,56 +405,62 @@ class InstagramPublishClient:
         return {"container_id": container_id, "upload_url": upload_url}
 
     # ==========================================
-    # Pre-Upload Video Optimization
+    # Pre-Upload Video Normalization & Validation
     # ==========================================
     def optimize_video_for_reels(self, video_path: Path) -> Tuple[Path, bool]:
         """
-        Ensures video strictly adheres to Meta Instagram Reels requirements:
-        - H.264 High profile, CFR 60fps, closed GOP (-bf 0, -g 60)
-        - BT.709 SDR color tags, format=yuv420p
-        - Bitrate ~3.2M, maxrate 4.5M, bufsize 6M (keeps 60s files ~22MB)
-        - 48kHz stereo AAC audio 160k
-        - Clean monotonic timestamps (-avoid_negative_ts make_zero -fflags +genpts)
-        - Clamped duration strictly <= 59.8s
-        - Faststart (+faststart)
+        Validates and normalizes video asset to strictly satisfy Meta Reels specifications:
+        - 1080x1920 9:16 portrait
+        - H.264 High profile, 30 FPS constant frame rate (CFR), closed GOP
+        - AAC stereo audio 48kHz (generates synthetic silent audio if source has none)
+        - Faststart (+faststart moov atom placed before mdat)
+        - Clamped duration between 3.0s and 60.0s
+        - Dynamic bitrate capping file size safely <= 55MB (under 60MB limit)
         Returns (optimized_video_path, is_temp_file).
         """
+        from backend.app.publishers.instagram.validator import instagram_video_validator
+        from backend.app.publishers.instagram.normalizer import instagram_video_normalizer, InstagramNormalizationError
+
         if not video_path.exists():
             raise FileNotFoundError(f"Video file missing: {video_path}")
 
-        file_size = video_path.stat().st_size
-        if file_size <= 22 * 1024 * 1024 and "_ig_opt" in video_path.name:
+        # Check if already strictly compliant
+        val = instagram_video_validator.validate(video_path)
+        if val.is_valid:
+            logger.info(f"Video {video_path.name} already valid for Instagram Reels. Using directly.")
             return video_path, False
 
-        out_dir = video_path.parent
-        opt_file = out_dir / f"{video_path.stem}_ig_opt.mp4"
-        logger.info(f"Optimizing video for Instagram Reels: {video_path.name} -> {opt_file.name}")
-
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(video_path),
-            "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
-            "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
-            "-c:v", "libx264", "-preset", "veryfast",
-            "-b:v", "3.2M", "-maxrate", "4.5M", "-bufsize", "6M",
-            "-g", "60", "-bf", "0",
-            "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
-            "-t", "59.8",
-            "-avoid_negative_ts", "make_zero", "-fflags", "+genpts",
-            "-movflags", "+faststart",
-            str(opt_file)
-        ]
+        logger.info(
+            f"Video {video_path.name} requires normalization for Instagram Reels: "
+            f"Reasons: {val.errors + val.warnings}"
+        )
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            if res.returncode == 0 and opt_file.exists():
-                logger.info(f"Instagram optimization completed: {opt_file.name} ({opt_file.stat().st_size} bytes)")
-                return opt_file, True
-            else:
-                logger.warning(f"Optimization non-zero exit ({res.returncode}): {res.stderr[-200:] if res.stderr else 'unknown'}")
-                return video_path, False
+            normalized = instagram_video_normalizer.normalize(video_path, force_render=True)
         except Exception as e:
-            logger.warning(f"Video optimization failed (using source file): {e}")
-            return video_path, False
+            logger.error(f"Normalization failed for {video_path.name}: {e}")
+            raise InstagramValidationError(
+                f"Video normalization failed: {e}",
+                code=400,
+                error_type="NormalizationError",
+                user_message=f"Video normalization failed: {e}"
+            )
+
+        # Validate final output
+        final_val = instagram_video_validator.validate(normalized)
+        if not final_val.is_valid:
+            logger.error(f"Normalized video failed validation: {final_val.errors}")
+            raise InstagramValidationError(
+                f"Video normalization failed to satisfy Meta Reels specifications: {final_val.summary()}",
+                code=400,
+                error_type="ValidationError",
+                user_message=final_val.summary()
+            )
+
+        logger.info(
+            f"Instagram video successfully normalized and validated: {normalized.name} "
+            f"({final_val.details.get('file_size_mb')} MB, {final_val.details.get('duration_sec')}s)"
+        )
+        return normalized, True
 
     # ==========================================
     # Stage 2: Video Binary Transfer (Chunked Resumable)

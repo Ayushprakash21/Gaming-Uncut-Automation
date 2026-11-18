@@ -1,0 +1,290 @@
+"""
+Instagram-Specific FFmpeg Normalization Engine.
+Generates conservative, fully-compatible MP4 assets tailored for Meta Reels edge ingest:
+- Container: MP4 (H.264 / AAC-LC, yuv420p)
+- Resolution: 1080x1920 (9:16 vertical portrait)
+- Constant Frame Rate: 30 FPS CFR (-r 30, fps=30)
+- Closed GOP: -g 60 -keyint_min 60 -sc_threshold 0
+- Dynamic Bitrate: Targets 4.0-5.0 Mbps, automatically computed to strictly cap file size <= 55MB (safely under 60MB limit)
+- Audio: AAC-LC 128kbps, 48000 Hz stereo (synthetic silence generated if source has no audio)
+- Duration: Strictly clamped between 3.0s and 60.0s (pads videos < 3.0s)
+- Faststart: -movflags +faststart
+- Post-render verification: Rigorously verified via InstagramVideoValidator
+"""
+
+import json
+import logging
+import math
+import os
+import shutil
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from backend.app.core.config import settings
+from backend.app.publishers.instagram.validator import (
+    InstagramVideoValidator,
+    InstagramValidationResult,
+    MAX_FILE_SIZE_BYTES,
+)
+
+logger = logging.getLogger("gaming_uncut.instagram_normalizer")
+
+
+class InstagramNormalizationError(Exception):
+    """Raised when video normalization fails or fails post-render validation."""
+
+    def __init__(self, message: str, errors: Optional[List[str]] = None, details: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.message = message
+        self.errors = errors or []
+        self.details = details or {}
+
+
+class InstagramVideoNormalizer:
+    """
+    Normalizes video footage specifically for Instagram Reels compatibility.
+    """
+
+    def __init__(
+        self,
+        output_dir: Optional[Path] = None,
+        default_policy: str = "crop",  # "crop" (smart center action crop) | "blur" (blurred background)
+        preset: str = "fast",
+        target_bitrate_mbps: float = 4.0,
+        max_file_size_mb: float = 55.0,  # Safe ceiling under Meta's 60MB limit
+    ):
+        self.output_dir = output_dir or (settings.OUTPUT_DIR / "instagram")
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.default_policy = default_policy
+        self.preset = preset
+        self.target_bitrate_mbps = target_bitrate_mbps
+        self.max_file_size_mb = max_file_size_mb
+
+    def probe_input(self, input_path: Path) -> Dict[str, Any]:
+        """Probes basic stream metadata using ffprobe."""
+        cmd = [
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(input_path),
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        probe = json.loads(res.stdout)
+        fmt = probe.get("format", {})
+        streams = probe.get("streams", [])
+        v_stream = next((s for s in streams if s.get("codec_type") == "video"), None)
+        a_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
+
+        if not v_stream:
+            raise ValueError(f"Input file {input_path} contains no video stream.")
+
+        width = int(v_stream.get("width", 0))
+        height = int(v_stream.get("height", 0))
+        duration = float(fmt.get("duration", 0.0))
+
+        return {
+            "width": width,
+            "height": height,
+            "duration": duration,
+            "is_portrait": height > width,
+            "is_landscape": width > height,
+            "is_square": width == height and width > 0,
+            "has_audio": a_stream is not None,
+            "audio_codec": a_stream.get("codec_name") if a_stream else None,
+            "audio_sample_rate": int(a_stream.get("sample_rate", 0)) if a_stream and a_stream.get("sample_rate") else None,
+            "pix_fmt": v_stream.get("pix_fmt", "yuv420p"),
+            "video_codec": v_stream.get("codec_name", "h264"),
+        }
+
+    def compute_dynamic_bitrate(self, duration_sec: float) -> Tuple[str, str, str]:
+        """
+        Dynamically calculates video bitrate, maxrate, and bufsize to guarantee
+        that the resulting video file stays comfortably below the 60 MB limit.
+        Target max size: 55 MB (57,671,680 bytes).
+        Audio budget: 128 kbps (~16 KB/s).
+        """
+        effective_duration = max(3.0, min(60.0, duration_sec))
+        max_bytes = self.max_file_size_mb * 1024 * 1024
+        audio_bytes = (128 * 1000 / 8) * effective_duration
+        container_overhead = 500 * 1024  # 500 KB container/moov headroom
+
+        avail_video_bytes = max_bytes - audio_bytes - container_overhead
+        avail_video_bits = avail_video_bytes * 8
+        calc_bitrate_bps = avail_video_bits / effective_duration
+
+        # Clamp between 1.5M and 5.0M (conservative, reliable for Reels)
+        target_bps = min(self.target_bitrate_mbps * 1_000_000, max(1_500_000, calc_bitrate_bps))
+        maxrate_bps = min(target_bps * 1.25, 6_000_000)
+        bufsize_bps = target_bps * 2.0
+
+        b_v = f"{int(target_bps / 1000)}k"
+        maxrate = f"{int(maxrate_bps / 1000)}k"
+        bufsize = f"{int(bufsize_bps / 1000)}k"
+
+        logger.debug(
+            f"Computed dynamic bitrate for duration={effective_duration:.2f}s: "
+            f"-b:v {b_v}, -maxrate {maxrate}, -bufsize {bufsize}"
+        )
+        return b_v, maxrate, bufsize
+
+    def normalize(
+        self,
+        input_path: Path,
+        output_path: Optional[Path] = None,
+        policy: Optional[str] = None,
+        force_render: bool = False,
+    ) -> Path:
+        """
+        Normalizes the given video file for Instagram Reels.
+        If the input file already strictly conforms to all Meta Reels specs,
+        and force_render is False, it returns input_path directly.
+        Otherwise, it executes the FFmpeg profile and verifies the output.
+        """
+        input_path = Path(input_path).resolve()
+        if not input_path.exists():
+            raise FileNotFoundError(f"Input file not found: {input_path}")
+
+        # Check existing compliance first
+        if not force_render:
+            initial_val = InstagramVideoValidator.validate(input_path)
+            if initial_val.is_valid:
+                logger.info(
+                    f"Video {input_path.name} already strictly adheres to Meta Reels specs. Bypassing re-encode."
+                )
+                return input_path
+
+        policy = policy or self.default_policy
+        probe = self.probe_input(input_path)
+        duration = probe["duration"]
+        has_audio = probe["has_audio"]
+        is_landscape = probe["is_landscape"]
+
+        # Clamp target duration: Meta maximum is 60s, clamp to 59.5s to prevent audio/video packet tail overflow (e.g. 60.02s)
+        # Minimum duration is 3.0s
+        target_duration = min(59.5, max(3.0, duration))
+        b_v, maxrate, bufsize = self.compute_dynamic_bitrate(target_duration)
+
+        if output_path is None:
+            output_name = f"{input_path.stem}_instagram.mp4"
+            output_path = self.output_dir / output_name
+        else:
+            output_path = Path(output_path).resolve()
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Build video filtergraph
+        # Policy A: Smart Center Action Crop (scale to fill 1080x1920 without stretching, crop center)
+        # Policy B: Blurred Background (preserves 16:9 foreground, fills pillarbox with blurred backdrop)
+        # Portrait footage: scale to 1080:1920 maintaining aspect ratio, crop overflow
+        if is_landscape and policy == "blur":
+            v_filter = (
+                "[0:v]split=2[bg_in][fg_in];"
+                "[bg_in]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5,eq=brightness=-0.15,fps=30,format=yuv420p,setsar=1[bg];"
+                "[fg_in]scale=1080:-2,fps=30,format=yuv420p,setsar=1[fg];"
+                "[bg][fg]overlay=(W-w)/2:(H-h)/2:eval=init,setsar=1[vout]"
+            )
+        else:
+            # Standard & dynamic gameplay: scale maintaining aspect ratio without distortion, crop to exact 1080x1920
+            v_filter = (
+                "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+                "crop=1080:1920,"
+                "fps=30,"
+                "format=yuv420p,"
+                "setsar=1[vout]"
+            )
+
+        # Handle duration < 3.0s: pad video to minimum 3 seconds
+        if duration < 3.0:
+            pad_needed = round(3.0 - duration, 2)
+            # Use tpad to hold the last frame
+            v_filter = v_filter.replace("[vout]", f",tpad=stop_mode=clone:stop_duration={pad_needed}[vout]")
+
+        cmd: List[str] = ["ffmpeg", "-y"]
+
+        # Video input
+        cmd.extend(["-i", str(input_path)])
+
+        # Audio input handling
+        if not has_audio:
+            # Generate synthetic silent stereo 48kHz track
+            cmd.extend(["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"])
+            audio_map = "1:a"
+        else:
+            audio_map = "0:a"
+
+        cmd.extend([
+            "-filter_complex", v_filter,
+            "-map", "[vout]",
+            "-map", audio_map,
+            # Video codec settings
+            "-c:v", "libx264",
+            "-preset", self.preset,
+            "-profile:v", "high",
+            "-level", "4.1",
+            "-pix_fmt", "yuv420p",
+            "-r", "30",
+            # Closed GOP (2-second GOP at 30fps)
+            "-g", "60",
+            "-keyint_min", "60",
+            "-sc_threshold", "0",
+            # Bitrate constraints
+            "-b:v", b_v,
+            "-maxrate", maxrate,
+            "-bufsize", bufsize,
+            # Audio codec settings
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-ar", "48000",
+            "-ac", "2",
+            # Duration limit
+            "-t", str(target_duration),
+            # Monotonic timestamps and fast-start
+            "-avoid_negative_ts", "make_zero",
+            "-fflags", "+genpts",
+            "-movflags", "+faststart",
+            str(output_path),
+        ])
+
+        logger.info(
+            f"Encoding Instagram normalized Reel: {input_path.name} -> {output_path.name} "
+            f"(target={target_duration:.1f}s, -b:v={b_v}, policy={policy})"
+        )
+
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            err_msg = res.stderr[-500:] if res.stderr else "Unknown FFmpeg error"
+            raise InstagramNormalizationError(
+                f"FFmpeg normalization failed (exit code {res.returncode}): {err_msg}"
+            )
+
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            raise InstagramNormalizationError(
+                f"Normalized output file was not created or is empty: {output_path}"
+            )
+
+        # Post-render FFprobe verification
+        val_result = InstagramVideoValidator.validate(output_path)
+        if not val_result.is_valid:
+            logger.error(
+                f"Normalized video failed Instagram post-render validation: {val_result.errors}"
+            )
+            raise InstagramNormalizationError(
+                f"Rendered file failed Meta Reels validation: {val_result.summary()}",
+                errors=val_result.errors,
+                details=val_result.details,
+            )
+
+        logger.info(
+            f"Instagram video normalized & verified successfully: {output_path.name} "
+            f"({val_result.details.get('file_size_mb')} MB, {val_result.details.get('duration_sec')}s, 30 FPS)"
+        )
+        return output_path
+
+
+instagram_video_normalizer = InstagramVideoNormalizer()

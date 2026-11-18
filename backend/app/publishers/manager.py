@@ -25,7 +25,7 @@ from backend.app.publishers.instagram.instagram_client import (
     instagram_client, InstagramAPIError, InstagramTokenExpiredError,
     InstagramPermissionError, InstagramConfigError, InstagramVideoUrlError,
     InstagramProcessingFailedError, InstagramProcessingTimeoutError,
-    InstagramUploadFailedError, InstagramRateLimitError as ClientIGRateLimitError
+    InstagramUploadFailedError, InstagramValidationError, InstagramRateLimitError as ClientIGRateLimitError
 )
 from backend.app.publishers.facebook.facebook_client import (
     facebook_client, FacebookAPIError, FacebookTokenExpiredError,
@@ -606,6 +606,19 @@ class PublishingManager:
                                     stage=ig_stage[0], error=e, level="ERROR", attempts=ig_upload.attempts,
                                     error_code=str(e.code or "CONFIG_ERROR"), user_message=e.user_message,
                                     worker_id=active_worker_id, account_id=ig_account_id, idempotency_decision="FAILED_PERMANENT"
+                                )
+                            except InstagramValidationError as e:
+                                ig_upload.status = "failed"
+                                ig_upload.error_code = "VALIDATION_FAILED"
+                                ig_upload.error_message = e.user_message
+                                idempotency_manager.update_stage(db, ig_idemp_key, active_worker_id, PublishingState.FAILED)
+                                logger.error(f"Instagram pre-upload validation failed: {e.user_message}")
+                                log_publishing_audit(
+                                    db, platform="instagram", publishing_job_id=job.id, clip_id=clip.id,
+                                    stage=ig_stage[0], error=e, level="ERROR", attempts=ig_upload.attempts,
+                                    error_code="VALIDATION_FAILED", user_message=e.user_message,
+                                    worker_id=active_worker_id, account_id=ig_account_id, idempotency_decision="FAILED_VALIDATION",
+                                    started_at=started_at, completed_at=datetime.utcnow()
                                 )
                             except InstagramVideoUrlError as e:
                                 ig_upload.status = "failed"

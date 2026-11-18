@@ -247,6 +247,22 @@ export const PublishingQueuePage: React.FC = () => {
                             </span>
                           )}
 
+                          {item.file_size_mb !== undefined && item.file_size_mb !== null && (
+                            <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
+                              item.file_size_mb > 60
+                                ? 'bg-rose-950/60 text-rose-300 border-rose-800/60'
+                                : 'bg-slate-800 text-slate-300 border-slate-700'
+                            }`} title={item.file_size_mb > 60 ? "Exceeds Meta 60MB limit - normalization required" : "Compliant file size"}>
+                              📁 {item.file_size_mb} MB
+                            </span>
+                          )}
+
+                          {item.duration_sec && (
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                              ⏱ {item.duration_sec}s
+                            </span>
+                          )}
+
                           <button
                             onClick={() => setExpandedItemId(isExpanded ? null : item.id)}
                             className="text-[10px] text-purple-400 hover:text-purple-300 font-semibold flex items-center space-x-1 ml-1"
@@ -368,6 +384,39 @@ export const PublishingQueuePage: React.FC = () => {
                                 Description / Caption Body
                               </div>
                               <div className="text-slate-300 whitespace-pre-wrap text-[11px]">{item.description || 'No description provided.'}</div>
+                            </div>
+
+                            {/* Video Specifications & Ingest Compliance */}
+                            <div className="md:col-span-2 pt-2 border-t border-slate-800">
+                              <div className="text-slate-400 text-[10px] uppercase font-bold tracking-wider mb-1.5 flex items-center justify-between">
+                                <span>Video Asset & Meta Ingest Compliance</span>
+                                {item.platform === 'instagram' && (
+                                  <span className="text-[10px] text-purple-400 font-normal">
+                                    Profile: 1080x1920 30FPS CFR, AAC 48kHz, &le; 60MB
+                                  </span>
+                                )}
+                              </div>
+                              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
+                                <div>
+                                  <span className="text-slate-500 block text-[9px] uppercase">File Size:</span>
+                                  <span className={item.file_size_mb && item.file_size_mb > 60 ? "text-rose-400 font-semibold" : "text-slate-200"}>
+                                    {item.file_size_mb ? `${item.file_size_mb} MB` : 'N/A'}
+                                    {item.file_size_mb && item.file_size_mb > 60 ? ' (>60MB - Normalizing)' : ''}
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-500 block text-[9px] uppercase">Duration:</span>
+                                  <span className="text-slate-200">{item.duration_sec ? `${item.duration_sec}s` : 'N/A'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-500 block text-[9px] uppercase">Resolution:</span>
+                                  <span className="text-slate-200">{item.resolution || '1080x1920 (9:16)'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-500 block text-[9px] uppercase">Ingest Normalization:</span>
+                                  <span className="text-emerald-400 font-medium">Automatic (30 FPS CFR, &le; 55MB)</span>
+                                </div>
+                              </div>
                             </div>
                           </div>
                         </td>

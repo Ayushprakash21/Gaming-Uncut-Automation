@@ -121,6 +121,9 @@ export interface PublishingQueueItem {
   analysis_status?: string;
   analysis_provider?: string;
   thumbnail_url?: string;
+  file_size_mb?: number;
+  duration_sec?: number;
+  resolution?: string;
   scheduled_time?: string;
   uploaded_at?: string;
 }

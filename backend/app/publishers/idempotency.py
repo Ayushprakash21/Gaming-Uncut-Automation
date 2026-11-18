@@ -334,7 +334,8 @@ class IdempotencyManager:
         """Releases the job lease and sets the final overall status."""
         job = db.query(PublishingJob).filter_by(id=job_id).first()
         if job:
-            job.status = PublishingState.normalize(final_status)
+            norm = PublishingState.normalize(final_status)
+            job.status = "published" if norm == PublishingState.PUBLISHED else ("failed" if norm == PublishingState.FAILED else norm)
             job.worker_id = None
             job.locked_at = None
             job.lock_expires_at = None
