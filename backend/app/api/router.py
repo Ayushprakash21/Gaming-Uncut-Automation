@@ -905,10 +905,15 @@ def force_dispatch(
 
     # Check if job already finished publishing
     if pub_job.status in ["published", "PUBLISHED"] and not allow_rep:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Publishing job #{job_id} has already been published. Enable republish to run again."
-        )
+        has_pending = db.query(PlatformUpload).filter(
+            PlatformUpload.publishing_job_id == job_id,
+            PlatformUpload.status.notin_(["published", "PUBLISHED", "paused_quota"])
+        ).first()
+        if not has_pending:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Publishing job #{job_id} has already been published across all targets. Enable republish to run again."
+            )
 
     if allow_rep:
         pub_job.allow_republish = True

@@ -45,7 +45,7 @@ class PublishingState:
         "facebook_processing": PROCESSING,
         "processing": PROCESSING,
         "published": PUBLISHED,
-        "partially_published": PUBLISHED,
+        "partially_published": QUEUED,
         "failed": FAILED,
         "unknown": UNKNOWN,
         "ambiguous": UNKNOWN,
