@@ -114,9 +114,11 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ data, onNavigate }) 
             <CheckCircle2 className="w-4 h-4 text-emerald-400" />
           </span>
           <p className="text-2xl font-bold font-mono text-emerald-400">
-            {kpis.today_published} <span className="text-xs text-slate-500 font-sans">/ {kpis.daily_target}</span>
+            {kpis.today_published} <span className="text-xs text-slate-500 font-sans">/ {kpis.daily_target != null && kpis.daily_target > 0 ? kpis.daily_target : 'Unlimited'}</span>
           </p>
-          <span className="text-[10px] text-slate-500">{kpis.target_progress_pct}% of daily target</span>
+          <span className="text-[10px] text-slate-500">
+            {kpis.daily_target != null && kpis.daily_target > 0 ? `${kpis.target_progress_pct}% of daily target` : 'Unlimited publishing target'}
+          </span>
         </div>
 
         <div className="bg-[#111827] border border-gaming-border rounded-xl p-4 space-y-1 shadow">

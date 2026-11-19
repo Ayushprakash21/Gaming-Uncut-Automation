@@ -330,10 +330,10 @@ class SystemSettings(Base):
     __tablename__ = "system_settings"
     id = Column(Integer, primary_key=True, autoincrement=True)
     daily_generation_target = Column(Integer, default=15)
-    daily_publishing_target = Column(Integer, default=15)
-    youtube_daily_limit = Column(Integer, default=15)
-    instagram_daily_limit = Column(Integer, default=25)
-    facebook_daily_limit = Column(Integer, default=25)
+    daily_publishing_target = Column(Integer, nullable=True, default=None)
+    youtube_daily_limit = Column(Integer, nullable=True, default=None)
+    instagram_daily_limit = Column(Integer, nullable=True, default=None)
+    facebook_daily_limit = Column(Integer, nullable=True, default=None)
     auto_reschedule_on_quota = Column(Boolean, default=True)
     updated_at = Column(DateTime, default=datetime.utcnow)
 

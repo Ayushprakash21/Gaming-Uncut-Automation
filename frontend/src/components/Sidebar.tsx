@@ -21,7 +21,7 @@ interface SidebarProps {
   dailyGenerated: number
   targetGeneration: number
   dailyPublished: number
-  targetPublishing: number
+  targetPublishing: number | null | undefined
   queuedCount: number
   failedCount: number
 }
@@ -52,7 +52,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   ]
 
   const pctGen = Math.min(100, Math.round((dailyGenerated / (targetGeneration || 15)) * 100))
-  const pctPub = Math.min(100, Math.round((dailyPublished / (targetPublishing || 15)) * 100))
+  const pctPub = targetPublishing && targetPublishing > 0
+    ? Math.min(100, Math.round((dailyPublished / targetPublishing) * 100))
+    : 100
 
   return (
     <aside className="w-64 border-r border-gaming-border bg-[#0d111c] flex flex-col p-4 space-y-1 select-none">
@@ -111,7 +113,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               Published
             </span>
             <span className="font-bold text-emerald-400 font-mono">
-              {dailyPublished} / {targetPublishing || 15}
+              {dailyPublished} / {targetPublishing != null && targetPublishing > 0 ? targetPublishing : 'Unlimited'}
             </span>
           </div>
           <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
@@ -135,7 +137,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
         <p className="text-[10px] text-slate-500 leading-tight">
-          Configurable limits (15 clips/day default). Independent generation & API quotas.
+          Configurable limits (Unlimited publishing by default). Independent generation & API quotas.
         </p>
       </div>
     </aside>

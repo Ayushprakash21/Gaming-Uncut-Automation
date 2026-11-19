@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
@@ -48,19 +48,19 @@ class Settings(BaseSettings):
     DEFAULT_PUBLISH_MODE: str = "auto"  # "auto" (quality-gated auto-publish) | "approval" (manual approval)
     AUTO_PUBLISHING_ENABLED: bool = os.getenv("AUTO_PUBLISHING_ENABLED", "0") in ("1", "true", "True")  # Immediate safety: paused by default
     MIN_QUALITY_SCORE: float = 75.0
-    DAILY_TARGET_CLIPS: int = 15  # Default target 15 videos/day
+    DAILY_TARGET_CLIPS: int = 15  # Default generation workflow target (clips created locally)
     DEFAULT_GENERATION_TARGET: int = 15
-    DEFAULT_PUBLISHING_TARGET: int = 15
+    DEFAULT_PUBLISHING_TARGET: Optional[int] = None  # Unlimited by default (None)
     MAX_CONCURRENT_RENDERS: int = 1
     
     # AI Engine Provider
     AI_PROVIDER: str = "gemini"  # "gemini" or local fallback
     GEMINI_MODEL: str = "gemini-2.5-flash"
     
-    # Platform Quota Defaults (Configurable in Settings, tracked via live API responses)
-    YOUTUBE_DEFAULT_DAILY_LIMIT: int = 15
-    INSTAGRAM_DEFAULT_DAILY_LIMIT: int = 25
-    FACEBOOK_DEFAULT_DAILY_LIMIT: int = 25
+    # Platform Quota Defaults (Configurable in Settings, Unlimited by default: None)
+    YOUTUBE_DEFAULT_DAILY_LIMIT: Optional[int] = None
+    INSTAGRAM_DEFAULT_DAILY_LIMIT: Optional[int] = None
+    FACEBOOK_DEFAULT_DAILY_LIMIT: Optional[int] = None
     YOUTUBE_QUOTA_PER_UPLOAD: int = 1600  # Official Google Data API v3 cost for videos.insert
     
     # Database

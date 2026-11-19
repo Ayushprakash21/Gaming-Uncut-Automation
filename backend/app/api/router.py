@@ -35,11 +35,11 @@ router = APIRouter(prefix="/api")
 
 # Schemas
 class SystemLimitsUpdateRequest(BaseModel):
-    daily_generation_target: Optional[int] = 15
-    daily_publishing_target: Optional[int] = 15
-    youtube_daily_limit: Optional[int] = 15
-    instagram_daily_limit: Optional[int] = 25
-    facebook_daily_limit: Optional[int] = 25
+    daily_generation_target: Optional[int] = None
+    daily_publishing_target: Optional[int] = None
+    youtube_daily_limit: Optional[int] = None
+    instagram_daily_limit: Optional[int] = None
+    facebook_daily_limit: Optional[int] = None
 
 class ValidateSourceRequest(BaseModel):
     url: str
@@ -177,9 +177,9 @@ def get_overview(db: Session = Depends(get_db)):
     ).count()
 
     gen_target = sys_settings.daily_generation_target or 15
-    pub_target = sys_settings.daily_publishing_target or 15
+    pub_target = sys_settings.daily_publishing_target
     gen_pct = min(100, round((today_generated / gen_target) * 100)) if gen_target > 0 else 0
-    pub_pct = min(100, round((today_published / pub_target) * 100)) if pub_target > 0 else 0
+    pub_pct = min(100, round((today_published / pub_target) * 100)) if (pub_target and pub_target > 0) else 100
 
     # Credentials & Verified Status
     verified_channel = vault.get_json("google", "verified_channel")
@@ -189,10 +189,14 @@ def get_overview(db: Session = Depends(get_db)):
     ig_ready = vault.get_secret("meta", "instagram_account_id") is not None
     gemini_ready = vault.get_gemini_api_key() is not None
 
+    yt_limit = sys_settings.youtube_daily_limit
+    ig_limit = sys_settings.instagram_daily_limit
+    fb_limit = sys_settings.facebook_daily_limit
+
     quotas = {
         "youtube": {
             "published_today": yt_quota.published_today,
-            "user_daily_limit": sys_settings.youtube_daily_limit,
+            "user_daily_limit": yt_limit,
             "quota_units_used_today": yt_quota.quota_units_used,
             "quota_units_bucket_limit": 10000,
             "api_quota_exceeded": yt_quota.api_quota_exceeded,
@@ -200,28 +204,28 @@ def get_overview(db: Session = Depends(get_db)):
             "pause_until": yt_quota.pause_until.isoformat() if yt_quota.pause_until else None,
             "status": "api_quota_paused" if yt_quota.api_quota_exceeded else (
                 "channel_limit_paused" if yt_quota.channel_limit_reached else (
-                    "user_limit_reached" if yt_quota.published_today >= sys_settings.youtube_daily_limit else "normal"
+                    "user_limit_reached" if (yt_limit is not None and yt_limit > 0 and yt_quota.published_today >= yt_limit) else "normal"
                 )
             ),
             "last_restriction_reason": yt_quota.last_restriction_reason
         },
         "instagram": {
             "published_today": ig_quota.published_today,
-            "user_daily_limit": sys_settings.instagram_daily_limit,
+            "user_daily_limit": ig_limit,
             "rate_limited": ig_quota.rate_limited,
             "pause_until": ig_quota.pause_until.isoformat() if ig_quota.pause_until else None,
             "status": "rate_limited" if ig_quota.rate_limited else (
-                "user_limit_reached" if ig_quota.published_today >= sys_settings.instagram_daily_limit else "normal"
+                "user_limit_reached" if (ig_limit is not None and ig_limit > 0 and ig_quota.published_today >= ig_limit) else "normal"
             ),
             "last_restriction_reason": ig_quota.last_restriction_reason
         },
         "facebook": {
             "published_today": fb_quota.published_today,
-            "user_daily_limit": sys_settings.facebook_daily_limit,
+            "user_daily_limit": fb_limit,
             "rate_limited": fb_quota.rate_limited,
             "pause_until": fb_quota.pause_until.isoformat() if fb_quota.pause_until else None,
             "status": "rate_limited" if fb_quota.rate_limited else (
-                "user_limit_reached" if fb_quota.published_today >= sys_settings.facebook_daily_limit else "normal"
+                "user_limit_reached" if (fb_limit is not None and fb_limit > 0 and fb_quota.published_today >= fb_limit) else "normal"
             ),
             "last_restriction_reason": fb_quota.last_restriction_reason
         }
@@ -938,7 +942,7 @@ def approve_clip(clip_id: int, background_tasks: BackgroundTasks, db: Session = 
         raise HTTPException(status_code=404, detail="Publishing job for clip not found.")
     pub_job.approval_status = "approved"
     db.commit()
-    background_tasks.add_task(publishing_manager.execute_job, pub_job.id)
+    background_tasks.add_task(publishing_manager.execute_job, pub_job.id, False, None, is_manual=True)
     return {"status": "approved", "message": f"Clip #{clip_id} approved and dispatched."}
 
 @router.post("/clips/{clip_id}/reject")
@@ -977,6 +981,7 @@ def list_publishing_queue(db: Session = Depends(get_db)):
             "id": u.id,
             "job_id": u.publishing_job_id,
             "job_status": job.status if job else None,
+            "approval_status": job.approval_status if job else None,
             "platform": u.platform,
             "status": u.status,
             "external_url": u.external_url,
@@ -1095,7 +1100,7 @@ def force_dispatch(
         pub_job.allow_republish = True
         db.commit()
 
-    background_tasks.add_task(publishing_manager.execute_job, job_id, allow_rep)
+    background_tasks.add_task(publishing_manager.execute_job, job_id, allow_rep, None, is_manual=True)
     return {"status": "started", "message": f"Dispatch initiated for job #{job_id}"}
 
 @router.post("/publishing/reconcile-instagram")
@@ -1517,36 +1522,36 @@ def update_system_limits(req: SystemLimitsUpdateRequest, db: Session = Depends(g
     """
     Updates configurable targets and limits:
     - Daily generation target (clips created per day, default 15)
-    - Daily publishing target (clips published across platforms per day, default 15)
-    - YouTube daily limit (upload attempts per day, default 15)
-    - Instagram daily limit (reels per day, default 25)
-    - Facebook daily limit (reels per day, default 25)
+    - Daily publishing target (clips published across platforms per day, null = Unlimited)
+    - YouTube daily limit (upload attempts per day, null = Unlimited)
+    - Instagram daily limit (reels per day, null = Unlimited)
+    - Facebook daily limit (reels per day, null = Unlimited)
     """
     settings_obj = get_or_create_settings(db)
     changed = False
 
-    if req.daily_generation_target is not None:
-        val = max(1, req.daily_generation_target)
+    if "daily_generation_target" in req.model_fields_set:
+        val = max(1, req.daily_generation_target) if req.daily_generation_target else 15
         if settings_obj.daily_generation_target != val:
             settings_obj.daily_generation_target = val
             changed = True
-    if req.daily_publishing_target is not None:
-        val = max(1, req.daily_publishing_target)
+    if "daily_publishing_target" in req.model_fields_set:
+        val = req.daily_publishing_target if (req.daily_publishing_target is not None and req.daily_publishing_target > 0) else None
         if settings_obj.daily_publishing_target != val:
             settings_obj.daily_publishing_target = val
             changed = True
-    if req.youtube_daily_limit is not None:
-        val = max(1, req.youtube_daily_limit)
+    if "youtube_daily_limit" in req.model_fields_set:
+        val = req.youtube_daily_limit if (req.youtube_daily_limit is not None and req.youtube_daily_limit > 0) else None
         if settings_obj.youtube_daily_limit != val:
             settings_obj.youtube_daily_limit = val
             changed = True
-    if req.instagram_daily_limit is not None:
-        val = max(1, req.instagram_daily_limit)
+    if "instagram_daily_limit" in req.model_fields_set:
+        val = req.instagram_daily_limit if (req.instagram_daily_limit is not None and req.instagram_daily_limit > 0) else None
         if settings_obj.instagram_daily_limit != val:
             settings_obj.instagram_daily_limit = val
             changed = True
-    if req.facebook_daily_limit is not None:
-        val = max(1, req.facebook_daily_limit)
+    if "facebook_daily_limit" in req.model_fields_set:
+        val = req.facebook_daily_limit if (req.facebook_daily_limit is not None and req.facebook_daily_limit > 0) else None
         if settings_obj.facebook_daily_limit != val:
             settings_obj.facebook_daily_limit = val
             changed = True
@@ -1556,7 +1561,7 @@ def update_system_limits(req: SystemLimitsUpdateRequest, db: Session = Depends(g
         log_entry = SystemLog(
             module="settings",
             level="INFO",
-            message=f"System targets & limits updated: Gen Target={settings_obj.daily_generation_target}, Pub Target={settings_obj.daily_publishing_target}, YT Limit={settings_obj.youtube_daily_limit}, IG Limit={settings_obj.instagram_daily_limit}, FB Limit={settings_obj.facebook_daily_limit}"
+            message=f"System targets & limits updated: Gen Target={settings_obj.daily_generation_target}, Pub Target={settings_obj.daily_publishing_target or 'Unlimited'}, YT Limit={settings_obj.youtube_daily_limit or 'Unlimited'}, IG Limit={settings_obj.instagram_daily_limit or 'Unlimited'}, FB Limit={settings_obj.facebook_daily_limit or 'Unlimited'}"
         )
         db.add(log_entry)
         db.commit()
@@ -1573,6 +1578,17 @@ def update_system_limits(req: SystemLimitsUpdateRequest, db: Session = Depends(g
             "facebook_daily_limit": settings_obj.facebook_daily_limit,
             "auto_reschedule_on_quota": settings_obj.auto_reschedule_on_quota
         }
+    }
+
+@router.post("/publishing/recover-quota-jobs")
+def trigger_recover_quota_paused_jobs(db: Session = Depends(get_db)):
+    """Re-evaluates and recovers any jobs paused by the former overall daily publishing target."""
+    from backend.app.publishers.quota_tracker import recover_quota_paused_jobs
+    res = recover_quota_paused_jobs(db)
+    return {
+        "status": "success",
+        "message": f"Recovered {res['recovered_jobs_count']} job(s) and {res['recovered_uploads_count']} upload(s) from quota-pause state.",
+        **res
     }
 
 

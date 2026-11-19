@@ -1,16 +1,16 @@
 export interface SystemLimits {
   daily_generation_target: number;
-  daily_publishing_target: number;
-  youtube_daily_limit: number;
-  instagram_daily_limit: number;
-  facebook_daily_limit: number;
+  daily_publishing_target: number | null;
+  youtube_daily_limit: number | null;
+  instagram_daily_limit: number | null;
+  facebook_daily_limit: number | null;
   auto_reschedule_on_quota: boolean;
   updated_at?: string;
 }
 
 export interface PlatformQuotaDetail {
   published_today: number;
-  user_daily_limit: number;
+  user_daily_limit: number | null;
   quota_units_used_today?: number;
   quota_units_bucket_limit?: number;
   api_quota_exceeded?: boolean;
@@ -32,17 +32,17 @@ export interface OverviewData {
     published_count: number;
     failed_count: number;
     pending_queue: number;
-    daily_target: number;
+    daily_target: number | null;
     daily_generation_target?: number;
-    daily_publishing_target?: number;
+    daily_publishing_target?: number | null;
     generation_progress_pct?: number;
     publishing_progress_pct?: number;
     target_progress_pct: number;
   };
   platforms: {
     youtube: { connected: boolean; quota_used_today: number; status?: string; paused?: boolean };
-    instagram: { connected: boolean; published_today?: number; limit?: number; paused?: boolean };
-    facebook: { connected: boolean; published_today?: number; limit?: number; paused?: boolean };
+    instagram: { connected: boolean; published_today?: number; limit?: number | null; paused?: boolean };
+    facebook: { connected: boolean; published_today?: number; limit?: number | null; paused?: boolean };
     gemini: { connected: boolean };
   };
   quotas?: {

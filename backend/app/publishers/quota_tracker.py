@@ -41,12 +41,12 @@ def get_today_bucket() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 def get_or_create_settings(db: Session) -> SystemSettings:
-    """Retrieves or initializes the system settings singleton."""
+    """Retrieves or initializes the system settings singleton (Unlimited publishing limits by default)."""
     cfg = db.query(SystemSettings).first()
     if not cfg:
         cfg = SystemSettings(
             daily_generation_target=settings.DAILY_TARGET_CLIPS,
-            daily_publishing_target=settings.DAILY_TARGET_CLIPS,
+            daily_publishing_target=settings.DEFAULT_PUBLISHING_TARGET,
             youtube_daily_limit=settings.YOUTUBE_DEFAULT_DAILY_LIMIT,
             instagram_daily_limit=settings.INSTAGRAM_DEFAULT_DAILY_LIMIT,
             facebook_daily_limit=settings.FACEBOOK_DEFAULT_DAILY_LIMIT,
@@ -201,17 +201,24 @@ def is_platform_authorized(platform: str) -> Tuple[bool, Optional[str]]:
         return True, None
     return False, f"Unknown platform: '{platform}'"
 
-def can_publish(db: Session, platform: str, check_auth: bool = True) -> Tuple[bool, Optional[str], Optional[datetime]]:
+def can_publish(
+    db: Session,
+    platform: str,
+    check_auth: bool = True,
+    is_manual: bool = False
+) -> Tuple[bool, Optional[str], Optional[datetime]]:
     """
     Evaluates whether publishing to the platform is currently permitted.
     Returns: (is_allowed: bool, reason: Optional[str], next_window: Optional[datetime])
     Ensures NO API calls are executed while a platform is paused, unauthenticated, or restricted.
+    Essential safeguards (platform rate limits, token/channel validity) are always preserved.
+    Application-level daily limits are unlimited by default and never block manual publishing.
     """
     cfg = get_or_create_settings(db)
     state = get_or_create_quota_state(db, platform)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
-    # 1. Check if platform is actively paused by restriction or quota
+    # 1. Essential safeguard: Check if platform is actively paused by genuine platform restriction
     if state.pause_until and state.pause_until > now:
         restr = state.last_restriction_type or "restriction"
         reason = (
@@ -220,37 +227,104 @@ def can_publish(db: Session, platform: str, check_auth: bool = True) -> Tuple[bo
         )
         return False, reason, state.pause_until
 
-    # 2. Check platform authorization gate (Strict Queue Safety)
+    # 2. Essential safeguard: Check platform authorization gate (Strict Queue Safety)
     if check_auth:
         auth_ok, auth_reason = is_platform_authorized(platform)
         if not auth_ok:
             return False, f"Authorization required: {auth_reason}", None
 
-    # 3. Check user-configured platform limits
-    limit_map = {
-        "youtube": cfg.youtube_daily_limit,
-        "instagram": cfg.instagram_daily_limit,
-        "facebook": cfg.facebook_daily_limit
-    }
-    user_limit = limit_map.get(platform, 15)
+    # 3. Check user-configured platform limits (only if explicitly set and not manual)
+    if not is_manual:
+        limit_map = {
+            "youtube": cfg.youtube_daily_limit,
+            "instagram": cfg.instagram_daily_limit,
+            "facebook": cfg.facebook_daily_limit
+        }
+        user_limit = limit_map.get(platform)
 
-    if state.published_today >= user_limit:
-        next_win = calculate_next_window(platform, "user_limit_reached")
-        reason = f"User-configured daily limit for {platform} reached ({state.published_today}/{user_limit})."
-        return False, reason, next_win
+        if user_limit is not None and user_limit > 0 and state.published_today >= user_limit:
+            next_win = calculate_next_window(platform, "user_limit_reached")
+            reason = f"User-configured daily limit for {platform} reached ({state.published_today}/{user_limit})."
+            return False, reason, next_win
 
-    # 3. Check overall daily publishing target
-    total_published_today = db.query(PlatformUpload).filter(
-        PlatformUpload.status == "published",
-        PlatformUpload.uploaded_at >= now.replace(hour=0, minute=0, second=0, microsecond=0)
-    ).count()
+        # 4. Check user-configured overall daily publishing target (only if explicitly set and not manual)
+        if cfg.daily_publishing_target is not None and cfg.daily_publishing_target > 0:
+            total_published_today = db.query(PlatformUpload).filter(
+                PlatformUpload.status == "published",
+                PlatformUpload.uploaded_at >= now.replace(hour=0, minute=0, second=0, microsecond=0)
+            ).count()
 
-    if total_published_today >= cfg.daily_publishing_target:
-        next_win = calculate_next_window(platform, "user_limit_reached")
-        reason = f"Overall daily publishing target reached ({total_published_today}/{cfg.daily_publishing_target})."
-        return False, reason, next_win
+            if total_published_today >= cfg.daily_publishing_target:
+                next_win = calculate_next_window(platform, "user_limit_reached")
+                reason = f"Overall daily publishing target reached ({total_published_today}/{cfg.daily_publishing_target})."
+                return False, reason, next_win
 
     return True, None, None
+
+def recover_quota_paused_jobs(db: Session) -> Dict[str, Any]:
+    """
+    Identifies and recovers publishing jobs and platform uploads that were paused
+    exclusively due to the application-level overall daily publishing target.
+    Restores eligible jobs to 'pending' state while strictly preserving:
+    - Original clip IDs
+    - Platform destinations
+    - Scheduled times
+    - Upload attempts
+    - Original approval status (does not auto-publish unapproved historical jobs)
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    paused_uploads = db.query(PlatformUpload).filter(
+        PlatformUpload.status == "paused_quota",
+        PlatformUpload.error_message.like("%Overall daily publishing target reached%")
+    ).all()
+
+    recovered_job_ids = set()
+    recovered_uploads_count = 0
+
+    for u in paused_uploads:
+        job = u.publishing_job
+        if not job:
+            continue
+
+        # Check if platform is free of active platform rate limits
+        eligible, _, _ = can_publish(db, u.platform, check_auth=False, is_manual=True)
+        if eligible:
+            u.status = "pending"
+            u.error_code = None
+            u.error_message = None
+            recovered_uploads_count += 1
+            recovered_job_ids.add(job.id)
+
+            # Update idempotency record if present
+            from backend.app.models.schema import PublishingIdempotencyRecord
+            idemp = db.query(PublishingIdempotencyRecord).filter_by(
+                publishing_job_id=job.id, platform=u.platform
+            ).first()
+            if idemp and idemp.status == "PAUSED":
+                idemp.status = "PENDING"
+                idemp.updated_at = now
+
+    for jid in recovered_job_ids:
+        job = db.get(PublishingJob, jid)
+        if job and job.status in ["scheduled_next_window", "paused", "paused_quota"]:
+            all_uploads = db.query(PlatformUpload).filter_by(publishing_job_id=job.id).all()
+            if all(up.status in ["pending", "published"] for up in all_uploads):
+                job.status = "pending"
+                if job.scheduled_time and job.scheduled_time > now and (job.scheduled_time.hour == 0 and job.scheduled_time.minute == 5):
+                    job.scheduled_time = now
+
+    if recovered_uploads_count > 0:
+        db.commit()
+        logger.info(
+            f"Successfully recovered {len(recovered_job_ids)} jobs ({recovered_uploads_count} uploads) "
+            "from application-level daily publishing cap."
+        )
+
+    return {
+        "recovered_jobs": list(recovered_job_ids),
+        "recovered_jobs_count": len(recovered_job_ids),
+        "recovered_uploads_count": recovered_uploads_count
+    }
 
 def record_upload_success(db: Session, platform: str, quota_units: int = 0):
     """Updates counts and consumed quota units upon successful publication."""

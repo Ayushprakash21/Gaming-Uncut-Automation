@@ -86,10 +86,10 @@ export const ConnectionsPage: React.FC = () => {
 
   const [limits, setLimits] = useState<SystemLimits>({
     daily_generation_target: 15,
-    daily_publishing_target: 15,
-    youtube_daily_limit: 15,
-    instagram_daily_limit: 25,
-    facebook_daily_limit: 25,
+    daily_publishing_target: null,
+    youtube_daily_limit: null,
+    instagram_daily_limit: null,
+    facebook_daily_limit: null,
     auto_reschedule_on_quota: true
   })
   const [savingLimits, setSavingLimits] = useState(false)
@@ -354,7 +354,15 @@ export const ConnectionsPage: React.FC = () => {
     setSavingLimits(true)
     setLimitsMsg('')
     try {
-      await updateSystemLimits(limits)
+      const payload: SystemLimits = {
+        daily_generation_target: limits.daily_generation_target || 15,
+        daily_publishing_target: limits.daily_publishing_target ? Number(limits.daily_publishing_target) : null,
+        youtube_daily_limit: limits.youtube_daily_limit ? Number(limits.youtube_daily_limit) : null,
+        instagram_daily_limit: limits.instagram_daily_limit ? Number(limits.instagram_daily_limit) : null,
+        facebook_daily_limit: limits.facebook_daily_limit ? Number(limits.facebook_daily_limit) : null,
+        auto_reschedule_on_quota: limits.auto_reschedule_on_quota
+      }
+      await updateSystemLimits(payload)
       setLimitsMsg('Production targets and platform quota limits updated successfully!')
       load()
     } catch (err: any) {
@@ -1350,11 +1358,15 @@ export const ConnectionsPage: React.FC = () => {
               type="number"
               min={1}
               max={100}
-              value={limits.daily_publishing_target}
-              onChange={(e) => setLimits({ ...limits, daily_publishing_target: parseInt(e.target.value) || 15 })}
+              placeholder="Unlimited"
+              value={limits.daily_publishing_target ?? ''}
+              onChange={(e) => {
+                const val = e.target.value === '' ? null : parseInt(e.target.value);
+                setLimits({ ...limits, daily_publishing_target: (val && val > 0) ? val : null });
+              }}
               className="w-full bg-[#111827] border border-gaming-border rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono font-bold"
             />
-            <p className="text-[10px] text-slate-500">Target uploads/day</p>
+            <p className="text-[10px] text-slate-500">{limits.daily_publishing_target ? `${limits.daily_publishing_target} uploads/day` : 'Unlimited (Default)'}</p>
           </div>
 
           <div className="space-y-1.5 bg-[#0a0d14] p-3 rounded-xl border border-gaming-border">
@@ -1365,11 +1377,15 @@ export const ConnectionsPage: React.FC = () => {
               type="number"
               min={1}
               max={50}
-              value={limits.youtube_daily_limit}
-              onChange={(e) => setLimits({ ...limits, youtube_daily_limit: parseInt(e.target.value) || 15 })}
+              placeholder="Unlimited"
+              value={limits.youtube_daily_limit ?? ''}
+              onChange={(e) => {
+                const val = e.target.value === '' ? null : parseInt(e.target.value);
+                setLimits({ ...limits, youtube_daily_limit: (val && val > 0) ? val : null });
+              }}
               className="w-full bg-[#111827] border border-gaming-border rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono font-bold"
             />
-            <p className="text-[10px] text-slate-500">Daily Shorts cap</p>
+            <p className="text-[10px] text-slate-500">{limits.youtube_daily_limit ? `${limits.youtube_daily_limit} uploads/day` : 'Unlimited (Default)'}</p>
           </div>
 
           <div className="space-y-1.5 bg-[#0a0d14] p-3 rounded-xl border border-gaming-border">
@@ -1380,11 +1396,15 @@ export const ConnectionsPage: React.FC = () => {
               type="number"
               min={1}
               max={50}
-              value={limits.instagram_daily_limit}
-              onChange={(e) => setLimits({ ...limits, instagram_daily_limit: parseInt(e.target.value) || 25 })}
+              placeholder="Unlimited"
+              value={limits.instagram_daily_limit ?? ''}
+              onChange={(e) => {
+                const val = e.target.value === '' ? null : parseInt(e.target.value);
+                setLimits({ ...limits, instagram_daily_limit: (val && val > 0) ? val : null });
+              }}
               className="w-full bg-[#111827] border border-gaming-border rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono font-bold"
             />
-            <p className="text-[10px] text-slate-500">Daily Reels cap</p>
+            <p className="text-[10px] text-slate-500">{limits.instagram_daily_limit ? `${limits.instagram_daily_limit} uploads/day` : 'Unlimited (Default)'}</p>
           </div>
 
           <div className="space-y-1.5 bg-[#0a0d14] p-3 rounded-xl border border-gaming-border">
@@ -1395,11 +1415,15 @@ export const ConnectionsPage: React.FC = () => {
               type="number"
               min={1}
               max={50}
-              value={limits.facebook_daily_limit}
-              onChange={(e) => setLimits({ ...limits, facebook_daily_limit: parseInt(e.target.value) || 25 })}
+              placeholder="Unlimited"
+              value={limits.facebook_daily_limit ?? ''}
+              onChange={(e) => {
+                const val = e.target.value === '' ? null : parseInt(e.target.value);
+                setLimits({ ...limits, facebook_daily_limit: (val && val > 0) ? val : null });
+              }}
               className="w-full bg-[#111827] border border-gaming-border rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono font-bold"
             />
-            <p className="text-[10px] text-slate-500">Daily Reels cap</p>
+            <p className="text-[10px] text-slate-500">{limits.facebook_daily_limit ? `${limits.facebook_daily_limit} uploads/day` : 'Unlimited (Default)'}</p>
           </div>
         </div>
 

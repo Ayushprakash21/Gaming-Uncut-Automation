@@ -110,8 +110,9 @@ export const PublishingQueuePage: React.FC = () => {
       case 'publish_request_accepted':
         return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-blue-500/10 text-blue-300 border border-blue-500/30 animate-pulse">Publish Accepted</span>
       case 'paused_quota':
+        return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-amber-500/10 text-amber-400 border border-amber-500/30">Paused (Platform Rate Limit)</span>
       case 'paused':
-        return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-amber-500/10 text-amber-400 border border-amber-500/30">Paused (Quota/Limit)</span>
+        return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-amber-500/10 text-amber-400 border border-amber-500/30">Paused</span>
       case 'paused_unauthorized':
         return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-slate-800 text-slate-400 border border-slate-700">Unauthorized</span>
       case 'unknown':
@@ -139,12 +140,52 @@ export const PublishingQueuePage: React.FC = () => {
     }
   }
 
+  // Group and compute 7 live queue metrics
+  const eligibleCount = items.filter(i => 
+    (i.status === 'pending' || i.job_status === 'pending') && 
+    (i.approval_status === 'approved' || i.approval_status === 'auto_approved' || !i.approval_status)
+  ).length
+
+  const pendingCount = items.filter(i => 
+    i.status === 'pending' || 
+    i.job_status === 'pending' || 
+    i.approval_status === 'pending_review' || 
+    i.approval_status === 'needs_review'
+  ).length
+
+  const scheduledCount = items.filter(i => 
+    i.status === 'scheduled_next_window' || 
+    i.job_status === 'scheduled_next_window' || 
+    i.status === 'scheduled' || 
+    i.job_status === 'scheduled'
+  ).length
+
+  const publishingCount = items.filter(i => 
+    ['claiming', 'upload_initialized', 'video_transferring', 'uploading', 'transfer_completed', 'facebook_processing', 'instagram_processing', 'processing', 'publishing', 'publish_request_accepted', 'reconciling'].includes(i.status)
+  ).length
+
+  const publishedCount = items.filter(i => 
+    ['published', 'published_verified', 'published_unverified'].includes(i.status)
+  ).length
+
+  const failedCount = items.filter(i => i.status === 'failed').length
+
+  // Filter actual genuine platform rate limit errors (exclude legacy application-level message)
+  const platformRateLimitErrors = items.filter(i => 
+    (i.status === 'paused_quota' || i.status === 'rate_limited') &&
+    i.error_message && 
+    !i.error_message.includes('Overall daily publishing target reached')
+  )
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold font-brand tracking-wide text-slate-100 flex items-center space-x-2">
             <span>MULTI-PLATFORM PUBLISHING QUEUE</span>
+            <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+              Daily Limit: Unlimited
+            </span>
           </h2>
           <p className="text-xs text-slate-400">
             Real-time status for YouTube Shorts, Instagram Reels, and Facebook Reels official API dispatch with AI content intelligence.
@@ -168,6 +209,66 @@ export const PublishingQueuePage: React.FC = () => {
             <RotateCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
             <span>Refresh</span>
           </button>
+        </div>
+      </div>
+
+      {/* 7-Card Publishing Queue Metrics */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
+        <div className="bg-[#111827] border border-emerald-500/30 rounded-xl p-3 shadow-sm">
+          <span className="text-[10px] uppercase font-bold text-emerald-400">Eligible Jobs</span>
+          <p className="text-xl font-bold font-mono text-emerald-300 mt-0.5">{eligibleCount}</p>
+          <span className="text-[9px] text-slate-500">Approved for dispatch</span>
+        </div>
+
+        <div className="bg-[#111827] border border-amber-500/30 rounded-xl p-3 shadow-sm">
+          <span className="text-[10px] uppercase font-bold text-amber-400">Pending Jobs</span>
+          <p className="text-xl font-bold font-mono text-amber-300 mt-0.5">{pendingCount}</p>
+          <span className="text-[9px] text-slate-500">Awaiting approval</span>
+        </div>
+
+        <div className="bg-[#111827] border border-cyan-500/30 rounded-xl p-3 shadow-sm">
+          <span className="text-[10px] uppercase font-bold text-cyan-400">Scheduled</span>
+          <p className="text-xl font-bold font-mono text-cyan-300 mt-0.5">{scheduledCount}</p>
+          <span className="text-[9px] text-slate-500">Next time window</span>
+        </div>
+
+        <div className="bg-[#111827] border border-purple-500/30 rounded-xl p-3 shadow-sm">
+          <span className="text-[10px] uppercase font-bold text-purple-400">Publishing</span>
+          <p className="text-xl font-bold font-mono text-purple-300 mt-0.5 flex items-center gap-1.5">
+            <span>{publishingCount}</span>
+            {publishingCount > 0 && <span className="w-2 h-2 rounded-full bg-purple-400 animate-ping" />}
+          </p>
+          <span className="text-[9px] text-slate-500">Active transfers</span>
+        </div>
+
+        <div className="bg-[#111827] border border-indigo-500/30 rounded-xl p-3 shadow-sm">
+          <span className="text-[10px] uppercase font-bold text-indigo-400">Published</span>
+          <p className="text-xl font-bold font-mono text-indigo-300 mt-0.5">{publishedCount}</p>
+          <span className="text-[9px] text-slate-500">Live across targets</span>
+        </div>
+
+        <div className="bg-[#111827] border border-rose-500/30 rounded-xl p-3 shadow-sm">
+          <span className="text-[10px] uppercase font-bold text-rose-400">Failed</span>
+          <p className="text-xl font-bold font-mono text-rose-300 mt-0.5">{failedCount}</p>
+          <span className="text-[9px] text-slate-500">Errored uploads</span>
+        </div>
+
+        <div className={`rounded-xl p-3 shadow-sm border ${
+          platformRateLimitErrors.length > 0
+            ? 'bg-amber-950/30 border-amber-500/50'
+            : 'bg-[#111827] border-slate-700/50'
+        }`}>
+          <span className="text-[10px] uppercase font-bold text-slate-400">Platform Limits</span>
+          <p className={`text-xs font-bold font-mono mt-1 ${
+            platformRateLimitErrors.length > 0 ? 'text-amber-400' : 'text-emerald-400'
+          }`}>
+            {platformRateLimitErrors.length > 0
+              ? `${platformRateLimitErrors.length} Platform Alert`
+              : 'None Active (Unlimited)'}
+          </p>
+          <span className="text-[9px] text-slate-500">
+            {platformRateLimitErrors.length > 0 ? 'Meta/YouTube rate limit' : 'App Cap: Unlimited'}
+          </span>
         </div>
       </div>
 

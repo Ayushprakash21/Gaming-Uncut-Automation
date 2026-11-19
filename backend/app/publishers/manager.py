@@ -172,7 +172,8 @@ class PublishingManager:
         self,
         publishing_job_id: int,
         allow_republish: bool = False,
-        worker_id: Optional[str] = None
+        worker_id: Optional[str] = None,
+        is_manual: bool = False
     ) -> Dict[str, Any]:
         """
         Executes a publishing job across YouTube Shorts, Instagram Reels, and Facebook Reels.
@@ -305,7 +306,7 @@ class PublishingManager:
                         )
                     else:
                         yt_stage = "authorization_check"
-                        allowed, pause_reason, next_win = can_publish(db, "youtube")
+                        allowed, pause_reason, next_win = can_publish(db, "youtube", check_auth=True, is_manual=is_manual)
                         if not allowed:
                             if next_win:
                                 yt_upload.status = "paused_quota"
@@ -568,7 +569,7 @@ class PublishingManager:
                         )
                     else:
                         ig_stage = ["authorization_check"]
-                        allowed, pause_reason, next_win = can_publish(db, "instagram")
+                        allowed, pause_reason, next_win = can_publish(db, "instagram", check_auth=True, is_manual=is_manual)
                         if not allowed:
                             if next_win:
                                 ig_upload.status = "paused_quota"
@@ -918,7 +919,7 @@ class PublishingManager:
                         )
                     else:
                         fb_stage = ["authorization_check"]
-                        allowed, pause_reason, next_win = can_publish(db, "facebook")
+                        allowed, pause_reason, next_win = can_publish(db, "facebook", check_auth=True, is_manual=is_manual)
                         if not allowed:
                             if next_win:
                                 fb_upload.status = "paused_quota"

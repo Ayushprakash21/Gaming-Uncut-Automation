@@ -222,6 +222,40 @@ def ensure_schema_compatibility(db_engine):
                 """))
                 conn.commit()
 
+        if "system_settings" in inspector.get_table_names():
+            with db_engine.connect() as conn:
+                # Migrate legacy hardcoded 15/25 limits to NULL (Unlimited by default)
+                conn.execute(text("""
+                    UPDATE system_settings
+                    SET daily_publishing_target = NULL
+                    WHERE daily_publishing_target = 15
+                """))
+                conn.execute(text("""
+                    UPDATE system_settings
+                    SET youtube_daily_limit = NULL
+                    WHERE youtube_daily_limit = 15
+                """))
+                conn.execute(text("""
+                    UPDATE system_settings
+                    SET instagram_daily_limit = NULL
+                    WHERE instagram_daily_limit = 25
+                """))
+                conn.execute(text("""
+                    UPDATE system_settings
+                    SET facebook_daily_limit = NULL
+                    WHERE facebook_daily_limit = 25
+                """))
+                conn.commit()
+
+        # Automatically re-evaluate and recover any jobs paused exclusively by application daily quota
+        try:
+            from backend.app.publishers.quota_tracker import recover_quota_paused_jobs
+            with SessionLocal() as db_session:
+                recover_quota_paused_jobs(db_session)
+        except Exception as rec_err:
+            import logging
+            logging.getLogger("gaming_uncut.db").warning(f"Quota recovery warning: {rec_err}")
+
         # Ensure all models are registered on metadata before create_all
         import backend.app.models.schema  # noqa: F401
         Base.metadata.create_all(bind=db_engine)
