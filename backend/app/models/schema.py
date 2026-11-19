@@ -135,7 +135,22 @@ class ClipMetadata(Base):
     analysis_provider = Column(String(50), default="heuristic")
     analysis_status = Column(String(50), default="complete")
     analysis_fingerprint = Column(String(64), nullable=True)
+    
+    # Dedicated SEO Intelligence & Quality Fields
+    seo_score = Column(Float, default=0.0)
+    metadata_confidence = Column(Float, default=0.0)
+    metadata_version = Column(Integer, default=1)
+    primary_keyword = Column(String(150), nullable=True)
+    secondary_keywords_json = Column(Text, nullable=True)
+    facebook_title = Column(String(255), nullable=True)
+    instagram_alt_text = Column(Text, nullable=True)
+    youtube_tags_json = Column(Text, nullable=True)
+    thumbnail_text = Column(String(150), nullable=True)
+    original_metadata_json = Column(Text, nullable=True)
+    duplicate_detection_json = Column(Text, nullable=True)
+    is_manually_edited = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     clip = relationship("GeneratedClip", back_populates="metadata_rel")
 

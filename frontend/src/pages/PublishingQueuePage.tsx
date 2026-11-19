@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { CheckCircle2, AlertCircle, Clock, ExternalLink, RotateCw, Youtube, Instagram, Facebook, Eye, ShieldAlert, Sparkles, RefreshCw, AlertTriangle } from 'lucide-react'
-import { fetchPublishingQueue, dispatchPublishingJob } from '../services/api'
+import { fetchPublishingQueue, dispatchPublishingJob, reconcileInstagram } from '../services/api'
 import { PublishingQueueItem } from '../types'
 import { formatDateTimeIST } from '../utils/timezone'
 
@@ -87,8 +87,11 @@ export const PublishingQueuePage: React.FC = () => {
 
     const s = (status || '').toLowerCase()
     switch (s) {
+      case 'published_verified':
       case 'published':
-        return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">Published</span>
+        return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">Published (Verified)</span>
+      case 'published_unverified':
+        return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 flex items-center space-x-1"><Clock className="w-3 h-3 text-cyan-400" /><span>Verification Pending</span></span>
       case 'claimed':
         return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 animate-pulse">Claimed</span>
       case 'upload_initialized':
@@ -104,17 +107,35 @@ export const PublishingQueuePage: React.FC = () => {
         return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-amber-500/10 text-amber-300 border border-amber-500/30 animate-pulse">Processing</span>
       case 'publishing':
         return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 animate-pulse">Publishing</span>
+      case 'publish_request_accepted':
+        return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-blue-500/10 text-blue-300 border border-blue-500/30 animate-pulse">Publish Accepted</span>
       case 'paused_quota':
       case 'paused':
         return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-amber-500/10 text-amber-400 border border-amber-500/30">Paused (Quota/Limit)</span>
       case 'paused_unauthorized':
         return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-slate-800 text-slate-400 border border-slate-700">Unauthorized</span>
       case 'unknown':
-        return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-yellow-500/10 text-yellow-300 border border-yellow-500/30">Reconciling (Unknown)</span>
+        return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-yellow-500/10 text-yellow-300 border border-yellow-500/30">Reconciliation Required</span>
+      case 'reconciling':
+        return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 animate-pulse">Reconciling</span>
       case 'failed':
         return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/30">Failed</span>
       default:
         return <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-slate-800 text-slate-400 border border-slate-700">{status}</span>
+    }
+  }
+
+  const [isReconciling, setIsReconciling] = useState(false)
+  const handleReconcileInstagram = async () => {
+    setIsReconciling(true)
+    try {
+      const res = await reconcileInstagram()
+      setNotice({ message: res.message || 'Instagram reconciliation triggered successfully.', type: 'info' })
+      await load()
+    } catch (err: any) {
+      setNotice({ message: err?.message || 'Failed to trigger Instagram reconciliation.', type: 'error' })
+    } finally {
+      setIsReconciling(false)
     }
   }
 
@@ -129,14 +150,25 @@ export const PublishingQueuePage: React.FC = () => {
             Real-time status for YouTube Shorts, Instagram Reels, and Facebook Reels official API dispatch with AI content intelligence.
           </p>
         </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition"
-        >
-          <RotateCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-          <span>Refresh</span>
-        </button>
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={handleReconcileInstagram}
+            disabled={isReconciling}
+            className="bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/40 text-xs px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition"
+            title="Reconcile pending or unverified Instagram Reels against Meta"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isReconciling ? 'animate-spin' : ''}`} />
+            <span>{isReconciling ? 'Reconciling...' : 'Reconcile Instagram'}</span>
+          </button>
+          <button
+            onClick={load}
+            disabled={loading}
+            className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition"
+          >
+            <RotateCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <span>Refresh</span>
+          </button>
+        </div>
       </div>
 
       {/* Notice Banner */}
@@ -316,53 +348,87 @@ export const PublishingQueuePage: React.FC = () => {
                           : 'Pending'}
                       </td>
                       <td className="p-3.5 text-right">
-                        {item.external_url ? (
-                          <div className="flex items-center justify-end space-x-2">
-                            <a
-                              href={item.external_url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center space-x-1 text-purple-400 hover:text-purple-300 font-semibold"
-                            >
-                              <span>View Post</span>
-                              <ExternalLink className="w-3.5 h-3.5" />
-                            </a>
+                        {(() => {
+                          const isFabricatedUrl = Boolean(item.external_url && /instagram\.com\/reel\/\d{15,}\/?$/.test(item.external_url))
+                          const isUnverified = item.status === 'published_unverified' || item.status === 'PUBLISHED_UNVERIFIED' || isFabricatedUrl
+                          const hasVerifiedUrl = Boolean(item.external_url && !isFabricatedUrl)
+
+                          if (hasVerifiedUrl) {
+                            return (
+                              <div className="flex items-center justify-end space-x-2">
+                                <a
+                                  href={item.external_url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center space-x-1 text-purple-400 hover:text-purple-300 font-semibold"
+                                >
+                                  <span>View Post</span>
+                                  <ExternalLink className="w-3.5 h-3.5" />
+                                </a>
+                                <button
+                                  onClick={() => setRepublishModal({ jobId: item.job_id, title: item.title, platform: item.platform })}
+                                  disabled={isJobInFlight(item.job_id)}
+                                  className="text-[10px] text-slate-500 hover:text-slate-300 underline disabled:opacity-40"
+                                  title="Force republish this video"
+                                >
+                                  Republish
+                                </button>
+                              </div>
+                            )
+                          }
+
+                          if (isUnverified) {
+                            return (
+                              <div className="flex items-center justify-end space-x-2">
+                                <span className="text-[10px] text-cyan-400 font-mono">Unverified</span>
+                                <button
+                                  onClick={handleReconcileInstagram}
+                                  disabled={isReconciling}
+                                  className="text-[11px] font-semibold px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white transition disabled:opacity-50"
+                                  title="Reconcile with Meta Graph API"
+                                >
+                                  {isReconciling ? 'Reconciling...' : 'Reconcile'}
+                                </button>
+                              </div>
+                            )
+                          }
+
+                          const isReconcilingOrUnknown = item.status === 'reconciling' || item.status === 'RECONCILING' || item.status === 'unknown' || item.status === 'UNKNOWN'
+
+                          return (
                             <button
-                              onClick={() => setRepublishModal({ jobId: item.job_id, title: item.title, platform: item.platform })}
-                              disabled={isJobInFlight(item.job_id)}
-                              className="text-[10px] text-slate-500 hover:text-slate-300 underline disabled:opacity-40"
-                              title="Force republish this video"
+                              onClick={() => {
+                                if (isPublished) {
+                                  setRepublishModal({ jobId: item.job_id, title: item.title, platform: item.platform })
+                                } else if (isReconcilingOrUnknown) {
+                                  handleReconcileInstagram()
+                                } else {
+                                  handleForceDispatch(item.job_id)
+                                }
+                              }}
+                              disabled={isJobInFlight(item.job_id) || isReconciling}
+                              className={`text-[11px] font-semibold px-2.5 py-1 rounded shadow transition ${
+                                isJobInFlight(item.job_id)
+                                  ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
+                                  : isReconcilingOrUnknown
+                                  ? 'bg-amber-600/30 hover:bg-amber-600/50 text-amber-300 border border-amber-500/40'
+                                  : 'bg-purple-600 hover:bg-purple-500 text-white'
+                              }`}
                             >
-                              Republish
+                              {item.status === 'reconciling' || item.status === 'RECONCILING'
+                                ? 'Reconciling...'
+                                : isJobInFlight(item.job_id)
+                                ? 'Publishing...'
+                                : item.status === 'unknown' || item.status === 'UNKNOWN'
+                                ? 'Reconcile'
+                                : isPublished
+                                ? 'Republish'
+                                : isReviewRequired
+                                ? 'Approve & Publish'
+                                : 'Publish Now'}
                             </button>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => {
-                              if (isPublished) {
-                                setRepublishModal({ jobId: item.job_id, title: item.title, platform: item.platform })
-                              } else {
-                                handleForceDispatch(item.job_id)
-                              }
-                            }}
-                            disabled={isJobInFlight(item.job_id)}
-                            className={`text-[11px] font-semibold px-2.5 py-1 rounded shadow transition ${
-                              isJobInFlight(item.job_id)
-                                ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
-                                : 'bg-purple-600 hover:bg-purple-500 text-white'
-                            }`}
-                          >
-                            {item.status === 'reconciling' || item.status === 'RECONCILING'
-                              ? 'Reconciling...'
-                              : isJobInFlight(item.job_id)
-                              ? 'Publishing...'
-                              : isPublished
-                              ? 'Republish'
-                              : isReviewRequired
-                              ? 'Approve & Publish'
-                              : 'Publish Now'}
-                          </button>
-                        )}
+                          )
+                        })()}
                       </td>
                     </tr>
 

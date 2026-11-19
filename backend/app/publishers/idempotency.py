@@ -27,6 +27,9 @@ class PublishingState:
     PROCESSING = "PROCESSING"
     FINISHED = "FINISHED"
     PUBLISHING = "PUBLISHING"
+    PUBLISH_REQUEST_ACCEPTED = "PUBLISH_REQUEST_ACCEPTED"
+    PUBLISHED_UNVERIFIED = "PUBLISHED_UNVERIFIED"
+    PUBLISHED_VERIFIED = "PUBLISHED_VERIFIED"
     PUBLISHED = "PUBLISHED"
     FAILED = "FAILED"
     ERROR = "ERROR"
@@ -37,7 +40,8 @@ class PublishingState:
 
     ALL_STATES = {
         QUEUED, CLAIMED, CONTAINER_CREATED, UPLOADING, PROCESSING,
-        FINISHED, PUBLISHING, PUBLISHED, FAILED, ERROR, EXPIRED,
+        FINISHED, PUBLISHING, PUBLISH_REQUEST_ACCEPTED, PUBLISHED_UNVERIFIED,
+        PUBLISHED_VERIFIED, PUBLISHED, FAILED, ERROR, EXPIRED,
         UNKNOWN, RECONCILING, PAUSED
     }
 
@@ -63,6 +67,12 @@ class PublishingState:
         "FINISHED": FINISHED,
         "publishing": PUBLISHING,
         "PUBLISHING": PUBLISHING,
+        "publish_request_accepted": PUBLISH_REQUEST_ACCEPTED,
+        "PUBLISH_REQUEST_ACCEPTED": PUBLISH_REQUEST_ACCEPTED,
+        "published_unverified": PUBLISHED_UNVERIFIED,
+        "PUBLISHED_UNVERIFIED": PUBLISHED_UNVERIFIED,
+        "published_verified": PUBLISHED_VERIFIED,
+        "PUBLISHED_VERIFIED": PUBLISHED_VERIFIED,
         "published": PUBLISHED,
         "PUBLISHED": PUBLISHED,
         "partially_published": QUEUED,
@@ -395,6 +405,7 @@ class IdempotencyManager:
         if record and PublishingState.normalize(record.status) == PublishingState.PUBLISHED:
             return {
                 "published": True,
+                "status": "published",
                 "platform": plat,
                 "post_id": record.external_post_id,
                 "url": record.external_url,
@@ -449,19 +460,28 @@ class IdempotencyManager:
                         res = meta_transport.get(
                             f"https://graph.facebook.com/v21.0/{target_id}",
                             headers=headers,
-                            params={"fields": "id,permalink,media_type,shortcode"},
+                            params={"fields": "id,permalink,media_type,shortcode,owner"},
                             timeout=(meta_transport.connect_timeout, 15.0)
                         )
-                        if res.status_code == 200 and "permalink" in res.json():
+                        if res.status_code == 200:
                             m_data = res.json()
-                            logger.info(f"Reconciled Instagram published media for #{target_id}: {m_data['permalink']}")
-                            return {
-                                "published": True,
-                                "platform": "instagram",
-                                "post_id": target_id,
-                                "url": m_data["permalink"],
-                                "reconciled_via": "instagram_media_lookup"
-                            }
+                            raw_perm = m_data.get("permalink")
+                            shortcode = m_data.get("shortcode")
+                            canonical_url = None
+                            if raw_perm and re.match(r'^https?://(?:www\.)?instagram\.com/(?:reel|p)/([A-Za-z0-9_-]+)/?$', str(raw_perm)):
+                                canonical_url = str(raw_perm)
+                            elif shortcode and re.match(r'^[A-Za-z0-9_-]+$', str(shortcode)):
+                                canonical_url = f"https://www.instagram.com/reel/{shortcode}/"
+
+                            if canonical_url:
+                                logger.info(f"Reconciled verified Instagram published media for #{target_id}: {canonical_url}")
+                                return {
+                                    "published": True,
+                                    "platform": "instagram",
+                                    "post_id": target_id,
+                                    "url": canonical_url,
+                                    "reconciled_via": "instagram_media_lookup"
+                                }
                     except Exception as e:
                         logger.debug(f"Instagram media lookup notice: {e}")
 
@@ -494,12 +514,14 @@ class IdempotencyManager:
                                     "reconciled_via": "instagram_in_progress_container"
                                 }
                             elif status_code == "PUBLISHED":
+                                # Container is marked PUBLISHED by Meta, but target_id is container_id, not media_id!
+                                # Never fabricate https://www.instagram.com/reel/{container_id}
                                 return {
-                                    "published": True,
+                                    "published": False,
+                                    "unverified_published_container": True,
+                                    "container_id": target_id,
                                     "platform": "instagram",
-                                    "post_id": target_id,
-                                    "url": f"https://www.instagram.com/reel/{target_id}",
-                                    "reconciled_via": "instagram_container_published"
+                                    "reconciled_via": "instagram_container_published_unverified"
                                 }
                             elif status_code == "ERROR":
                                 return {
@@ -543,6 +565,9 @@ class IdempotencyManager:
                     logger.debug(f"YouTube reconciliation check notice: {e}")
 
         return None
+
+    # Alias for publication checks
+    check_existing_publication = reconcile_platform_publication
 
 
 idempotency_manager = IdempotencyManager()

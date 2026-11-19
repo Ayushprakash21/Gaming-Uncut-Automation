@@ -430,13 +430,13 @@ Return ONLY a valid JSON object matching this exact schema:
 
         # Determine event character from audio telemetry
         if max_db > -10.0:
-            event_name = "High-Intensity Climax & Explosion"
+            event_name = "Explosive Action Climax"
             intensity = "Extreme"
         elif peak_count >= 3:
-            event_name = "Rapid Action Multi-Engagement"
+            event_name = "Rapid Tactical Engagement"
             intensity = "High"
         else:
-            event_name = "Precision Gameplay Sequence"
+            event_name = "Calculated Tactical Run"
             intensity = "Moderate"
 
         clean_user_hint = user_game_name.strip() if (user_game_name and user_game_name.strip()) else None
@@ -505,14 +505,22 @@ Return ONLY a valid JSON object matching this exact schema:
         if game_name != "Unknown Game":
             gameplay_summary = f"{intensity} {game_name} {event_name.lower()} play"
 
-        game_qualifier = f" in {game_name}" if game_name != "Unknown Game" else ""
-        titles = [
-            f"Pure Precision{game_qualifier}: {event_name}!",
-            f"Unbelievable Reaction Speed{game_qualifier}!",
-            f"Wait For The Climax! {event_name}",
-            f"Pure Skill: Watch This Play! | Gaming Uncut",
-            f"One Insane Sequence{game_qualifier} You Need To See!"
-        ]
+        if game_name != "Unknown Game":
+            titles = [
+                f"{game_name} - {event_name}",
+                f"{event_name} in {game_name}",
+                f"{game_name} Tactical Sequence Breakdown",
+                f"{game_name} - Clean Execution",
+                f"{game_name} High-Intensity Run"
+            ]
+        else:
+            titles = [
+                f"Fast-Paced {event_name} Sequence",
+                f"Tactical Action Gameplay - {event_name}",
+                f"Dynamic {event_name} Execution",
+                f"High-Tempo {event_name} Run",
+                f"Calculated {event_name} Breakdown"
+            ]
 
         desc = (
             f"Raw unedited {intensity.lower()} gameplay capture featuring {event_name.lower()} "
@@ -896,11 +904,11 @@ Output JSON with EXACT keys:
                 hashtags = f"{game_tag} {hashtags}"
         desc = f"Raw unedited gameplay capture featuring {gameplay_summary.lower()} with synchronized audio spikes and tactical transitions."
         titles = [
-            f"Pure Skill: {gameplay_summary}!",
-            f"One Insane Play | {gameplay_summary}",
-            f"Unbelievable Reaction Speed in This Moment!",
-            f"Wait For The Climax! {gameplay_summary}",
-            f"Is This The Best Moment Of The Day?!"
+            f"{gameplay_summary} - Clean Run",
+            f"Tactical {gameplay_summary}",
+            f"{gameplay_summary} Sequence Breakdown",
+            f"High-Tempo {gameplay_summary}",
+            f"Calculated {gameplay_summary} Execution"
         ]
 
         return {

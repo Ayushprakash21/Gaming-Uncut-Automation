@@ -662,11 +662,11 @@ class PipelineService:
 
                 # Generate Platform-Specific SEO & Growth Intelligence Package
                 try:
-                    from backend.app.metadata.seo_engine import seo_engine
-                    seo_engine.generate_clip_seo(
+                    from backend.app.ai.seo_metadata_engine import seo_metadata_engine
+                    seo_metadata_engine.generate_and_persist(
                         clip_id=clip_id,
                         db=db,
-                        target_platforms=platforms or ["youtube", "instagram", "facebook"]
+                        user_game_name=user_game
                     )
                 except Exception as seo_err:
                     logger.warning(f"Automated SEO generation warning for Clip #{clip_id}: {seo_err}")

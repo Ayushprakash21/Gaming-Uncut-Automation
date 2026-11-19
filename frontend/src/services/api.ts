@@ -241,6 +241,12 @@ export async function fetchPublishingDiagnostics(jobId: number): Promise<any> {
   return safeFetch<any>(`${API_BASE}/publishing/diagnostics/${jobId}`)
 }
 
+export async function reconcileInstagram(): Promise<{ success: boolean; message: string; results: any[] }> {
+  return safeFetch<{ success: boolean; message: string; results: any[] }>(`${API_BASE}/publishing/reconcile-instagram`, {
+    method: 'POST'
+  })
+}
+
 export async function fetchConnections(): Promise<ConnectionsData> {
   return safeFetch<ConnectionsData>(`${API_BASE}/settings/connections`)
 }

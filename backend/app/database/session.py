@@ -103,6 +103,32 @@ def ensure_schema_compatibility(db_engine):
                     conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN user_game_name VARCHAR(150)"))
                 if "game_mismatch_flag" not in cm_cols:
                     conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN game_mismatch_flag BOOLEAN DEFAULT 0"))
+                if "seo_score" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN seo_score FLOAT DEFAULT 0.0"))
+                if "metadata_confidence" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN metadata_confidence FLOAT DEFAULT 0.0"))
+                if "metadata_version" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN metadata_version INTEGER DEFAULT 1"))
+                if "primary_keyword" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN primary_keyword VARCHAR(150)"))
+                if "secondary_keywords_json" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN secondary_keywords_json TEXT"))
+                if "facebook_title" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN facebook_title VARCHAR(255)"))
+                if "instagram_alt_text" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN instagram_alt_text TEXT"))
+                if "youtube_tags_json" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN youtube_tags_json TEXT"))
+                if "thumbnail_text" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN thumbnail_text VARCHAR(150)"))
+                if "original_metadata_json" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN original_metadata_json TEXT"))
+                if "duplicate_detection_json" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN duplicate_detection_json TEXT"))
+                if "is_manually_edited" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN is_manually_edited BOOLEAN DEFAULT 0"))
+                if "updated_at" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN updated_at DATETIME"))
                 conn.commit()
         if "source_videos" in inspector.get_table_names():
             sv_cols = [c["name"] for c in inspector.get_columns("source_videos")]
@@ -122,6 +148,38 @@ def ensure_schema_compatibility(db_engine):
                 if "evidence_url" not in sa_cols:
                     conn.execute(text("ALTER TABLE source_authorizations ADD COLUMN evidence_url TEXT"))
                 conn.commit()
+
+        # Sanitize any legacy fabricated Instagram URLs (e.g. /reel/180...) and restore genuine state
+        if "platform_uploads" in inspector.get_table_names():
+            with db_engine.connect() as conn:
+                conn.execute(text("""
+                    UPDATE platform_uploads
+                    SET external_url = NULL,
+                        status = 'published_unverified',
+                        error_code = 'VERIFICATION_PENDING',
+                        error_message = 'Reset fabricated permalink. Awaiting genuine verification.'
+                    WHERE platform = 'instagram'
+                      AND external_url LIKE '%/reel/180%'
+                """))
+                if "publishing_idempotency_records" in inspector.get_table_names():
+                    conn.execute(text("""
+                        UPDATE publishing_idempotency_records
+                        SET external_url = NULL,
+                            status = 'PUBLISHED_UNVERIFIED'
+                        WHERE platform = 'instagram'
+                          AND external_url LIKE '%/reel/180%'
+                    """))
+                # Restore Job 29 to its genuine container
+                conn.execute(text("""
+                    UPDATE platform_uploads
+                    SET external_post_id = '18058887653607108',
+                        status = 'reconciling',
+                        error_code = 'RECONCILING',
+                        error_message = 'Recovered original in-progress container 18058887653607108'
+                    WHERE publishing_job_id = 29 AND platform = 'instagram'
+                """))
+                conn.commit()
+
         # Ensure all models are registered on metadata before create_all
         import backend.app.models.schema  # noqa: F401
         Base.metadata.create_all(bind=db_engine)

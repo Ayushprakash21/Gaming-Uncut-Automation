@@ -27,7 +27,7 @@ from backend.app.publishers.instagram.instagram_client import (
     InstagramProcessingFailedError, InstagramProcessingTimeoutError,
     InstagramContainerProcessingInProgress,
     InstagramUploadFailedError, InstagramValidationError, InstagramRateLimitError as ClientIGRateLimitError,
-    InstagramNetworkTimeoutError
+    InstagramNetworkTimeoutError, InstagramVerificationError
 )
 from backend.app.publishers.facebook.facebook_client import (
     facebook_client, FacebookAPIError, FacebookTokenExpiredError,
@@ -620,26 +620,55 @@ class PublishingManager:
                                     stage_callback=ig_stage_callback,
                                     on_container_created=ig_on_container
                                 )
-                                ig_upload.status = "published"
-                                ig_upload.error_code = None
-                                ig_upload.error_message = None
-                                ig_upload.external_post_id = res["post_id"]
-                                ig_upload.external_url = res["url"]
-                                ig_upload.uploaded_at = datetime.utcnow()
-                                idempotency_manager.update_stage(
-                                    db, ig_idemp_key, active_worker_id, PublishingState.PUBLISHED,
-                                    external_post_id=res["post_id"], external_url=res["url"]
-                                )
-                                record_upload_success(db, "instagram", quota_units=0)
-                                results["instagram"] = res
-                                log_publishing_audit(
-                                    db, platform="instagram", publishing_job_id=job.id, clip_id=clip.id,
-                                    stage="published", error=None, level="INFO", attempts=ig_upload.attempts,
-                                    user_message=f"Instagram Reel published successfully: {res['url']}",
-                                    worker_id=active_worker_id, account_id=ig_account_id,
-                                    external_media_id=res["post_id"], published_url=res["url"],
-                                    idempotency_decision="PUBLISHED", started_at=started_at, completed_at=datetime.utcnow()
-                                )
+                                if res.get("is_verified") or res.get("status") == "published_verified":
+                                    ig_upload.status = "published"
+                                    ig_upload.error_code = None
+                                    ig_upload.error_message = None
+                                    ig_upload.external_post_id = res["post_id"]
+                                    ig_upload.external_url = res["url"]
+                                    ig_upload.uploaded_at = datetime.utcnow()
+                                    idempotency_manager.update_stage(
+                                        db, ig_idemp_key, active_worker_id, PublishingState.PUBLISHED_VERIFIED,
+                                        external_post_id=res["post_id"], external_url=res["url"]
+                                    )
+                                    record_upload_success(db, "instagram", quota_units=0)
+                                    results["instagram"] = res
+                                    log_publishing_audit(
+                                        db, platform="instagram", publishing_job_id=job.id, clip_id=clip.id,
+                                        stage="published_verified", error=None, level="INFO", attempts=ig_upload.attempts,
+                                        user_message=f"Instagram Reel verified live: {res['url']}",
+                                        worker_id=active_worker_id, account_id=ig_account_id,
+                                        external_media_id=res["post_id"], published_url=res["url"],
+                                        idempotency_decision="PUBLISHED_VERIFIED", started_at=started_at, completed_at=datetime.utcnow()
+                                    )
+                                else:
+                                    # PUBLISHED_UNVERIFIED: media_publish succeeded on Meta, but canonical permalink unconfirmed
+                                    ig_upload.status = "published_unverified"
+                                    ig_upload.error_code = "VERIFICATION_PENDING"
+                                    ig_upload.error_message = res.get("verification_error") or "Media published on Meta edge; public canonical permalink verification is pending in reconciler."
+                                    ig_upload.external_post_id = res["post_id"]
+                                    ig_upload.external_url = None
+                                    diag_meta = {
+                                        "container_id": res.get("container_id"),
+                                        "media_id": res["post_id"],
+                                        "verification_status": "unverified",
+                                        "verification_error": res.get("verification_error")
+                                    }
+                                    ig_upload.reconciliation_metadata = json.dumps(diag_meta)
+                                    idempotency_manager.update_stage(
+                                        db, ig_idemp_key, active_worker_id, PublishingState.PUBLISHED_UNVERIFIED,
+                                        external_post_id=res["post_id"]
+                                    )
+                                    results["instagram"] = res
+                                    log_publishing_audit(
+                                        db, platform="instagram", publishing_job_id=job.id, clip_id=clip.id,
+                                        stage="published_unverified", error=None, level="WARNING", attempts=ig_upload.attempts,
+                                        error_code="VERIFICATION_PENDING",
+                                        user_message=f"Instagram Reel media ID {res['post_id']} published, awaiting canonical permalink verification.",
+                                        worker_id=active_worker_id, account_id=ig_account_id,
+                                        external_media_id=res["post_id"], idempotency_decision="PUBLISHED_UNVERIFIED",
+                                        started_at=started_at, completed_at=datetime.utcnow()
+                                    )
                             except (InstagramRateLimitError, ClientIGRateLimitError) as e:
                                 code = str(getattr(e, "code", "613"))
                                 next_win = record_platform_restriction(db, "instagram", "rate_limited", str(e))
@@ -750,6 +779,31 @@ class PublishingManager:
                                     attempts=ig_upload.attempts, error_code=code, user_message=e.user_message,
                                     worker_id=active_worker_id, account_id=ig_account_id,
                                     idempotency_decision="MARKED_UNKNOWN" if isinstance(e, InstagramProcessingTimeoutError) else "FAILED"
+                                )
+                            except InstagramVerificationError as e:
+                                ig_upload.status = "published_unverified"
+                                ig_upload.error_code = "VERIFICATION_PENDING"
+                                ig_upload.error_message = f"Instagram media published (ID: {e.media_id}), but canonical permalink verification is pending: {e}"
+                                ig_upload.external_post_id = e.media_id
+                                ig_upload.external_url = None
+                                diag_meta = {
+                                    "container_id": e.container_id,
+                                    "media_id": e.media_id,
+                                    "verification_status": "unverified",
+                                    "verification_error": str(e)
+                                }
+                                ig_upload.reconciliation_metadata = json.dumps(diag_meta)
+                                idempotency_manager.update_stage(
+                                    db, ig_idemp_key, active_worker_id, PublishingState.PUBLISHED_UNVERIFIED,
+                                    external_post_id=e.media_id
+                                )
+                                log_publishing_audit(
+                                    db, platform="instagram", publishing_job_id=job.id, clip_id=clip.id,
+                                    stage="published_unverified", error=e, level="WARNING", attempts=ig_upload.attempts,
+                                    error_code="VERIFICATION_PENDING", user_message=str(e),
+                                    worker_id=active_worker_id, account_id=ig_account_id,
+                                    external_media_id=e.media_id, idempotency_decision="PUBLISHED_UNVERIFIED",
+                                    started_at=started_at, completed_at=datetime.utcnow()
                                 )
                             except InstagramUploadFailedError as e:
                                 current_stage = ig_stage[0]

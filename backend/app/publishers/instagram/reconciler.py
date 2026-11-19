@@ -17,6 +17,7 @@ Runs asynchronously in the background to monitor in-flight Instagram containers:
 import json
 import logging
 import threading
+import re
 import requests
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -29,10 +30,13 @@ from backend.app.publishers.idempotency import idempotency_manager, PublishingSt
 from backend.app.publishers.instagram.instagram_client import (
     instagram_client,
     redact_token,
+    GRAPH_URL,
     InstagramProcessingFailedError,
     InstagramUploadFailedError,
-    InstagramAPIError
+    InstagramAPIError,
+    InstagramVerificationError
 )
+from backend.app.publishers.meta_transport import meta_transport
 from backend.app.publishers.meta_token_manager import meta_token_manager
 from backend.app.publishers.quota_tracker import record_upload_success
 
@@ -76,7 +80,8 @@ class InstagramReconciler:
                 PlatformUpload.platform == "instagram",
                 PlatformUpload.status.in_([
                     "unknown", "reconciling", "RECONCILING",
-                    "PROCESSING", "instagram_processing", "upload_initialized"
+                    "PROCESSING", "instagram_processing", "upload_initialized",
+                    "published_unverified", "PUBLISHED_UNVERIFIED"
                 ]),
                 PlatformUpload.external_post_id.isnot(None)
             ).all()
@@ -141,16 +146,29 @@ class InstagramReconciler:
         job = upload.publishing_job
         clip_id = job.clip_id if job else None
 
-        logger.info(f"[InstagramReconciler] Checking container {container_id} for Job #{upload.publishing_job_id}...")
+        logger.info(f"[InstagramReconciler] Checking container/media {container_id} for Job #{upload.publishing_job_id}...")
 
         # Import audit logger inside method to avoid circular imports
         from backend.app.publishers.manager import log_publishing_audit
+
+        # 1. Check if this upload is already at the unverified media stage
+        if str(upload.status).lower() in ("published_unverified",):
+            return self._reconcile_unverified_media(db, upload, container_id, ig_id, token, now, clip_id, job)
+
+        # 2. Check if upload is marked published but has a fabricated or missing URL
+        if upload.status == "published" and (not upload.external_url or re.match(r'^https?://(?:www\.)?instagram\.com/reel/\d{15,}/?$', str(upload.external_url))):
+            return self._reconcile_unverified_media(db, upload, container_id, ig_id, token, now, clip_id, job)
 
         # Query container status with safe fallback (handles Meta 500 on copyright_check_status)
         try:
             status_info = instagram_client.query_container_status(container_id, token=token, include_copyright=True)
         except requests.RequestException as e:
             safe_err = redact_token(str(e))
+            # Check if this object is actually a media ID rather than a container ID
+            if "Tried accessing nonexisting field" in safe_err or "OAuthException" in safe_err:
+                logger.info(f"[InstagramReconciler] Target {container_id} returned field error. Attempting media verification.")
+                return self._reconcile_unverified_media(db, upload, container_id, ig_id, token, now, clip_id, job)
+
             logger.warning(f"[InstagramReconciler] Transient network error querying container {container_id}: {safe_err}")
             upload.status_checks = (upload.status_checks or 0) + 1
             upload.last_attempt_at = now
@@ -315,6 +333,128 @@ class InstagramReconciler:
             logger.warning(f"[InstagramReconciler] Container {container_id} returned unrecognized status: {status_code}")
             return {"container_id": container_id, "status": status_code, "action": "unknown"}
 
+    def _reconcile_unverified_media(
+        self,
+        db: Session,
+        upload: PlatformUpload,
+        media_id: str,
+        ig_id: str,
+        token: str,
+        now: datetime,
+        clip_id: Optional[int],
+        job: Optional[PublishingJob]
+    ) -> Dict[str, Any]:
+        """
+        Reconciles a published media ID that lacks a verified canonical permalink.
+        Fetches the media object directly or cross-references the account's recent media list.
+        Never calls media_publish again. Never fabricates a permalink.
+        """
+        from backend.app.publishers.manager import log_publishing_audit
+
+        logger.info(f"[InstagramReconciler] Reconciling unverified Media ID {media_id} for Job #{upload.publishing_job_id}...")
+
+        # 1. Try direct verification
+        try:
+            verified = instagram_client.verify_media_published(media_id, token, expected_ig_id=ig_id)
+            canonical_url = verified["permalink"]
+            upload.status = "published"
+            upload.external_url = canonical_url
+            upload.error_code = None
+            upload.error_message = None
+            upload.uploaded_at = upload.uploaded_at or now
+
+            idempotency_manager.update_stage(
+                db, upload.idempotency_key, "reconciler", PublishingState.PUBLISHED_VERIFIED,
+                external_post_id=media_id, external_url=canonical_url
+            )
+            record_upload_success(db, "instagram", quota_units=0)
+            self._check_and_complete_job(db, job)
+
+            log_publishing_audit(
+                db, platform="instagram", publishing_job_id=upload.publishing_job_id,
+                clip_id=clip_id, stage="reconciliation_published_verified", error=None, level="INFO",
+                attempts=upload.attempts,
+                user_message=f"Reconciler verified live Instagram Reel: {canonical_url}",
+                worker_id="reconciler", account_id=ig_id,
+                external_media_id=media_id, published_url=canonical_url,
+                idempotency_decision="PUBLISHED_VERIFIED", completed_at=now
+            )
+            return {
+                "media_id": media_id,
+                "status": "PUBLISHED_VERIFIED",
+                "action": "verified",
+                "url": canonical_url
+            }
+        except InstagramVerificationError as ve:
+            logger.info(f"[InstagramReconciler] Direct verification of {media_id} unconfirmed: {ve}")
+        except Exception as e:
+            logger.warning(f"[InstagramReconciler] Unexpected error verifying media {media_id}: {e}")
+
+        # 2. Check connected Instagram account's recent media list
+        try:
+            res = meta_transport.get(
+                f"{GRAPH_URL}/{ig_id}/media",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"fields": "id,media_type,permalink,shortcode,timestamp", "limit": 25},
+                timeout=(meta_transport.connect_timeout, 15.0)
+            )
+            if res.status_code == 200:
+                media_list = res.json().get("data", [])
+                for item in media_list:
+                    if str(item.get("id")) == str(media_id):
+                        raw_permalink = item.get("permalink")
+                        shortcode = item.get("shortcode")
+                        canonical_url = None
+                        if raw_permalink and re.match(r'^https?://(?:www\.)?instagram\.com/(?:reel|p)/([A-Za-z0-9_-]+)/?$', str(raw_permalink)):
+                            canonical_url = str(raw_permalink)
+                        elif shortcode:
+                            canonical_url = f"https://www.instagram.com/reel/{shortcode}/"
+
+                        if canonical_url:
+                            upload.status = "published"
+                            upload.external_url = canonical_url
+                            upload.error_code = None
+                            upload.error_message = None
+                            upload.uploaded_at = upload.uploaded_at or now
+
+                            idempotency_manager.update_stage(
+                                db, upload.idempotency_key, "reconciler", PublishingState.PUBLISHED_VERIFIED,
+                                external_post_id=media_id, external_url=canonical_url
+                            )
+                            record_upload_success(db, "instagram", quota_units=0)
+                            self._check_and_complete_job(db, job)
+
+                            log_publishing_audit(
+                                db, platform="instagram", publishing_job_id=upload.publishing_job_id,
+                                clip_id=clip_id, stage="reconciliation_published_verified", error=None, level="INFO",
+                                attempts=upload.attempts,
+                                user_message=f"Reconciler matched Media ID in recent account media: {canonical_url}",
+                                worker_id="reconciler", account_id=ig_id,
+                                external_media_id=media_id, published_url=canonical_url,
+                                idempotency_decision="PUBLISHED_VERIFIED", completed_at=now
+                            )
+                            return {
+                                "media_id": media_id,
+                                "status": "PUBLISHED_VERIFIED",
+                                "action": "verified_via_recent_media",
+                                "url": canonical_url
+                            }
+        except Exception as e:
+            logger.warning(f"[InstagramReconciler] Account media list query failed: {e}")
+
+        # Still unverified - preserve media ID, do not fabricate URL
+        upload.status = "published_unverified"
+        upload.external_url = None
+        upload.error_code = "VERIFICATION_PENDING"
+        upload.error_message = f"Media ID {media_id} published on Meta edge, but public canonical permalink is pending verification."
+        upload.status_checks = (upload.status_checks or 0) + 1
+        upload.last_attempt_at = now
+        return {
+            "media_id": media_id,
+            "status": "PUBLISHED_UNVERIFIED",
+            "action": "pending_verification"
+        }
+
     def _publish_finished_container(
         self,
         db: Session,
@@ -332,65 +472,71 @@ class InstagramReconciler:
         upload.publishing_attempts = (upload.publishing_attempts or 0) + 1
         try:
             media_id = instagram_client.publish_container(ig_id, container_id, token)
-            verified = instagram_client.verify_media_published(media_id, token)
-
-            upload.status = "published"
             upload.external_post_id = media_id
-            upload.external_url = verified["permalink"]
-            upload.uploaded_at = now
-            upload.error_code = None
-            upload.error_message = None
 
-            idempotency_manager.update_stage(
-                db, upload.idempotency_key, "reconciler", PublishingState.PUBLISHED,
-                external_post_id=media_id, external_url=verified["permalink"]
-            )
-            record_upload_success(db, "instagram", quota_units=0)
-            self._check_and_complete_job(db, job)
+            try:
+                verified = instagram_client.verify_media_published(
+                    media_id, token, expected_ig_id=ig_id, container_id=container_id
+                )
+                canonical_url = verified["permalink"]
+                upload.status = "published"
+                upload.external_url = canonical_url
+                upload.uploaded_at = now
+                upload.error_code = None
+                upload.error_message = None
 
-            log_publishing_audit(
-                db, platform="instagram", publishing_job_id=upload.publishing_job_id,
-                clip_id=clip_id, stage="reconciliation_published", error=None, level="INFO",
-                attempts=upload.attempts,
-                user_message=f"Reconciler published Instagram Reel: {verified['permalink']}",
-                worker_id="reconciler", account_id=ig_id,
-                external_media_id=media_id, published_url=verified["permalink"],
-                idempotency_decision="RECONCILED_PUBLISHED", completed_at=now
-            )
-            return {
-                "container_id": container_id,
-                "status": "FINISHED",
-                "action": "published",
-                "media_id": media_id,
-                "url": verified["permalink"]
-            }
+                idempotency_manager.update_stage(
+                    db, upload.idempotency_key, "reconciler", PublishingState.PUBLISHED_VERIFIED,
+                    external_post_id=media_id, external_url=canonical_url
+                )
+                record_upload_success(db, "instagram", quota_units=0)
+                self._check_and_complete_job(db, job)
+
+                log_publishing_audit(
+                    db, platform="instagram", publishing_job_id=upload.publishing_job_id,
+                    clip_id=clip_id, stage="reconciliation_published_verified", error=None, level="INFO",
+                    attempts=upload.attempts,
+                    user_message=f"Reconciler published and verified Instagram Reel: {canonical_url}",
+                    worker_id="reconciler", account_id=ig_id,
+                    external_media_id=media_id, published_url=canonical_url,
+                    idempotency_decision="PUBLISHED_VERIFIED", completed_at=now
+                )
+                return {
+                    "container_id": container_id,
+                    "status": "PUBLISHED_VERIFIED",
+                    "action": "published",
+                    "media_id": media_id,
+                    "url": canonical_url
+                }
+            except InstagramVerificationError as ve:
+                logger.warning(f"[InstagramReconciler] Container {container_id} published as media {media_id}, but canonical permalink unconfirmed: {ve}")
+                upload.status = "published_unverified"
+                upload.external_url = None
+                upload.error_code = "VERIFICATION_PENDING"
+                upload.error_message = f"Media ID {media_id} published on Meta edge; canonical permalink verification is pending."
+                idempotency_manager.update_stage(
+                    db, upload.idempotency_key, "reconciler", PublishingState.PUBLISHED_UNVERIFIED,
+                    external_post_id=media_id
+                )
+                return {
+                    "container_id": container_id,
+                    "status": "PUBLISHED_UNVERIFIED",
+                    "action": "published_unverified",
+                    "media_id": media_id
+                }
         except Exception as e:
             safe_err = redact_token(str(e))
-            # Check if container actually reached PUBLISHED state despite network timeout
+            logger.error(f"[InstagramReconciler] Failed publishing FINISHED container {container_id}: {safe_err}")
+            # Query container once more to see if Meta actually published it despite network error
             try:
-                re_check = instagram_client.query_container_status(container_id, token=token, include_copyright=False)
-                if re_check.get("is_published"):
-                    verified = instagram_client.verify_media_published(container_id, token)
-                    upload.status = "published"
-                    upload.external_url = verified["permalink"]
-                    upload.uploaded_at = now
-                    upload.error_code = None
-                    upload.error_message = None
-                    idempotency_manager.update_stage(
-                        db, upload.idempotency_key, "reconciler", PublishingState.PUBLISHED,
-                        external_post_id=container_id, external_url=verified["permalink"]
-                    )
-                    record_upload_success(db, "instagram", quota_units=0)
-                    self._check_and_complete_job(db, job)
-                    return {
-                        "container_id": container_id,
-                        "status": "PUBLISHED",
-                        "action": "published",
-                        "url": verified["permalink"]
-                    }
+                second_check = instagram_client.query_container_status(container_id, token=token, include_copyright=False)
+                if second_check.get("is_published"):
+                    res = self._handle_published_container(db, upload, container_id, token, now, job)
+                    if res.get("action") == "marked_published":
+                        res["action"] = "published"
+                    return res
             except Exception:
                 pass
-            logger.error(f"[InstagramReconciler] Failed publishing FINISHED container {container_id}: {safe_err}")
             upload.status = "reconciling"
             upload.error_code = "RECONCILE_PUBLISH_FAILED"
             upload.error_message = safe_err
@@ -405,22 +551,80 @@ class InstagramReconciler:
         now: datetime,
         job: Optional[PublishingJob]
     ) -> Dict[str, Any]:
-        """Marks a container that is already PUBLISHED on Instagram as complete."""
-        logger.info(f"[InstagramReconciler] Container {container_id} is already PUBLISHED!")
-        verified = instagram_client.verify_media_published(container_id, token)
+        """Marks a container that is already PUBLISHED on Instagram by resolving its true media ID and canonical permalink."""
+        logger.info(f"[InstagramReconciler] Container {container_id} is reported PUBLISHED by Meta. Resolving genuine media object...")
+        creds = meta_token_manager.get_instagram_credentials()
+        ig_id = creds.get("instagram_account_id")
 
-        upload.status = "published"
-        upload.external_url = verified["permalink"]
-        upload.uploaded_at = upload.uploaded_at or now
-        upload.error_code = None
-        upload.error_message = None
+        canonical_url = None
+        matched_media_id = None
 
+        # Check stored metadata
+        stored_meta = {}
+        if upload.reconciliation_metadata:
+            try:
+                stored_meta = json.loads(upload.reconciliation_metadata)
+            except Exception:
+                pass
+        stored_media_id = stored_meta.get("media_id")
+
+        # 1. First try verify_media_published on stored_media_id, external_post_id, or container_id
+        candidates = [c for c in [stored_media_id, upload.external_post_id, container_id] if c]
+        for cand in candidates:
+            try:
+                v = instagram_client.verify_media_published(cand, token, expected_ig_id=ig_id, container_id=container_id)
+                if v and v.get("permalink"):
+                    canonical_url = v["permalink"]
+                    matched_media_id = v.get("media_id", cand)
+                    break
+            except Exception:
+                pass
+
+        # 2. If not verified via direct lookup, cross-reference account's recent media
+        if not canonical_url and ig_id:
+            try:
+                res = meta_transport.get(
+                    f"{GRAPH_URL}/{ig_id}/media",
+                    headers={"Authorization": f"Bearer {token}"},
+                    params={"fields": "id,media_type,permalink,shortcode,timestamp", "limit": 25},
+                    timeout=(meta_transport.connect_timeout, 15.0)
+                )
+                if res.status_code == 200:
+                    media_list = res.json().get("data", [])
+                    if stored_media_id:
+                        for item in media_list:
+                            if str(item.get("id")) == str(stored_media_id):
+                                matched_media_id = str(stored_media_id)
+                                canonical_url = item.get("permalink")
+                                break
+            except Exception as e:
+                logger.debug(f"[InstagramReconciler] Failed querying account media for published container {container_id}: {e}")
+
+        if matched_media_id and canonical_url and re.match(r'^https?://(?:www\.)?instagram\.com/(?:reel|p)/([A-Za-z0-9_-]+)/?$', str(canonical_url)):
+            upload.status = "published"
+            upload.external_post_id = matched_media_id
+            upload.external_url = canonical_url
+            upload.uploaded_at = upload.uploaded_at or now
+            upload.error_code = None
+            upload.error_message = None
+
+            idempotency_manager.update_stage(
+                db, upload.idempotency_key, "reconciler", PublishingState.PUBLISHED_VERIFIED,
+                external_post_id=matched_media_id, external_url=canonical_url
+            )
+            self._check_and_complete_job(db, job)
+            return {"container_id": container_id, "media_id": matched_media_id, "status": "PUBLISHED", "action": "marked_published", "url": canonical_url}
+
+        # Cannot confirm canonical permalink yet - NEVER fabricate!
+        upload.status = "published_unverified"
+        upload.external_url = None
+        upload.error_code = "VERIFICATION_PENDING"
+        upload.error_message = f"Meta container {container_id} is PUBLISHED, but canonical media permalink could not be verified."
         idempotency_manager.update_stage(
-            db, upload.idempotency_key, "reconciler", PublishingState.PUBLISHED,
-            external_post_id=container_id, external_url=verified["permalink"]
+            db, upload.idempotency_key, "reconciler", PublishingState.PUBLISHED_UNVERIFIED,
+            external_post_id=container_id
         )
-        self._check_and_complete_job(db, job)
-        return {"container_id": container_id, "status": "PUBLISHED", "action": "marked_published", "url": verified["permalink"]}
+        return {"container_id": container_id, "status": "PUBLISHED_UNVERIFIED", "action": "unverified", "url": None}
 
     def _get_or_infer_container_created_at(self, db: Session, upload: PlatformUpload, container_id: str) -> datetime:
         """Determines the actual creation timestamp of the container, falling back safely without using overall job time."""
@@ -449,16 +653,15 @@ class InstagramReconciler:
 
     def _find_sibling_containers(self, db: Session, upload: PlatformUpload) -> List[str]:
         """Finds any other container IDs associated with this publishing job from system logs."""
-        import re
         from backend.app.models.schema import SystemLog
         cids: List[str] = []
         if not upload.publishing_job_id:
             return cids
         try:
+            # Strictly scoped to this specific publishing job ID - NEVER generic like('%container%')
             logs = db.query(SystemLog).filter(
                 (SystemLog.message.like(f"%Job #{upload.publishing_job_id}%")) |
-                (SystemLog.metadata_json.like(f'%\"publishing_job_id\": {upload.publishing_job_id}%')) |
-                (SystemLog.message.like("%container%"))
+                (SystemLog.metadata_json.like(f'%\"publishing_job_id\": {upload.publishing_job_id}%'))
             ).order_by(SystemLog.id.desc()).limit(50).all()
             for l in logs:
                 text = (l.message or "") + " " + (l.metadata_json or "")

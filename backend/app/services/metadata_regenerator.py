@@ -11,6 +11,12 @@ from backend.app.video.validator import quality_validator
 logger = logging.getLogger("gaming_uncut.regenerator")
 
 GENERIC_FORBIDDEN_PHRASES = [
+    "pure precision: precision gameplay sequence",
+    "pure precision",
+    "precision gameplay sequence",
+    "epic gameplay",
+    "insane gaming",
+    "amazing moments",
     "clutch action climax | gaming uncut",
     "clutch action climax",
     "watch this high-intensity gameplay moment from gaming uncut",
@@ -51,7 +57,22 @@ def regenerate_clip_metadata(
 
     video_path = Path(clip.output_path)
     if not video_path.exists():
-        raise FileNotFoundError(f"Clip #{clip_id} video file does not exist on disk: {video_path}")
+        logger.warning(f"Clip #{clip_id} video file does not exist on disk ({video_path}); generating grounded metadata from database context.")
+        from backend.app.ai.seo_metadata_engine import seo_metadata_engine
+        meta_pkg = seo_metadata_engine.generate_and_persist(clip_id=clip_id, db=db, force_regenerate=True)
+        return {
+            "clip_id": clip_id,
+            "status": "success",
+            "video_path": str(video_path),
+            "source_title": clip.job.source_video.title if clip.job and clip.job.source_video else "",
+            "old_title": clip.metadata_rel.title if clip.metadata_rel else "",
+            "new_title": meta_pkg["youtube"]["title"],
+            "detected_game": meta_pkg["game"],
+            "game_confidence": meta_pkg["metadata_confidence"],
+            "seo_score": meta_pkg.get("seo_score", 0.0),
+            "analysis_provider": "grounded_telemetry",
+            "analysis_status": "complete"
+        }
 
     # Extract source context if available
     source_title = ""
@@ -137,8 +158,8 @@ def regenerate_clip_metadata(
 
     # Regenerate platform-specific SEO packages
     try:
-        from backend.app.metadata.seo_engine import seo_engine
-        seo_engine.generate_clip_seo(clip_id=clip_id, db=db, bypass_cache=True)
+        from backend.app.ai.seo_metadata_engine import seo_metadata_engine
+        seo_metadata_engine.generate_and_persist(clip_id=clip_id, db=db, force_regenerate=True)
     except Exception as seo_err:
         logger.warning(f"SEO regeneration warning for Clip #{clip_id}: {seo_err}")
 

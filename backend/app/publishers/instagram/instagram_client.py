@@ -14,6 +14,7 @@ Implements the complete 5-stage publishing lifecycle:
 import time
 import json
 import logging
+import re
 import subprocess
 import requests
 from datetime import datetime
@@ -133,6 +134,22 @@ class InstagramBinaryTransferError(InstagramUploadFailedError):
 class InstagramNetworkTimeoutError(InstagramAPIError):
     """Raised when network timeout occurs during Instagram operations."""
     pass
+
+class InstagramVerificationError(InstagramAPIError):
+    """Raised when media was published or accepted by Meta, but post-publish verification failed or is pending."""
+    def __init__(
+        self,
+        message: str,
+        media_id: Optional[str] = None,
+        container_id: Optional[str] = None,
+        raw_response: Optional[Dict[str, Any]] = None,
+        is_retryable: bool = True
+    ):
+        super().__init__(message)
+        self.media_id = media_id
+        self.container_id = container_id
+        self.raw_response = raw_response or {}
+        self.is_retryable = is_retryable
 
 class InstagramInaccessibleMediaError(InstagramVideoUrlError):
     """Raised when media file or URL is not accessible to Meta servers."""
@@ -983,39 +1000,177 @@ class InstagramPublishClient:
     def verify_media_published(
         self,
         media_id: str,
-        token: str
+        token: str,
+        expected_ig_id: Optional[str] = None,
+        container_id: Optional[str] = None,
+        max_retries: int = 3,
+        retry_delay_sec: float = 2.0
     ) -> Dict[str, Any]:
         """
-        Stage 5: Confirms the published media exists on Instagram and extracts canonical permalink.
+        Stage 5: Confirms the published media exists on Instagram, belongs to the correct account,
+        and extracts the verified canonical permalink.
+
+        Strict Requirements:
+        - NEVER fabricates fallback URLs such as https://www.instagram.com/reel/{media_id}.
+        - Does not treat numeric media IDs as shortcodes.
+        - Requires a successful authenticated Graph API response containing matching media ID,
+          valid media type (VIDEO/REELS), and canonical permalink/shortcode.
+        - Raises InstagramVerificationError if verification fails or permalink is unavailable.
         """
+        if not media_id or not str(media_id).strip():
+            raise InstagramVerificationError(
+                "Invalid media ID provided for Instagram verification.",
+                media_id=media_id,
+                container_id=container_id,
+                is_retryable=False
+            )
+
+        media_id = str(media_id).strip()
         logger.info(f"Stage 5: Verifying published Instagram media object for Media ID {media_id}")
         headers = {"Authorization": f"Bearer {token}"}
-        try:
-            res = meta_transport.get(
-                f"{GRAPH_URL}/{media_id}",
-                headers=headers,
-                params={"fields": "id,media_type,permalink,shortcode,timestamp"},
-                timeout=(meta_transport.connect_timeout, 15.0)
-            )
-            data = res.json()
-            if "id" in data:
-                permalink = data.get("permalink") or f"https://www.instagram.com/reel/{media_id}"
-                logger.info(f"Stage 5 complete: Verified published media. Permalink: {permalink}")
-                log_instagram_audit(
-                    "INFO",
-                    f"Instagram media verified live: {permalink}",
-                    {"media_id": media_id, "permalink": permalink, "shortcode": data.get("shortcode")}
-                )
-                return {
-                    "media_id": media_id,
-                    "permalink": permalink,
-                    "shortcode": data.get("shortcode")
-                }
-        except Exception as e:
-            logger.warning(f"Non-fatal warning verifying Instagram permalink for {media_id}: {e}")
 
-        fallback_url = f"https://www.instagram.com/reel/{media_id}"
-        return {"media_id": media_id, "permalink": fallback_url, "shortcode": None}
+        last_data: Optional[Dict[str, Any]] = None
+        last_error_msg: Optional[str] = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                res = meta_transport.get(
+                    f"{GRAPH_URL}/{media_id}",
+                    headers=headers,
+                    params={"fields": "id,media_type,permalink,shortcode,timestamp,owner"},
+                    timeout=(meta_transport.connect_timeout, 15.0)
+                )
+                data = res.json()
+                last_data = data
+
+                # Check for Meta error response
+                if "error" in data:
+                    err = data["error"]
+                    err_msg = redact_token(err.get("message", "Unknown Meta error"))
+                    code = err.get("code")
+                    subcode = err.get("error_subcode")
+                    logger.warning(
+                        f"Instagram media verification GET returned Meta error (attempt {attempt}/{max_retries}): "
+                        f"Code {code}:{subcode} - {err_msg}"
+                    )
+                    last_error_msg = f"Meta API Error ({code}:{subcode}): {err_msg}"
+                    if "Tried accessing nonexisting field" in err_msg:
+                        raise InstagramVerificationError(
+                            f"Object '{media_id}' is not an Instagram media object ({err_msg}).",
+                            media_id=media_id,
+                            container_id=container_id,
+                            raw_response=data,
+                            is_retryable=False
+                        )
+                    if attempt < max_retries:
+                        time.sleep(retry_delay_sec * attempt)
+                        continue
+                    break
+
+                # Validate media ID
+                ret_id = str(data.get("id", ""))
+                if ret_id != media_id:
+                    raise InstagramVerificationError(
+                        f"Returned Instagram media ID '{ret_id}' does not match requested '{media_id}'.",
+                        media_id=media_id,
+                        container_id=container_id,
+                        raw_response=data,
+                        is_retryable=False
+                    )
+
+                # Validate account ownership if expected_ig_id is specified
+                if expected_ig_id:
+                    owner_obj = data.get("owner", {})
+                    owner_id = str(owner_obj.get("id", "")) if isinstance(owner_obj, dict) else ""
+                    if owner_id and owner_id != str(expected_ig_id):
+                        raise InstagramVerificationError(
+                            f"Instagram media '{media_id}' belongs to account '{owner_id}', "
+                            f"not expected account '{expected_ig_id}'.",
+                            media_id=media_id,
+                            container_id=container_id,
+                            raw_response=data,
+                            is_retryable=False
+                        )
+
+                # Validate media type
+                raw_mtype = data.get("media_type")
+                if raw_mtype:
+                    media_type = str(raw_mtype).upper()
+                    if media_type not in ("VIDEO", "REELS", "CAROUSEL_ALBUM"):
+                        raise InstagramVerificationError(
+                            f"Instagram media '{media_id}' has unexpected media type: '{media_type}' (expected VIDEO/REELS).",
+                            media_id=media_id,
+                            container_id=container_id,
+                            raw_response=data,
+                            is_retryable=False
+                        )
+                else:
+                    media_type = "VIDEO"
+
+                # Validate canonical permalink / shortcode
+                raw_permalink = data.get("permalink")
+                shortcode = data.get("shortcode")
+
+                permalink = None
+                if raw_permalink:
+                    m = re.match(r'^https?://(?:www\.)?instagram\.com/(?:reel|p)/([A-Za-z0-9_-]+)/?$', str(raw_permalink))
+                    if m:
+                        permalink = str(raw_permalink)
+                        if not shortcode:
+                            shortcode = m.group(1)
+
+                if not permalink and shortcode and re.match(r'^[A-Za-z0-9_-]+$', str(shortcode)):
+                    permalink = f"https://www.instagram.com/reel/{shortcode}/"
+
+                if permalink:
+                    logger.info(f"Stage 5 complete: Verified published media {media_id}. Permalink: {permalink}")
+                    log_instagram_audit(
+                        "INFO",
+                        f"Instagram media verified live: {permalink}",
+                        {
+                            "media_id": media_id,
+                            "permalink": permalink,
+                            "shortcode": shortcode,
+                            "container_id": container_id,
+                            "media_type": media_type,
+                            "timestamp": data.get("timestamp")
+                        }
+                    )
+                    return {
+                        "media_id": media_id,
+                        "permalink": permalink,
+                        "shortcode": shortcode,
+                        "timestamp": data.get("timestamp"),
+                        "media_type": media_type,
+                        "is_verified": True,
+                        "raw_response": data
+                    }
+
+                logger.info(
+                    f"Media {media_id} exists on Meta, but canonical permalink is not yet populated. "
+                    f"Retrying in {retry_delay_sec * attempt:.1f}s (attempt {attempt}/{max_retries})..."
+                )
+                if attempt < max_retries:
+                    time.sleep(retry_delay_sec * attempt)
+
+            except InstagramVerificationError:
+                raise
+            except Exception as e:
+                safe_e = redact_token(str(e))
+                logger.warning(f"Error querying media {media_id} verification on attempt {attempt}: {safe_e}")
+                last_error_msg = safe_e
+                if attempt < max_retries:
+                    time.sleep(retry_delay_sec * attempt)
+
+        # Verification failed to confirm a live canonical permalink - never fabricate a fallback!
+        raise InstagramVerificationError(
+            f"Instagram media '{media_id}' was published on Meta edge, but public canonical permalink could not be verified: "
+            f"{last_error_msg or 'Missing canonical permalink and shortcode in Graph API response'}",
+            media_id=media_id,
+            container_id=container_id,
+            raw_response=last_data,
+            is_retryable=True
+        )
 
     # ==========================================
     # Full Publishing Workflow
@@ -1037,7 +1192,7 @@ class InstagramPublishClient:
         Stage 2: Binary Streaming (if resumable)
         Stage 3: Container Processing Status Polling (strictly awaits FINISHED, bounded 5-min window)
         Stage 4: Final Media Publishing
-        Stage 5: Final Media Verification
+        Stage 5: Final Media Verification (only marks published once verified)
         """
         if not video_url and not video_path:
             raise ValueError("Either video_path or video_url must be provided.")
@@ -1104,18 +1259,58 @@ class InstagramPublishClient:
             media_id = self.publish_container(ig_id, container_id, token)
 
             # Stage 5: Final Media Verification
-            verified = self.verify_media_published(media_id, token)
+            try:
+                verified = self.verify_media_published(
+                    media_id,
+                    token,
+                    expected_ig_id=ig_id,
+                    container_id=container_id
+                )
+            except InstagramVerificationError as ve:
+                logger.warning(
+                    f"Media {media_id} (container {container_id}) publish request accepted, but canonical permalink verification is pending: {ve}"
+                )
+                if stage_callback:
+                    stage_callback("published_unverified")
+                return {
+                    "platform": "instagram",
+                    "status": "published_unverified",
+                    "post_id": media_id,
+                    "url": None,
+                    "container_id": container_id,
+                    "shortcode": None,
+                    "published_at": None,
+                    "is_verified": False,
+                    "verification_error": str(ve)
+                }
+            except Exception as ve:
+                logger.warning(f"Unexpected error during media {media_id} verification: {ve}")
+                if stage_callback:
+                    stage_callback("published_unverified")
+                return {
+                    "platform": "instagram",
+                    "status": "published_unverified",
+                    "post_id": media_id,
+                    "url": None,
+                    "container_id": container_id,
+                    "shortcode": None,
+                    "published_at": None,
+                    "is_verified": False,
+                    "verification_error": str(ve)
+                }
 
             if stage_callback:
                 stage_callback("published")
 
             return {
                 "platform": "instagram",
+                "status": "published_verified",
                 "post_id": media_id,
                 "url": verified["permalink"],
                 "container_id": container_id,
                 "shortcode": verified.get("shortcode"),
-                "published_at": datetime.utcnow().isoformat()
+                "published_at": verified.get("timestamp") or datetime.utcnow().isoformat(),
+                "is_verified": True
             }
         finally:
             if is_temp and upload_path and upload_path.exists():

@@ -77,6 +77,9 @@ class UpdateClipMetadataRequest(BaseModel):
     youtube_desc: Optional[str] = None
     instagram_caption: Optional[str] = None
     facebook_caption: Optional[str] = None
+    facebook_title: Optional[str] = None
+    instagram_alt_text: Optional[str] = None
+    primary_keyword: Optional[str] = None
 
 class AddToQueueRequest(BaseModel):
     platforms: Optional[List[str]] = ["youtube", "instagram", "facebook"]
@@ -736,9 +739,28 @@ def get_clip(clip_id: int, db: Session = Depends(get_db)):
     }
 
 # 6. Clip Controls & Metadata Updates
+@router.get("/clips/{clip_id}/seo-preview")
+def get_clip_seo_preview(clip_id: int, db: Session = Depends(get_db)):
+    """Retrieves full SEO metadata preview, SEO quality score (0-100), and duplicate title status."""
+    from backend.app.ai.seo_metadata_engine import seo_metadata_engine
+    clip = db.query(GeneratedClip).filter_by(id=clip_id).first()
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found.")
+
+    meta = clip.metadata_rel
+    if not meta or not meta.title or meta.title == "Untitled":
+        # Generate initial SEO package if missing
+        pkg = seo_metadata_engine.generate_and_persist(clip_id, db)
+        return pkg
+
+    return seo_metadata_engine.get_clip_metadata_dict(meta)
+
+
 @router.post("/clips/{clip_id}/metadata")
+@router.put("/clips/{clip_id}/metadata")
 def update_clip_metadata(clip_id: int, req: UpdateClipMetadataRequest, db: Session = Depends(get_db)):
-    """Allows user to edit and save metadata (title, topic, description, hashtags) for a generated Reel."""
+    """Allows user to edit and save metadata with automatic SEO re-scoring and duplicate protection."""
+    from backend.app.ai.seo_metadata_engine import seo_metadata_engine
     clip = db.query(GeneratedClip).filter_by(id=clip_id).first()
     if not clip:
         raise HTTPException(status_code=404, detail="Clip not found.")
@@ -748,7 +770,7 @@ def update_clip_metadata(clip_id: int, req: UpdateClipMetadataRequest, db: Sessi
         meta = ClipMetadata(clip_id=clip_id, title=req.title)
         db.add(meta)
     
-    meta.title = req.title.strip()
+    meta.title = req.title.strip()[:95]
     if req.topic is not None:
         meta.topic = req.topic.strip()
     if req.description is not None:
@@ -758,30 +780,44 @@ def update_clip_metadata(clip_id: int, req: UpdateClipMetadataRequest, db: Sessi
     if req.detected_game is not None:
         meta.detected_game = req.detected_game.strip()
     if req.youtube_title is not None:
-        meta.youtube_title = req.youtube_title.strip()
+        # Strictly clamp YouTube title <= 100 chars
+        meta.youtube_title = req.youtube_title.strip()[:100]
     if req.youtube_desc is not None:
         meta.youtube_desc = req.youtube_desc.strip()
     if req.instagram_caption is not None:
         meta.instagram_caption = req.instagram_caption.strip()
     if req.facebook_caption is not None:
         meta.facebook_caption = req.facebook_caption.strip()
+    if req.facebook_title is not None:
+        meta.facebook_title = req.facebook_title.strip()[:100]
+    if req.instagram_alt_text is not None:
+        meta.instagram_alt_text = req.instagram_alt_text.strip()
+    if req.primary_keyword is not None:
+        meta.primary_keyword = req.primary_keyword.strip()[:150]
+    
+    # Mark manually edited so automated pipelines never overwrite user choices
+    meta.is_manually_edited = True
+    meta.metadata_version = int(meta.metadata_version or 1) + 1
+    meta.updated_at = datetime.utcnow()
+
+    # Re-calculate SEO quality score on updated metadata
+    meta_dict = seo_metadata_engine.get_clip_metadata_dict(meta)
+    score_res = seo_metadata_engine.calculate_seo_score(meta_dict)
+    meta.seo_score = score_res["seo_score"]
     
     db.commit()
+    db.refresh(meta)
     return {
         "status": "success",
-        "message": f"Metadata updated for Clip #{clip_id}",
-        "metadata": {
-            "title": meta.title,
-            "topic": meta.topic,
-            "description": meta.description,
-            "hashtags": meta.hashtags,
-            "detected_game": meta.detected_game,
-            "youtube_title": meta.youtube_title,
-            "youtube_desc": meta.youtube_desc,
-            "instagram_caption": meta.instagram_caption,
-            "facebook_caption": meta.facebook_caption
-        }
+        "message": f"Metadata updated and SEO quality scored ({meta.seo_score}/100) for Clip #{clip_id}",
+        "metadata": seo_metadata_engine.get_clip_metadata_dict(meta)
     }
+
+@router.get("/seo/historical-audit")
+def get_historical_metadata_audit(db: Session = Depends(get_db)):
+    """Returns audit report on historical titles, repeated patterns, and cross-platform publishing."""
+    from backend.app.ai.seo_metadata_engine import seo_metadata_engine
+    return seo_metadata_engine.generate_historical_audit_report(db)
 
 @router.post("/clips/{clip_id}/regenerate-metadata")
 @router.post("/clips/{clip_id}/reanalyze")
@@ -837,17 +873,32 @@ def add_clip_to_queue(clip_id: int, req: AddToQueueRequest, db: Session = Depend
         db.add(pub_job)
         db.flush()
     else:
-        # Protect existing job from being reset if already published or in-flight unless allow_republish is explicitly True
+        # Protect existing job from duplicate queue insertion unless allow_republish is explicitly True
         is_published = pub_job.status in ["published", "PUBLISHED"]
         is_in_flight = pub_job.status in ["publishing", "CLAIMED", "UPLOADING", "PROCESSING"] and pub_job.lock_expires_at and pub_job.lock_expires_at > datetime.utcnow()
-        if is_in_flight and not allow_republish:
-            raise HTTPException(status_code=409, detail=f"Job #{pub_job.id} for Clip #{clip_id} is currently in-flight.")
+        is_already_queued = pub_job.status in ["pending", "queued", "QUEUED"]
 
-        if not is_published or allow_republish:
-            pub_job.status = "pending"
-            pub_job.approval_status = "pending_review"
-            pub_job.scheduled_time = sched_time
-            pub_job.allow_republish = allow_republish
+        if not allow_republish:
+            if is_published:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Duplicate queue insertion rejected: Clip #{clip_id} is already PUBLISHED. Use allow_republish=true to republish."
+                )
+            if is_in_flight:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Duplicate queue insertion rejected: Job #{pub_job.id} for Clip #{clip_id} is currently in-flight."
+                )
+            if is_already_queued:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Duplicate queue insertion rejected: Clip #{clip_id} is already in the publishing queue (Job #{pub_job.id})."
+                )
+
+        pub_job.status = "pending"
+        pub_job.approval_status = "pending_review"
+        pub_job.scheduled_time = sched_time
+        pub_job.allow_republish = allow_republish
 
     # Add or update platform upload targets
     for plat in platforms:
@@ -1012,10 +1063,13 @@ def force_dispatch(
             detail=f"Publishing job #{job_id} is currently in-flight (status: {pub_job.status}). Concurrent dispatch prevented."
         )
 
-    # Section 1 Safeguard: Disable Publish Now for all jobs/uploads in RECONCILING or UNKNOWN state
+    # Section 1 Safeguard: Disable Publish Now for all jobs/uploads in RECONCILING, UNKNOWN, or PUBLISHED_UNVERIFIED state
     reconciling_upload = db.query(PlatformUpload).filter(
         PlatformUpload.publishing_job_id == job_id,
-        PlatformUpload.status.in_(["reconciling", "RECONCILING", "unknown", "UNKNOWN"])
+        PlatformUpload.status.in_([
+            "reconciling", "RECONCILING", "unknown", "UNKNOWN",
+            "published_unverified", "PUBLISHED_UNVERIFIED"
+        ])
     ).first()
     if reconciling_upload and not allow_rep:
         raise HTTPException(
