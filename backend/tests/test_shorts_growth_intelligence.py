@@ -541,3 +541,59 @@ def test_publishing_quality_gate_approves_strong_clips(test_setup):
         assert res["gate_decision"] == "AUTO_PUBLISH_APPROVED"
         assert res["recommended_approval_status"] == "approved"
         assert len(res["reasons"]) == 0
+
+
+# =============================================================================
+# 11. Publishing Quality Gate Evaluates Opening 3 Seconds Independently
+# =============================================================================
+
+def test_publishing_quality_gate_evaluates_first_three_seconds_independently(test_setup):
+    """
+    Validates that a high overall score (e.g. 6.7) cannot conceal critical opening weaknesses:
+    1. Low scene clarity (4.0 < 5.0)
+    2. Excessive payoff delay (12.0s > 5.0s)
+    3. Slow intro diagnostics
+    Must reject auto-publishing and route to 'needs_review' with actionable trimming recommendations.
+    """
+    gate = PublishingQualityGate()
+
+    with SessionLocal() as db:
+        clip = db.query(GeneratedClip).filter_by(id=test_setup["clip_id"]).first()
+        meta = clip.metadata_rel
+
+        meta.title = "GTA 6 Vice City Police Scooter Escape Stunt"
+        meta.detected_game = "Grand Theft Auto VI"
+        meta.game_confidence = 0.95
+        clip.highlight.event_type = "escape"
+
+        # The exact audit failure scenario: 6.7 overall score, but clarity 4.0 and payoff 12.0s
+        audit_case = {
+            "overall_hook_score": 6.7,
+            "dimensions": {
+                "immediate_visual_action": 10.0,
+                "motion_intensity": 10.0,
+                "clarity_of_scene": 4.0,  # CRITICAL FLAW
+                "curiosity": 6.5,
+                "gameplay_event_importance": 9.0,
+                "time_until_payoff_sec": 12.0  # CRITICAL FLAW
+            },
+            "diagnostics": {
+                "has_slow_intro": True,
+                "has_dead_footage": False,
+                "has_menu_or_loading": False
+            }
+        }
+
+        res = gate.evaluate_clip(clip=clip, metadata=meta, hook_analysis=audit_case)
+
+        assert res["gate_passed"] is False
+        assert res["gate_decision"] == "MANUAL_REVIEW_REQUIRED"
+        assert res["recommended_approval_status"] == "needs_review"
+
+        # Verify specific independent opening checks triggered
+        assert any("Low opening scene clarity" in r for r in res["reasons"])
+        assert any("Excessive payoff delay" in r for r in res["reasons"])
+
+        # Verify actionable trimming recommendation provided
+        assert len(res["recommendations"]) >= 1
+        assert any("Trim" in rec for rec in res["recommendations"])

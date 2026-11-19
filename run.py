@@ -109,11 +109,24 @@ def main():
     import threading
     threading.Thread(target=_open_browser_when_ready, args=(local_url,), daemon=True).start()
 
-    # 4. Run FastAPI app binding to configured host
+    # 4. Start Cloudflare Tunnel Supervisor to bridge Pages frontend with local NVENC GPU node
+    try:
+        from backend.app.services.tunnel_supervisor import tunnel_supervisor
+        tunnel_supervisor.start_supervised()
+    except Exception as e:
+        logger.warning(f"Could not start Cloudflare tunnel supervisor: {e}")
+
+    # 5. Run FastAPI app binding to configured host
     try:
         uvicorn.run("backend.app.main:app", host=settings.HOST, port=settings.PORT, reload=False, log_level="info")
     except (KeyboardInterrupt, SystemExit):
         logger.info("Gaming Uncut Automation server shut down cleanly.")
+    finally:
+        try:
+            from backend.app.services.tunnel_supervisor import tunnel_supervisor
+            tunnel_supervisor.stop()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()

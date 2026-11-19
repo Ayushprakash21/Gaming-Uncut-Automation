@@ -145,6 +145,50 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# API Security Middleware: Protect administrative & publishing actions from unauthorized remote access
+@app.middleware("http")
+async def verify_internal_secret_middleware(request: Request, call_next):
+    # Allow preflight OPTIONS
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    # Allow public endpoints (health check, diagnostics, media serving, and UI)
+    path = request.url.path
+    if (
+        path in ("/api/health", "/api/system/health", "/api/diagnostics/system", "/api/system/diagnostics")
+        or path.startswith("/media/")
+        or path in ("/", "/ui", "/standalone")
+    ):
+        return await call_next(request)
+
+    # Check if request originates from localhost loopback
+    client_host = request.client.host if request.client else ""
+    is_loopback = client_host in ("127.0.0.1", "::1", "localhost", "testclient")
+
+    # If from remote tunnel/internet, check internal secret for mutating administrative endpoints
+    from backend.app.security.vault import vault
+    import os
+    internal_secret = vault.get_secret("system", "internal_api_secret") or os.getenv("INTERNAL_API_SECRET")
+
+    if internal_secret and not is_loopback:
+        # Require authentication for state-changing or publishing actions
+        if request.method in ("POST", "PUT", "DELETE", "PATCH") or "/publishing/" in path or "/settings/" in path:
+            provided = request.headers.get("X-Internal-Secret") or request.headers.get("x-internal-secret")
+            if not provided or provided != internal_secret:
+                return JSONResponse(
+                    status_code=401,
+                    content={
+                        "success": False,
+                        "error": {
+                            "code": "UNAUTHORIZED",
+                            "message": "Missing or invalid internal API authentication secret."
+                        },
+                        "detail": "Unauthorized: remote administrative access requires authentication."
+                    }
+                )
+
+    return await call_next(request)
+
 # Media Mounts for local video playback
 app.mount("/media/output", StaticFiles(directory=str(settings.OUTPUT_DIR)), name="output_media")
 app.mount("/media/thumbnails", StaticFiles(directory=str(settings.THUMBNAILS_DIR)), name="thumbnails_media")

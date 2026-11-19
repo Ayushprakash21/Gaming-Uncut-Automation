@@ -172,8 +172,17 @@ class YouTubeAnalyticsService:
 
             except HttpError as e:
                 # 403 or insufficient permissions or data not ready
-                logger.info(f"YouTube Analytics API reports query returned status {e.resp.status} for {clean_id}: {e}")
-                metrics["api_status"] = f"analytics_api_unavailable_{e.resp.status}"
+                err_str = str(e)
+                if "accessnotconfigured" in err_str.lower() or "not been used in project" in err_str.lower():
+                    logger.warning(
+                        "YouTube Analytics API v2 is not enabled in Google Cloud project 43547251911. "
+                        "Enable it at: https://console.developers.google.com/apis/api/youtubeanalytics.googleapis.com/overview?project=43547251911"
+                    )
+                    metrics["api_status"] = "analytics_api_not_enabled"
+                    metrics["api_note"] = "YouTube Analytics API v2 must be enabled in Google Cloud Console (project 43547251911)."
+                else:
+                    logger.info(f"YouTube Analytics API reports query returned status {e.resp.status} for {clean_id}: {e}")
+                    metrics["api_status"] = f"analytics_api_unavailable_{e.resp.status}"
             except Exception as e:
                 logger.warning(f"Unexpected error querying YouTube Analytics API for {clean_id}: {e}")
                 metrics["api_status"] = "analytics_api_error"

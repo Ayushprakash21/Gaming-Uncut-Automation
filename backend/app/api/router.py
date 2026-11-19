@@ -104,6 +104,7 @@ class BatchRegenerateMetadataRequest(BaseModel):
 
 # 1. Health & System Info
 @router.get("/health")
+@router.get("/system/health")
 def get_health():
     from backend.app.video.worker import get_diagnostics_snapshot
     diag = get_diagnostics_snapshot()

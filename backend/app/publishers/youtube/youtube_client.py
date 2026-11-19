@@ -56,7 +56,9 @@ class YouTubePublishClient:
             return None
 
         try:
-            creds = Credentials.from_authorized_user_info(token_info, SCOPES)
+            # Refresh using the scopes actually granted in the token to prevent invalid_scope errors
+            granted_scopes = token_info.get("scopes") or SCOPES
+            creds = Credentials.from_authorized_user_info(token_info, granted_scopes)
         except Exception as e:
             logger.warning(f"Failed to deserialize Google OAuth token: {e}")
             return None
@@ -71,8 +73,13 @@ class YouTubePublishClient:
                     vault.save_json("google", "oauth_tokens", token_dict)
                     logger.info("Google OAuth token successfully refreshed.")
                 except RefreshError as e:
-                    logger.error(f"Google OAuth refresh token was revoked or expired: {e}")
-                    # Clear invalid tokens from vault
+                    err_msg = str(e)
+                    logger.error(f"Google OAuth refresh failed: {err_msg}")
+                    if "invalid_scope" in err_msg.lower():
+                        raise YouTubeAuthError(
+                            "YouTube authorization scope updated. Please click 'Connect YouTube Account' to re-consent with YouTube Analytics permissions."
+                        )
+                    # Clear revoked/deleted tokens from vault
                     vault.delete_secret("google", "oauth_tokens")
                     vault.delete_secret("google", "verified_channel")
                     raise YouTubeAuthError(
