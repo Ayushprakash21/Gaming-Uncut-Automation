@@ -20,6 +20,7 @@ for /f %%p in ('powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 
         )
         echo [*] Terminating process !TARGET_PID!...
         taskkill /F /PID !TARGET_PID! >nul 2>nul
+        taskkill /F /IM cloudflared.exe >nul 2>nul
         if %ERRORLEVEL% equ 0 (
             echo [v] Gaming Uncut Automation server stopped successfully.
         ) else (

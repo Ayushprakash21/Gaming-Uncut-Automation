@@ -1,0 +1,7 @@
+name = "gaming-uncut-backend"
+main = "src/index.ts"
+compatibility_date = "2026-11-18"
+
+[[vpc_services]]
+binding = "BACKEND_VPC"
+service_id = "01a1f406-e999-7b43-9c81-2ca05803079c"

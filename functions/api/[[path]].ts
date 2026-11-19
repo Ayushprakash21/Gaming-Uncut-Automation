@@ -37,13 +37,13 @@ export async function onRequest(context: { request: Request; env: Env }) {
     }
   }
 
-  const backendTarget = (dynamicBackend || context.env?.BACKEND_URL || "").trim().replace(/\/+$/, "");
+  const backendTarget = (dynamicBackend || context.env?.BACKEND_URL || "https://gaming-uncut-backend.gaminguncut1.workers.dev").trim().replace(/\/+$/, "");
   const internalSecret = dynamicSecret || context.env?.INTERNAL_API_SECRET;
 
   const isHealthCheck = url.pathname === "/api/health" || url.pathname === "/api/system/health";
 
   // If node is explicitly offline or unconfigured
-  if (!backendTarget || backendTarget === "offline" || backendTarget === "https://backend.gaming-uncut.pages.dev") {
+  if (!backendTarget || backendTarget === "offline") {
     if (isHealthCheck) {
       return new Response(
         JSON.stringify({
@@ -145,12 +145,12 @@ export async function onRequest(context: { request: Request; env: Env }) {
     const response = await fetch(targetUrl.toString(), init);
     clearTimeout(timeoutId);
 
-    // Check for Cloudflare Edge origin errors (e.g. 530, 520..526) or upstream HTML error pages on >= 500
-    const isCloudflareOriginError = response.status === 530 || (response.status >= 520 && response.status <= 526);
+    // Check for Cloudflare Edge origin errors (530, 520..526), VPC gateway errors (502..504), or upstream non-200 HTML pages
+    const isUpstreamError = response.status === 502 || response.status === 503 || response.status === 504 || response.status === 530 || (response.status >= 520 && response.status <= 526);
     const contentType = (response.headers.get("content-type") || "").toLowerCase();
-    const isHtmlError = response.status >= 500 && (contentType.includes("text/html") || contentType.includes("text/plain"));
+    const isHtmlError = response.status !== 200 && (contentType.includes("text/html") || contentType.includes("text/plain"));
 
-    if (isCloudflareOriginError || isHtmlError) {
+    if (isUpstreamError || isHtmlError) {
       if (isHealthCheck) {
         return new Response(
           JSON.stringify({

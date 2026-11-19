@@ -198,6 +198,7 @@ if %ERRORLEVEL% equ 0 (
     echo [*] Port 8765 is in use but unresponsive. Recycling port...
 
 :kill_existing
+    taskkill /F /IM cloudflared.exe >nul 2>nul
     for /f %%p in ('powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique"') do (
         set "EXISTING_PID=%%p"
         if defined EXISTING_PID (

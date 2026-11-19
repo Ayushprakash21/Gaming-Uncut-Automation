@@ -161,9 +161,10 @@ async def verify_internal_secret_middleware(request: Request, call_next):
     ):
         return await call_next(request)
 
-    # Check if request originates from localhost loopback
+    # Check if request originates from localhost loopback directly (not via remote tunnel)
+    is_tunnel = bool(request.headers.get("cf-ray") or request.headers.get("cf-connecting-ip"))
     client_host = request.client.host if request.client else ""
-    is_loopback = client_host in ("127.0.0.1", "::1", "localhost", "testclient")
+    is_loopback = (client_host in ("127.0.0.1", "::1", "localhost", "testclient")) and not is_tunnel
 
     # If from remote tunnel/internet, check internal secret for mutating administrative endpoints
     from backend.app.security.vault import vault

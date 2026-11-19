@@ -19,9 +19,9 @@ export async function onRequest(context: { request: Request; env: Env }) {
     }
   }
 
-  const backendTarget = (dynamicBackend || context.env?.BACKEND_URL || "").trim().replace(/\/+$/, "");
+  const backendTarget = (dynamicBackend || context.env?.BACKEND_URL || "https://gaming-uncut-backend.gaminguncut1.workers.dev").trim().replace(/\/+$/, "");
 
-  if (!backendTarget || backendTarget === "offline" || backendTarget === "https://backend.gaming-uncut.pages.dev") {
+  if (!backendTarget || backendTarget === "offline") {
     return new Response(
       JSON.stringify({
         success: false,

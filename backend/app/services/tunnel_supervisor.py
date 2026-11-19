@@ -1,14 +1,16 @@
 """
 Cloudflare Tunnel Supervisor for Gaming Uncut Automation.
 Manages persistent, supervised connection between local NVENC processing node (FastAPI :8765)
-and Cloudflare Pages edge deployment (gaming-uncut.pages.dev).
+and Cloudflare Pages edge deployment (gaming-uncut.pages.dev) via named tunnel and Workers VPC.
 
 Features:
-1. Supervised process management with automatic restart.
-2. Supports named Cloudflare Tunnel ('gaming-uncut-node') when custom domain zone is present.
-3. Automatically establishes high-performance tunnel to local port and synchronizes Cloudflare Pages BACKEND_URL.
-4. Generates and manages shared INTERNAL_API_SECRET for secure API proxy communication.
-5. Emits health telemetry and persistent status to data/tunnel_status.json.
+1. Supervised process management with automatic restart and zombie process cleanup.
+2. Uses dedicated named Cloudflare Tunnel ('gaming-uncut-node', ID: 6acf38fe-7443-4798-9ec7-b67878b35da8).
+3. Connects securely to Cloudflare Edge using credentials token stored in encrypted Windows vault.
+4. Synchronizes live backend URL (https://gaming-uncut-backend.gaminguncut1.workers.dev) to Cloudflare Pages & Workers KV.
+5. Strict validation rejects all ephemeral trycloudflare.com URLs.
+6. Manages shared INTERNAL_API_SECRET for secure API proxy communication.
+7. Emits health telemetry and persistent status to data/tunnel_status.json.
 """
 
 import os
@@ -38,6 +40,7 @@ CLOUDFLARE_ACCOUNT_ID = "57ecb7a13c0e7f67e63dc5564ad2dfe6"
 PAGES_PROJECT_NAME = "gaming-uncut"
 KV_NAMESPACE_ID = "cd43c79a79d749f98a9f456997b565b9"
 WRANGLER_CONFIG_PATH = Path(os.environ.get("APPDATA", "")) / "xdg.config" / ".wrangler" / "config" / "gaming-uncut.toml"
+PERMANENT_BACKEND_URL = "https://gaming-uncut-backend.gaminguncut1.workers.dev"
 
 
 class CloudflareTunnelSupervisor:
@@ -45,8 +48,8 @@ class CloudflareTunnelSupervisor:
         self._process: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
         self._running = False
-        self._current_url: Optional[str] = None
-        self._tunnel_mode = "managed"
+        self._current_url: Optional[str] = PERMANENT_BACKEND_URL
+        self._tunnel_mode = "named"
         self._supervisor_thread: Optional[threading.Thread] = None
 
     def get_api_token(self) -> Optional[str]:
@@ -59,6 +62,33 @@ class CloudflareTunnelSupervisor:
             except Exception as e:
                 logger.warning(f"Could not load Wrangler config: {e}")
         return os.environ.get("CLOUDFLARE_API_TOKEN")
+
+    def get_named_tunnel_token(self) -> Optional[str]:
+        """Retrieves tunnel token from vault or fetches from Cloudflare API if absent."""
+        token = vault.get_secret("cloudflare", "named_tunnel_token")
+        if token:
+            return token
+
+        api_token = self.get_api_token()
+        if not api_token:
+            logger.warning("No Cloudflare API token to fetch named tunnel token.")
+            return None
+
+        url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel/{NAMED_TUNNEL_ID}/token"
+        headers = {"Authorization": f"Bearer {api_token}"}
+        try:
+            resp = requests.get(url, headers=headers, timeout=10.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                fetched_token = data.get("result")
+                if fetched_token:
+                    vault.set_secret("cloudflare", "named_tunnel_token", fetched_token)
+                    logger.info("Successfully fetched named tunnel token and persisted to secure vault.")
+                    return fetched_token
+        except Exception as e:
+            logger.error(f"Error fetching named tunnel token from Cloudflare API: {e}")
+
+        return None
 
     def get_or_create_internal_secret(self) -> str:
         """Retrieves or creates a secure 32-byte secret for backend API authentication."""
@@ -106,7 +136,19 @@ class CloudflareTunnelSupervisor:
         return success
 
     def update_pages_backend_url(self, backend_url: str) -> bool:
-        """Updates Cloudflare Pages project environment variables and KV with the live backend URL."""
+        """
+        Updates Cloudflare Pages project environment variables and KV with the backend URL.
+        Enforces strict production validation: rejects trycloudflare.com and non-HTTPS URLs.
+        """
+        # Strict URL validation
+        if not backend_url or "trycloudflare.com" in backend_url:
+            logger.error(f"Rejected invalid/ephemeral backend URL: {backend_url}")
+            return False
+
+        if not backend_url.startswith("https://"):
+            logger.error(f"Rejected non-HTTPS backend URL: {backend_url}")
+            return False
+
         secret = self.get_or_create_internal_secret()
         # 1. Update real-time KV namespace first
         self.sync_to_kv(backend_url, secret)
@@ -143,11 +185,11 @@ class CloudflareTunnelSupervisor:
             logger.error(f"Error updating Cloudflare Pages env vars: {e}")
             return False
 
-    def write_status(self, is_alive: bool, url: Optional[str] = None, mode: str = "managed", details: str = ""):
-        """Writes current tunnel status to disk for dashboard diagnostics."""
+    def write_status(self, is_alive: bool, url: Optional[str] = None, mode: str = "named", details: str = ""):
+        """Writes current tunnel status to disk for dashboard diagnostics without leaking credentials."""
         data = {
             "is_alive": is_alive,
-            "url": url,
+            "url": url or PERMANENT_BACKEND_URL,
             "tunnel_id": NAMED_TUNNEL_ID,
             "tunnel_name": NAMED_TUNNEL_NAME,
             "mode": mode,
@@ -161,7 +203,7 @@ class CloudflareTunnelSupervisor:
             pass
 
     def start_supervised(self):
-        """Starts the supervised tunnel worker in a background thread."""
+        """Starts the supervised named tunnel worker in a background thread."""
         with self._lock:
             if self._running:
                 return
@@ -169,22 +211,27 @@ class CloudflareTunnelSupervisor:
 
         def _worker():
             logger.info("Cloudflare Tunnel Supervisor started.")
-            custom_domain = os.environ.get("CLOUDFLARE_CUSTOM_DOMAIN")
+
+            # Terminate any lingering cloudflared processes on Windows
+            try:
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/F", "/IM", "cloudflared.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+            token = self.get_named_tunnel_token()
+            if not token:
+                logger.error("Failed to retrieve named tunnel token. Tunnel cannot start.")
+                self.write_status(False, None, mode="named", details="Missing named tunnel token")
+                return
+
+            cmd = ["cloudflared", "tunnel", "run", "--token", token]
+            self._current_url = PERMANENT_BACKEND_URL
+            self._tunnel_mode = "named"
 
             while self._running:
                 try:
-                    if custom_domain:
-                        token = "eyJhIjoiNTdlY2I3YTEzYzBlN2Y2N2U2M2RjNTU2NGFkMmRmZTYiLCJ0IjoiNmFjZjM4ZmUtNzQ0My00Nzk4LTllYzctYjY3ODc4YjM1ZGE4IiwicyI6IjYrVFoxMDM4Z2FLZW5BclZkd2RtalBvcnc1UUxzZmVPeDZFV3RsVEJydHM9In0="
-                        cmd = ["cloudflared", "tunnel", "run", "--token", token]
-                        self._current_url = f"https://{custom_domain}"
-                        self._tunnel_mode = "named"
-                        mode = "named"
-                    else:
-                        cmd = ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{settings.PORT}"]
-                        self._tunnel_mode = "auto_managed"
-                        mode = "auto_managed"
-
-                    logger.info(f"Launching cloudflared ({mode})...")
+                    logger.info(f"Launching cloudflared (named tunnel: {NAMED_TUNNEL_NAME})...")
                     self._process = subprocess.Popen(
                         cmd,
                         stdout=subprocess.PIPE,
@@ -193,21 +240,17 @@ class CloudflareTunnelSupervisor:
                         bufsize=1
                     )
 
-                    url_synced = False
-                    start_time = time.time()
+                    # Update status and sync configuration
+                    self.write_status(True, self._current_url, mode="named", details="Tunnel process running")
+                    self.update_pages_backend_url(self._current_url)
 
                     while self._running and self._process.poll() is None:
                         line = self._process.stdout.readline() if self._process.stdout else ""
                         if line:
-                            # Look for assigned tunnel URL
-                            if not url_synced and not custom_domain:
-                                match = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
-                                if match:
-                                    self._current_url = match.group(0)
-                                    logger.info(f"Detected Cloudflare Tunnel URL: {self._current_url}")
-                                    self.write_status(True, self._current_url, mode=mode, details="Tunnel connected")
-                                    self.update_pages_backend_url(self._current_url)
-                                    url_synced = True
+                            clean_line = line.strip()
+                            if "Registered tunnel connection" in clean_line or "Initial protocol quic" in clean_line:
+                                logger.info(f"Tunnel edge connection active: {clean_line}")
+                                self.write_status(True, self._current_url, mode="named", details="Connected to Cloudflare Edge")
 
                         time.sleep(0.1)
 
@@ -217,6 +260,7 @@ class CloudflareTunnelSupervisor:
 
                 if self._running:
                     logger.warning("Tunnel process exited. Restarting in 5 seconds...")
+                    self.write_status(False, None, mode="named", details="Tunnel disconnected, reconnecting...")
                     time.sleep(5)
 
             self.write_status(False, None, details="Supervisor stopped cleanly.")
@@ -235,6 +279,13 @@ class CloudflareTunnelSupervisor:
                 except Exception:
                     pass
                 self._process = None
+
+            try:
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/F", "/IM", "cloudflared.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
         self.sync_to_kv("offline")
         self.write_status(False, None, details="Stopped")
         logger.info("Cloudflare Tunnel Supervisor stopped.")
@@ -251,6 +302,7 @@ class CloudflareTunnelSupervisor:
             "url": self._current_url,
             "tunnel_id": NAMED_TUNNEL_ID,
             "tunnel_name": NAMED_TUNNEL_NAME,
+            "mode": self._tunnel_mode,
             "backend_target": f"http://127.0.0.1:{settings.PORT}"
         }
 
