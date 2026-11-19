@@ -2385,3 +2385,188 @@ def export_seo_metadata(format: str = "json", db: Session = Depends(get_db)):
         return PlainTextResponse(output.getvalue(), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=gaming_uncut_seo_export.csv"})
 
     return export_items
+
+# =============================================================================
+# YouTube Shorts Growth Intelligence Engine & Controlled Experiments
+# =============================================================================
+
+@router.get("/analytics/shorts-intelligence/summary")
+def get_shorts_intelligence_summary(db: Session = Depends(get_db)):
+    """Returns KPIs, retention averages, stayed-to-watch %, top games & events, and batch recommendations."""
+    from backend.app.analytics.growth_intelligence import growth_intelligence_service
+    return growth_intelligence_service.get_dashboard_summary(db)
+
+@router.get("/analytics/shorts-intelligence/snapshots/{upload_id}")
+def get_shorts_snapshots(upload_id: int, db: Session = Depends(get_db)):
+    """Returns historical 1h, 6h, 24h, 72h snapshot progression and milestone comparisons for an upload."""
+    from backend.app.publishers.youtube.youtube_analytics import youtube_analytics_service
+    return youtube_analytics_service.compare_snapshots(db, upload_id)
+
+@router.post("/analytics/shorts-intelligence/sync-analytics")
+def sync_shorts_analytics(db: Session = Depends(get_db)):
+    """Triggers live YouTube Analytics and Data API v3 synchronization across all published YouTube Shorts."""
+    from backend.app.publishers.youtube.youtube_analytics import youtube_analytics_service
+    return youtube_analytics_service.sync_all_active_youtube_uploads(db)
+
+@router.post("/analytics/shorts-intelligence/analyze-hook")
+def analyze_clip_hook(
+    request: Dict[str, Any],
+    db: Session = Depends(get_db)
+):
+    """Executes AI opening hook analysis (scoring 6 dimensions across opening 3 seconds)."""
+    from backend.app.models.schema import GeneratedClip
+    from backend.app.ai.hook_analyzer import hook_analyzer
+    from pathlib import Path
+
+    clip_id = request.get("clip_id")
+    video_path_str = request.get("video_path")
+
+    if clip_id:
+        clip = db.query(GeneratedClip).filter_by(id=clip_id).first()
+        if not clip:
+            raise HTTPException(status_code=404, detail=f"Clip #{clip_id} not found.")
+        v_path = Path(clip.output_path)
+        meta = clip.metadata_rel
+        title = meta.title if meta else ""
+        game = meta.detected_game if meta else None
+        event = clip.highlight.event_type if clip.highlight else "gameplay_sequence"
+    elif video_path_str:
+        v_path = Path(video_path_str)
+        title = request.get("source_title", "")
+        game = request.get("game_name")
+        event = request.get("event_type", "gameplay_sequence")
+    else:
+        raise HTTPException(status_code=400, detail="Must provide either 'clip_id' or 'video_path'.")
+
+    if not v_path.exists():
+        raise HTTPException(status_code=404, detail=f"Video file {v_path} does not exist.")
+
+    start_sec = float(request.get("start_sec", 0.0))
+    res = hook_analyzer.analyze_opening_hook(
+        video_path=v_path,
+        start_sec=start_sec,
+        duration_window=float(request.get("window_sec", 3.0)),
+        source_title=title,
+        game_name=game,
+        event_type=event
+    )
+
+    # If clip_id was provided, update stored hook score
+    if clip_id and clip:
+        clip.hook_score = res["overall_hook_score"]
+        clip.hook_analysis_json = json.dumps(res)
+        db.commit()
+
+    return res
+
+@router.get("/analytics/shorts-intelligence/clips/{clip_id}")
+def get_clip_shorts_intelligence(clip_id: int, db: Session = Depends(get_db)):
+    """Retrieves full hook analysis, 3 factual hook alternatives, candidate cuts, and quality gate status for a clip."""
+    from backend.app.models.schema import GeneratedClip, ClipMetadata
+    from backend.app.ai.opening_hook_generator import opening_hook_generator
+
+    clip = db.query(GeneratedClip).filter_by(id=clip_id).first()
+    if not clip:
+        raise HTTPException(status_code=404, detail=f"Clip #{clip_id} not found.")
+
+    meta = clip.metadata_rel
+
+    # Parse stored hook analysis
+    hook_data = {}
+    if clip.hook_analysis_json:
+        try:
+            hook_data = json.loads(clip.hook_analysis_json)
+        except Exception:
+            pass
+
+    # Parse or generate 3 factual hook alternatives
+    factual_hooks = []
+    if meta and meta.opening_hook_alternatives_json:
+        try:
+            factual_hooks = json.loads(meta.opening_hook_alternatives_json)
+        except Exception:
+            pass
+
+    if not factual_hooks:
+        factual_hooks = opening_hook_generator.generate_hooks(
+            event_type=clip.highlight.event_type if clip.highlight else "unexpected_event",
+            game_name=meta.detected_game if meta else "Unknown Game",
+            gameplay_summary=meta.gameplay_summary if meta else "",
+            context_text=meta.title if meta else ""
+        )
+
+    # Parse candidate cuts
+    candidate_cuts = []
+    if clip.candidate_cuts_json:
+        try:
+            candidate_cuts = json.loads(clip.candidate_cuts_json)
+        except Exception:
+            pass
+
+    # Quality gate reasons
+    qg_reasons = []
+    if meta and meta.quality_gate_reasons_json:
+        try:
+            qg_reasons = json.loads(meta.quality_gate_reasons_json)
+        except Exception:
+            pass
+
+    return {
+        "clip_id": clip.id,
+        "duration_sec": clip.duration_sec,
+        "quality_score": clip.quality_score,
+        "hook_score": clip.hook_score or hook_data.get("overall_hook_score", 7.0),
+        "hook_analysis": hook_data,
+        "candidate_cuts": candidate_cuts,
+        "factual_hooks": factual_hooks,
+        "quality_gate": {
+            "passed": meta.quality_gate_passed if meta else True,
+            "reasons": qg_reasons
+        }
+    }
+
+@router.get("/analytics/shorts-intelligence/experiments")
+def list_shorts_experiments(db: Session = Depends(get_db)):
+    """Lists all controlled creative A/B experiments and their measured outcomes."""
+    from backend.app.models.schema import ShortsExperiment
+    from backend.app.analytics.growth_intelligence import growth_intelligence_service
+    exps = db.query(ShortsExperiment).order_by(ShortsExperiment.id.desc()).all()
+    return [growth_intelligence_service._format_experiment(e, db) for e in exps]
+
+@router.post("/analytics/shorts-intelligence/experiments")
+def create_shorts_experiment(
+    payload: Dict[str, Any],
+    db: Session = Depends(get_db)
+):
+    """Creates a controlled A/B sequential creative test between distinct clips."""
+    from backend.app.analytics.growth_intelligence import growth_intelligence_service
+    name = payload.get("name")
+    hypothesis = payload.get("hypothesis")
+    dimension = payload.get("dimension")
+
+    if not name or not hypothesis or not dimension:
+        raise HTTPException(status_code=400, detail="Missing mandatory fields: 'name', 'hypothesis', 'dimension'.")
+
+    try:
+        exp = growth_intelligence_service.create_experiment(
+            db=db,
+            name=name,
+            hypothesis=hypothesis,
+            dimension=dimension,
+            game_name=payload.get("game_name"),
+            control_clip_id=payload.get("control_clip_id"),
+            variant_clip_ids=payload.get("variant_clip_ids")
+        )
+        return growth_intelligence_service._format_experiment(exp, db)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+
+@router.post("/analytics/shorts-intelligence/quality-gate/{clip_id}")
+def run_quality_gate(clip_id: int, db: Session = Depends(get_db)):
+    """Evaluates a clip against the 5 publishing quality gate criteria."""
+    from backend.app.publishers.quality_gate import publishing_quality_gate
+    try:
+        return publishing_quality_gate.apply_quality_gate(db, clip_id)
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
+

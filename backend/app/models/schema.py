@@ -101,6 +101,9 @@ class GeneratedClip(Base):
     height = Column(Integer, default=1920)
     layout_template = Column(String(50), default="blurred_bg")  # dynamic_gameplay, blurred_bg, split_layout
     quality_score = Column(Float, default=85.0)
+    hook_score = Column(Float, nullable=True)  # 0-10 score of opening 3 seconds
+    hook_analysis_json = Column(Text, nullable=True)  # Detailed breakdown of 6 hook dimensions
+    candidate_cuts_json = Column(Text, nullable=True)  # JSON list of alternative candidate cuts (15-25s, 25-40s)
     validation_status = Column(String(50), default="passed")  # passed, flagged, failed
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -146,6 +149,9 @@ class ClipMetadata(Base):
     instagram_alt_text = Column(Text, nullable=True)
     youtube_tags_json = Column(Text, nullable=True)
     thumbnail_text = Column(String(150), nullable=True)
+    opening_hook_alternatives_json = Column(Text, nullable=True)  # JSON list of 3 factual hook alternatives
+    quality_gate_passed = Column(Boolean, default=True)
+    quality_gate_reasons_json = Column(Text, nullable=True)
     original_metadata_json = Column(Text, nullable=True)
     duplicate_detection_json = Column(Text, nullable=True)
     is_manually_edited = Column(Boolean, default=False)
@@ -235,13 +241,82 @@ class PublishingAnalytics(Base):
     platform = Column(String(50), nullable=False)
     external_post_id = Column(String(255), nullable=False)
     views = Column(Integer, default=0)
+    engaged_views = Column(Integer, nullable=True)
+    shown_in_feed = Column(Integer, nullable=True)
+    stayed_to_watch = Column(Integer, nullable=True)
+    stayed_to_watch_pct = Column(Float, nullable=True)
+    average_view_duration_sec = Column(Float, nullable=True)
+    average_percentage_viewed = Column(Float, nullable=True)
+    watch_time_minutes = Column(Float, nullable=True)
     likes = Column(Integer, default=0)
     comments = Column(Integer, default=0)
     shares = Column(Integer, default=0)
+    subscribers_gained = Column(Integer, nullable=True)
+    traffic_sources_json = Column(Text, nullable=True)
     engagement_rate = Column(Float, default=0.0)
+    is_measured = Column(Boolean, default=True)
+    is_analytics_api = Column(Boolean, default=False)
     last_synced_at = Column(DateTime, default=datetime.utcnow)
 
     upload = relationship("PlatformUpload", back_populates="analytics")
+
+class ShortsAnalyticsSnapshot(Base):
+    """
+    Stores historical performance snapshots at distinct retention and maturity windows (1h, 6h, 24h, 72h).
+    Enables tracking of view velocity, retention decay, and stayed-to-watch ratio over time.
+    """
+    __tablename__ = "shorts_analytics_snapshots"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    platform_upload_id = Column(Integer, ForeignKey("platform_uploads.id", ondelete="CASCADE"), nullable=False, index=True)
+    clip_id = Column(Integer, ForeignKey("generated_clips.id", ondelete="CASCADE"), nullable=True, index=True)
+    platform = Column(String(50), default="youtube")
+    external_post_id = Column(String(255), nullable=False, index=True)
+    snapshot_window = Column(String(20), nullable=False)  # "1h", "6h", "24h", "72h", "latest"
+    captured_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Measured Metrics
+    views = Column(Integer, default=0)
+    engaged_views = Column(Integer, nullable=True)
+    shown_in_feed = Column(Integer, nullable=True)
+    stayed_to_watch = Column(Integer, nullable=True)
+    stayed_to_watch_pct = Column(Float, nullable=True)
+    average_view_duration_sec = Column(Float, nullable=True)
+    average_percentage_viewed = Column(Float, nullable=True)
+    watch_time_minutes = Column(Float, nullable=True)
+    likes = Column(Integer, default=0)
+    comments = Column(Integer, default=0)
+    shares = Column(Integer, default=0)
+    subscribers_gained = Column(Integer, nullable=True)
+    traffic_sources_json = Column(Text, nullable=True)
+    
+    # Metadata & Quality tracking
+    is_measured = Column(Boolean, default=True)
+    is_analytics_api = Column(Boolean, default=False)
+    notes = Column(Text, nullable=True)
+
+class ShortsExperiment(Base):
+    """
+    Controlled A/B-style sequential creative tests comparing different approaches
+    (e.g. hook styles, duration cuts, opening visuals) across distinct clips.
+    Strictly forbids uploading duplicate video copies.
+    """
+    __tablename__ = "shorts_experiments"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(150), nullable=False)
+    hypothesis = Column(Text, nullable=False)
+    dimension = Column(String(50), nullable=False)  # hook_style, clip_duration, opening_visual, caption_style
+    game_name = Column(String(100), nullable=True)
+    status = Column(String(50), default="active")  # active, completed, draft
+    control_clip_id = Column(Integer, ForeignKey("generated_clips.id", ondelete="SET NULL"), nullable=True)
+    variant_clip_ids_json = Column(Text, default="[]")  # JSON list of distinct clip IDs
+    sample_size = Column(Integer, default=0)
+    min_sample_size = Column(Integer, default=10)
+    metrics_summary_json = Column(Text, nullable=True)
+    winning_variant = Column(String(100), nullable=True)
+    conclusion = Column(Text, nullable=True)
+    is_statistically_significant = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    concluded_at = Column(DateTime, nullable=True)
 
 class Schedule(Base):
     __tablename__ = "schedules"

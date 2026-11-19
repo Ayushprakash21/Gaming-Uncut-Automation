@@ -26,7 +26,8 @@ logger = logging.getLogger("gaming_uncut.youtube")
 
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
-    "https://www.googleapis.com/auth/youtube.readonly"
+    "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/yt-analytics.readonly"
 ]
 RETRIABLE_STATUS_CODES = [500, 502, 503, 504]
 

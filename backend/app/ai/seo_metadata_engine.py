@@ -55,6 +55,8 @@ FORBIDDEN_GENERIC_PATTERNS = [
     r"is\s+this\s+the\s+craziest\s+play",
 ]
 
+GENERIC_BANNED_TITLE_PATTERNS = FORBIDDEN_GENERIC_PATTERNS
+
 
 def normalize_title_for_comparison(title: str) -> str:
     """Normalizes title for duplicate comparison: lowercase, strip emojis, tags, and punctuation."""

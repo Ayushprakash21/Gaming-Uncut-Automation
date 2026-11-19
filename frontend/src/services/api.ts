@@ -638,3 +638,58 @@ export async function fetchSystemDiagnostics(): Promise<any> {
   return safeFetch(`${API_BASE}/diagnostics/system`)
 }
 
+// =============================================================================
+// YouTube Shorts Growth Intelligence Engine & Controlled Experiments
+// =============================================================================
+
+export async function fetchShortsIntelligenceSummary(): Promise<any> {
+  return safeFetch(`${API_BASE}/analytics/shorts-intelligence/summary`)
+}
+
+export async function fetchShortsSnapshots(uploadId: number): Promise<any> {
+  return safeFetch(`${API_BASE}/analytics/shorts-intelligence/snapshots/${uploadId}`)
+}
+
+export async function syncShortsAnalytics(): Promise<any> {
+  return safeFetch(`${API_BASE}/analytics/shorts-intelligence/sync-analytics`, {
+    method: 'POST'
+  })
+}
+
+export async function analyzeClipHook(payload: { clip_id?: number; video_path?: string; start_sec?: number }): Promise<any> {
+  return safeFetch(`${API_BASE}/analytics/shorts-intelligence/analyze-hook`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+}
+
+export async function fetchClipShortsIntelligence(clipId: number): Promise<any> {
+  return safeFetch(`${API_BASE}/analytics/shorts-intelligence/clips/${clipId}`)
+}
+
+export async function fetchShortsExperiments(): Promise<any> {
+  return safeFetch(`${API_BASE}/analytics/shorts-intelligence/experiments`)
+}
+
+export async function createShortsExperiment(payload: {
+  name: string;
+  hypothesis: string;
+  dimension: string;
+  game_name?: string;
+  control_clip_id?: number;
+  variant_clip_ids?: number[];
+}): Promise<any> {
+  return safeFetch(`${API_BASE}/analytics/shorts-intelligence/experiments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+}
+
+export async function runQualityGate(clipId: number): Promise<any> {
+  return safeFetch(`${API_BASE}/analytics/shorts-intelligence/quality-gate/${clipId}`, {
+    method: 'POST'
+  })
+}
+

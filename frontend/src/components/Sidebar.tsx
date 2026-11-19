@@ -45,7 +45,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'seo', label: 'AI SEO & Growth', icon: TrendingUp },
     { id: 'library', label: 'Content Library', icon: FileVideo },
     { id: 'scheduler', label: 'Scheduler', icon: CalendarDays },
-    { id: 'analytics', label: 'Analytics', icon: BarChart3 },
+    { id: 'analytics', label: 'Shorts Intelligence', icon: BarChart3, highlight: true },
     { id: 'connections', label: 'Platform Connections', icon: Share2 },
     { id: 'ai-settings', label: 'AI Settings', icon: Sparkles },
     { id: 'logs', label: 'Logs & Diagnostics', icon: Terminal },

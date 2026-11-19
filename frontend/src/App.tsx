@@ -10,6 +10,7 @@ import { PublishingQueuePage } from './pages/PublishingQueuePage'
 import { ConnectionsPage } from './pages/ConnectionsPage'
 import { LogsPage } from './pages/LogsPage'
 import { SeoGrowthPage } from './pages/SeoGrowthPage'
+import { ShortsIntelligencePage } from './pages/ShortsIntelligencePage'
 import { fetchOverview } from './services/api'
 import { OverviewData } from './types'
 
@@ -64,9 +65,7 @@ export const App: React.FC = () => {
           {currentTab === 'seo' && <SeoGrowthPage />}
           {currentTab === 'library' && <ContentLibraryPage />}
           {currentTab === 'scheduler' && <PublishingQueuePage />}
-          {currentTab === 'analytics' && (
-            <OverviewPage data={overview} onNavigate={(tab) => setCurrentTab(tab)} />
-          )}
+          {currentTab === 'analytics' && <ShortsIntelligencePage />}
           {currentTab === 'connections' && <ConnectionsPage />}
           {currentTab === 'ai-settings' && <ConnectionsPage />}
           {currentTab === 'logs' && <LogsPage />}

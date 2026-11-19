@@ -127,8 +127,50 @@ def ensure_schema_compatibility(db_engine):
                     conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN duplicate_detection_json TEXT"))
                 if "is_manually_edited" not in cm_cols:
                     conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN is_manually_edited BOOLEAN DEFAULT 0"))
+                if "opening_hook_alternatives_json" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN opening_hook_alternatives_json TEXT"))
+                if "quality_gate_passed" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN quality_gate_passed BOOLEAN DEFAULT 1"))
+                if "quality_gate_reasons_json" not in cm_cols:
+                    conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN quality_gate_reasons_json TEXT"))
                 if "updated_at" not in cm_cols:
                     conn.execute(text("ALTER TABLE clip_metadata ADD COLUMN updated_at DATETIME"))
+                conn.commit()
+        if "generated_clips" in inspector.get_table_names():
+            gc_cols = [c["name"] for c in inspector.get_columns("generated_clips")]
+            with db_engine.connect() as conn:
+                if "hook_score" not in gc_cols:
+                    conn.execute(text("ALTER TABLE generated_clips ADD COLUMN hook_score FLOAT"))
+                if "hook_analysis_json" not in gc_cols:
+                    conn.execute(text("ALTER TABLE generated_clips ADD COLUMN hook_analysis_json TEXT"))
+                if "candidate_cuts_json" not in gc_cols:
+                    conn.execute(text("ALTER TABLE generated_clips ADD COLUMN candidate_cuts_json TEXT"))
+                conn.commit()
+        if "publishing_analytics" in inspector.get_table_names():
+            pa_cols = [c["name"] for c in inspector.get_columns("publishing_analytics")]
+            with db_engine.connect() as conn:
+                if "engaged_views" not in pa_cols:
+                    conn.execute(text("ALTER TABLE publishing_analytics ADD COLUMN engaged_views INTEGER"))
+                if "shown_in_feed" not in pa_cols:
+                    conn.execute(text("ALTER TABLE publishing_analytics ADD COLUMN shown_in_feed INTEGER"))
+                if "stayed_to_watch" not in pa_cols:
+                    conn.execute(text("ALTER TABLE publishing_analytics ADD COLUMN stayed_to_watch INTEGER"))
+                if "stayed_to_watch_pct" not in pa_cols:
+                    conn.execute(text("ALTER TABLE publishing_analytics ADD COLUMN stayed_to_watch_pct FLOAT"))
+                if "average_view_duration_sec" not in pa_cols:
+                    conn.execute(text("ALTER TABLE publishing_analytics ADD COLUMN average_view_duration_sec FLOAT"))
+                if "average_percentage_viewed" not in pa_cols:
+                    conn.execute(text("ALTER TABLE publishing_analytics ADD COLUMN average_percentage_viewed FLOAT"))
+                if "watch_time_minutes" not in pa_cols:
+                    conn.execute(text("ALTER TABLE publishing_analytics ADD COLUMN watch_time_minutes FLOAT"))
+                if "subscribers_gained" not in pa_cols:
+                    conn.execute(text("ALTER TABLE publishing_analytics ADD COLUMN subscribers_gained INTEGER"))
+                if "traffic_sources_json" not in pa_cols:
+                    conn.execute(text("ALTER TABLE publishing_analytics ADD COLUMN traffic_sources_json TEXT"))
+                if "is_measured" not in pa_cols:
+                    conn.execute(text("ALTER TABLE publishing_analytics ADD COLUMN is_measured BOOLEAN DEFAULT 1"))
+                if "is_analytics_api" not in pa_cols:
+                    conn.execute(text("ALTER TABLE publishing_analytics ADD COLUMN is_analytics_api BOOLEAN DEFAULT 0"))
                 conn.commit()
         if "source_videos" in inspector.get_table_names():
             sv_cols = [c["name"] for c in inspector.get_columns("source_videos")]

@@ -39,7 +39,8 @@ logger = logging.getLogger("gaming_uncut.youtube_oauth")
 
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
-    "https://www.googleapis.com/auth/youtube.readonly"
+    "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/yt-analytics.readonly"
 ]
 
 SUCCESS_HTML = """<!DOCTYPE html>

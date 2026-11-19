@@ -500,6 +500,49 @@ class PipelineService:
                 best_hl["start_sec"] = max(0.0, float(source_video.duration) - dur)
             best_hl["end_sec"] = round(best_hl["start_sec"] + dur, 2)
 
+            # Stage 4b: Automatic Highlight Optimization & Opening 3-Second Hook Analysis
+            from backend.app.ai.highlight_optimizer import highlight_optimizer
+            from backend.app.ai.hook_analyzer import hook_analyzer
+            from backend.app.ai.opening_hook_generator import opening_hook_generator
+            from backend.app.publishers.quality_gate import publishing_quality_gate
+
+            climax_estimate = round(best_hl["start_sec"] + (best_hl["duration_sec"] * 0.5), 2)
+            opt_res = highlight_optimizer.optimize_highlight_boundaries(
+                video_path=video_path,
+                climax_sec=climax_estimate,
+                video_duration=source_video.duration,
+                raw_event_type=best_hl["event_type"],
+                source_title=source_video.title,
+                game_name=user_game
+            )
+            candidate_cuts = opt_res.get("candidate_cuts", [])
+            primary_cut = opt_res.get("primary_cut")
+
+            if primary_cut and primary_cut.get("hook_score", 0.0) >= 6.0:
+                best_hl["start_sec"] = primary_cut["start_sec"]
+                best_hl["end_sec"] = primary_cut["end_sec"]
+                best_hl["duration_sec"] = primary_cut["duration_sec"]
+                hook_data = primary_cut.get("hook_analysis", {})
+                hook_score = primary_cut.get("hook_score", 7.0)
+            else:
+                hook_data = hook_analyzer.analyze_opening_hook(
+                    video_path=video_path,
+                    start_sec=best_hl["start_sec"],
+                    climax_sec=climax_estimate,
+                    duration_window=3.0,
+                    source_title=source_video.title,
+                    game_name=user_game,
+                    event_type=best_hl["event_type"]
+                )
+                hook_score = hook_data.get("overall_hook_score", 7.0)
+
+            factual_hooks = opening_hook_generator.generate_hooks(
+                event_type=best_hl["event_type"],
+                game_name=user_game or "Unknown Game",
+                gameplay_summary=best_hl.get("explanation", ""),
+                context_text=source_video.title
+            )
+
             with SessionLocal() as db:
                 hl_record = DetectedHighlight(
                     source_video_id=source_video.id,
@@ -625,6 +668,9 @@ class PipelineService:
                     height=settings.TARGET_HEIGHT,
                     layout_template=template,
                     quality_score=quality_score,
+                    hook_score=hook_score,
+                    hook_analysis_json=json.dumps(hook_data),
+                    candidate_cuts_json=json.dumps(candidate_cuts),
                     validation_status="passed" if passed else "flagged"
                 )
                 db.add(clip_record)
@@ -653,6 +699,7 @@ class PipelineService:
                     gameplay_summary=ai_metadata.get("gameplay_summary"),
                     detected_events_json=json.dumps(ai_metadata.get("detected_events", [])),
                     candidate_titles_json=json.dumps(ai_metadata.get("candidate_titles", [ai_metadata["title"]])),
+                    opening_hook_alternatives_json=json.dumps(factual_hooks),
                     analysis_provider=ai_metadata.get("analysis_provider", "heuristic"),
                     analysis_status=ai_metadata.get("analysis_status", "complete"),
                     analysis_fingerprint=ai_metadata.get("analysis_fingerprint")
@@ -671,7 +718,16 @@ class PipelineService:
                 except Exception as seo_err:
                     logger.warning(f"Automated SEO generation warning for Clip #{clip_id}: {seo_err}")
 
-                # FINAL ACCEPTANCE CRITERIA: A video must not be auto-published if AI analysis is incomplete, heuristic, unconfirmed, OR if user-supplied game name conflicts with visual evidence
+                # Evaluate Publishing Quality Gate (weak opening, dead footage, unclear event, generic title, unverified game)
+                qg_eval = publishing_quality_gate.evaluate_clip(
+                    clip_record, metadata=meta_record, hook_analysis=hook_data
+                )
+                meta_record.quality_gate_passed = qg_eval["gate_passed"]
+                meta_record.quality_gate_reasons_json = json.dumps(qg_eval["reasons"])
+                db.commit()
+
+                # FINAL ACCEPTANCE CRITERIA: A video must not be auto-published if quality gate fails,
+                # AI analysis is incomplete/unconfirmed, or user-supplied game name conflicts with visual evidence
                 game_mismatch = bool(ai_metadata.get("game_mismatch_flag", False))
                 analysis_is_verified = (
                     ai_metadata.get("analysis_provider") == "gemini" and
@@ -679,12 +735,16 @@ class PipelineService:
                     float(ai_metadata.get("game_confidence", 0.0)) >= 0.50 and
                     not game_mismatch
                 )
-                if publish_mode == "auto" and passed and analysis_is_verified:
+                if publish_mode == "auto" and passed and analysis_is_verified and qg_eval["gate_passed"]:
                     approval_status = "auto_approved"
                 else:
-                    approval_status = "pending_review"
+                    approval_status = "needs_review"
                     if publish_mode == "auto":
-                        if game_mismatch:
+                        if not qg_eval["gate_passed"]:
+                            logger.info(
+                                f"Clip #{clip_id} held for review by Quality Gate: {qg_eval['reasons']}"
+                            )
+                        elif game_mismatch:
                             logger.warning(
                                 f"Clip #{clip_id} auto-publish held for review: User provided game '{user_game}' conflicts with visual analysis ('{ai_metadata.get('detected_game')}'). "
                                 f"Discrepancy: {ai_metadata.get('mismatch_reason')}. Held in pending_review."
@@ -695,12 +755,6 @@ class PipelineService:
                                 f"{ai_metadata.get('analysis_status', 'unconfirmed')} (provider: {ai_metadata.get('analysis_provider')}). "
                                 f"Held in pending_review for manual approval."
                             )
-                    if publish_mode == "auto" and not analysis_is_verified:
-                        logger.info(
-                            f"Clip #{clip_id} auto-publish held: AI intelligence is "
-                            f"{ai_metadata.get('analysis_status', 'unconfirmed')} (provider: {ai_metadata.get('analysis_provider')}). "
-                            f"Held in pending_review for manual approval."
-                        )
 
                 pub_job = PublishingJob(
                     clip_id=clip_id,
