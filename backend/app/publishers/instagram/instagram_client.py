@@ -31,7 +31,7 @@ from backend.app.security.vault import vault
 from backend.app.publishers.quota_tracker import InstagramRateLimitError as BaseInstagramRateLimitError
 from backend.app.database.session import SessionLocal
 from backend.app.models.schema import SystemLog
-from backend.app.publishers.meta_transport import meta_transport, redact_meta_secrets
+from backend.app.publishers.meta_transport import meta_transport, redact_meta_secrets, MetaNetworkTimeoutError
 
 logger = logging.getLogger("gaming_uncut.instagram")
 API_VERSION = "v21.0"
@@ -122,6 +122,22 @@ class InstagramValidationError(InstagramAPIError):
     """Raised when video asset fails Meta Instagram Reels pre-upload validation."""
     pass
 
+class InstagramEncodingRejectionError(InstagramProcessingFailedError):
+    """Raised when Meta edge ingest rejects video due to encoding or container incompatibility."""
+    pass
+
+class InstagramBinaryTransferError(InstagramUploadFailedError):
+    """Raised when binary chunk transfer or server acknowledgement fails."""
+    pass
+
+class InstagramNetworkTimeoutError(InstagramAPIError):
+    """Raised when network timeout occurs during Instagram operations."""
+    pass
+
+class InstagramInaccessibleMediaError(InstagramVideoUrlError):
+    """Raised when media file or URL is not accessible to Meta servers."""
+    pass
+
 
 def redact_token(text: Any) -> str:
     """Masks Meta and Google access tokens, secrets, and auth headers from text and log statements."""
@@ -166,25 +182,30 @@ def parse_instagram_error(
 
         safe_msg = redact(msg)
 
-        if err_type == "NotAuthorizedError" or "not authorized" in safe_msg.lower():
+        if err_type == "NotAuthorizedError" or "not authorized" in safe_msg.lower() or "oauth" in safe_msg.lower():
             user_msg = "Meta Access Token is not authorized or has expired for Instagram upload. Please check token permissions in Settings."
             return InstagramTokenExpiredError(
                 safe_msg, code=190, error_type=err_type, user_message=user_msg, http_status=http_status
             )
 
-        if "not in the status" in safe_msg.lower():
+        if "not in the status" in safe_msg.lower() or "session expired" in safe_msg.lower():
             user_msg = f"Instagram container is not in a valid upload status: {safe_msg}. Container session expired or failed."
             return InstagramUploadFailedError(
                 safe_msg, code=400, error_type=err_type, user_message=user_msg, http_status=http_status
             )
 
-        if err_type == "ProcessingFailedError" or "processing failed" in safe_msg.lower():
+        if err_type == "ProcessingFailedError" or "processing failed" in safe_msg.lower() or "encoding" in safe_msg.lower():
             user_msg = (
                 f"Instagram binary upload rejected by Meta edge ingest ({safe_msg}). "
-                "Ensure video adheres to Meta Reels specs (AAC audio <= 48kHz, H.264 CFR, 9:16 portrait, <= 60s, <= 60MB)."
+                "Ensure video adheres to Meta Reels specs (H.264 High 4.1 CFR 30FPS, AAC-LC <= 48kHz, 1080x1920 9:16, <= 60s, <= 60MB)."
             )
-            return InstagramProcessingFailedError(
+            return InstagramEncodingRejectionError(
                 safe_msg, code=400, error_type=err_type, user_message=user_msg, http_status=http_status
+            )
+
+        if "offset" in safe_msg.lower() or "chunk" in safe_msg.lower() or "transfer" in safe_msg.lower():
+            return InstagramBinaryTransferError(
+                safe_msg, code=400, error_type=err_type, user_message=safe_msg, http_status=http_status
             )
 
         return InstagramUploadFailedError(
@@ -466,10 +487,22 @@ class InstagramPublishClient:
         if not video_path.exists():
             raise FileNotFoundError(f"Video file missing: {video_path}")
 
-        # Check if already strictly compliant
+        # Check if already strictly compliant across all mandatory properties
         val = instagram_video_validator.validate(video_path)
-        if val.is_valid:
-            logger.info(f"Video {video_path.name} already valid for Instagram Reels. Using directly.")
+        is_compliant = (
+            val.is_valid
+            and val.details.get("resolution") == "1080x1920"
+            and val.details.get("is_constant_frame_rate") is True
+            and val.details.get("video_codec") in ("h264", "avc1")
+            and val.details.get("pixel_format") == "yuv420p"
+            and val.details.get("audio_present") is True
+            and val.details.get("audio_codec") == "aac"
+            and val.details.get("faststart_valid") is True
+            and 3.0 <= val.details.get("duration_sec", 0.0) <= 60.00
+            and val.details.get("file_size_bytes", 0) <= 60 * 1000 * 1000
+        )
+        if is_compliant:
+            logger.info(f"Video {video_path.name} strictly satisfies all Meta Reels specifications. Using directly without re-encoding.")
             return video_path, False
 
         logger.info(
@@ -629,7 +662,23 @@ class InstagramPublishClient:
                             if debug_info.get("retriable") is False:
                                 is_non_retriable = True
 
-                        if is_non_retriable or isinstance(last_error, (InstagramTokenExpiredError, InstagramPermissionError, InstagramProcessingFailedError)):
+                        if is_non_retriable or isinstance(last_error, (InstagramTokenExpiredError, InstagramPermissionError, InstagramProcessingFailedError, InstagramEncodingRejectionError)):
+                            diag = {
+                                "stage": "transfer_binary",
+                                "container_id": container_id,
+                                "expected_file_size": file_size,
+                                "actual_transferred_bytes": current_offset,
+                                "acknowledged_offset": res_offset if 'res_offset' in locals() else None,
+                                "http_status": stream_res.status_code,
+                                "meta_debug_info": err_json.get("debug_info") if err_json and isinstance(err_json, dict) else None,
+                                "error_type": type(last_error).__name__,
+                                "timestamp": datetime.utcnow().isoformat()
+                            }
+                            log_instagram_audit(
+                                "ERROR",
+                                f"Non-retriable Meta error during binary transfer: {last_error.user_message}",
+                                diag
+                            )
                             raise last_error
 
                         logger.warning(
@@ -743,10 +792,14 @@ class InstagramPublishClient:
                     status_url,
                     headers=headers,
                     params={"fields": "id,status_code,status"},
-                    timeout=(meta_transport.connect_timeout, 15.0),
+                    timeout=(meta_transport.connect_timeout, 20.0),
                     max_retries=3
                 )
                 data = res.json()
+            except (requests.Timeout, requests.ConnectionError, MetaNetworkTimeoutError) as e:
+                safe_err = redact_token(str(e))
+                logger.warning(f"Transient timeout querying container {container_id} status: {safe_err}")
+                raise InstagramNetworkTimeoutError(f"Network error querying container {container_id}: {safe_err}")
             except requests.RequestException as e:
                 safe_err = redact_token(str(e))
                 logger.warning(f"Transient error querying container {container_id} status: {safe_err}")
@@ -813,7 +866,7 @@ class InstagramPublishClient:
             try:
                 status_info = self.query_container_status(container_id, token=token, include_copyright=False)
                 last_status_data = status_info
-            except requests.RequestException as e:
+            except (requests.RequestException, InstagramNetworkTimeoutError) as e:
                 safe_err = redact_token(str(e))
                 logger.warning(f"Transient error querying Instagram container {container_id}: {safe_err}")
                 if poll_interval > 0:

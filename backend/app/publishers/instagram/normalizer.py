@@ -1,15 +1,16 @@
 """
 Instagram-Specific FFmpeg Normalization Engine.
 Generates conservative, fully-compatible MP4 assets tailored for Meta Reels edge ingest:
-- Container: MP4 (H.264 / AAC-LC, yuv420p)
-- Resolution: 1080x1920 (9:16 vertical portrait)
-- Constant Frame Rate: 30 FPS CFR (-r 30, fps=30)
-- Closed GOP: -g 60 -keyint_min 60 -sc_threshold 0
-- Dynamic Bitrate: Targets 4.0-5.0 Mbps, automatically computed to strictly cap file size <= 55MB (safely under 60MB limit)
-- Audio: AAC-LC 128kbps, 48000 Hz stereo (synthetic silence generated if source has no audio)
-- Duration: Strictly clamped between 3.0s and 60.0s (pads videos < 3.0s)
-- Faststart: -movflags +faststart
-- Post-render verification: Rigorously verified via InstagramVideoValidator
+- Container: MP4 (H.264 AVC using libx264, High Profile, Level 4.1)
+- Resolution: 1080x1920 (9:16 vertical portrait with SAR 1:1)
+- Constant Frame Rate: 30 FPS CFR (-r 30, -fps_mode cfr)
+- Closed GOP: -g 60 -keyint_min 60 -sc_threshold 0 -x264-params open-gop=0
+- Color space: BT.709 SDR (-color_primaries bt709 -color_trc bt709 -colorspace bt709)
+- Audio: AAC-LC 128kbps, 48000 Hz stereo (-profile:a aac_low, synthetic silence generated if source has no audio)
+- Duration: Strictly clamped between 3.0s and 59.5s (strictly prevents audio/video packet overflow >= 60.00s)
+- Fast-start: -movflags +faststart (moov atom placed before mdat)
+- Timestamps: -avoid_negative_ts make_zero -fflags +genpts (zero start time, no unsupported edit lists)
+- Post-render verification: Rigorously verified via InstagramVideoValidator and full FFmpeg decode test
 """
 
 import json
@@ -54,8 +55,8 @@ class InstagramVideoNormalizer:
         output_dir: Optional[Path] = None,
         default_policy: str = "crop",  # "crop" (smart center action crop) | "blur" (blurred background)
         preset: str = "veryfast",
-        target_bitrate_mbps: float = 4.0,
-        max_file_size_mb: float = 55.0,  # Safe ceiling under Meta's 60MB limit
+        target_bitrate_mbps: float = 4.5,
+        max_file_size_mb: float = 52.0,  # Safe ceiling under Meta's 60MB limit
     ):
         self.output_dir = output_dir or (settings.OUTPUT_DIR / "instagram")
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -68,10 +69,8 @@ class InstagramVideoNormalizer:
         """Probes basic stream metadata using ffprobe."""
         cmd = [
             "ffprobe",
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
+            "-v", "quiet",
+            "-print_format", "json",
             "-show_format",
             "-show_streams",
             str(input_path),
@@ -112,7 +111,7 @@ class InstagramVideoNormalizer:
         """
         Dynamically calculates video bitrate, maxrate, and bufsize to guarantee
         that the resulting video file stays comfortably below the 60 MB limit.
-        Target max size: 55 MB (57,671,680 bytes).
+        Target max size: 52 MB (54,525,952 bytes).
         Audio budget: 128 kbps (~16 KB/s).
         """
         effective_duration = max(3.0, min(60.0, duration_sec))
@@ -124,8 +123,8 @@ class InstagramVideoNormalizer:
         avail_video_bits = avail_video_bytes * 8
         calc_bitrate_bps = avail_video_bits / effective_duration
 
-        # Clamp between 1.5M and 5.0M (conservative, reliable for Reels)
-        target_bps = min(self.target_bitrate_mbps * 1_000_000, max(1_500_000, calc_bitrate_bps))
+        # Clamp between 2.0M and 5.5M for crisp gameplay while strictly under 52MB
+        target_bps = min(self.target_bitrate_mbps * 1_000_000, max(2_000_000, calc_bitrate_bps))
         maxrate_bps = min(target_bps * 1.25, 6_000_000)
         bufsize_bps = target_bps * 2.0
 
@@ -171,7 +170,7 @@ class InstagramVideoNormalizer:
         has_audio = probe["has_audio"]
         is_landscape = probe["is_landscape"]
 
-        # Clamp target duration: Meta maximum is 60s, clamp to 59.5s to prevent audio/video packet tail overflow (e.g. 60.02s)
+        # Clamp target duration: Meta maximum is 60.00s. Clamp to 59.5s to prevent audio packet tail overflow (e.g. 60.02s)
         # Minimum duration is 3.0s
         target_duration = min(59.5, max(3.0, duration))
         b_v, maxrate, bufsize = self.compute_dynamic_bitrate(target_duration)
@@ -208,7 +207,6 @@ class InstagramVideoNormalizer:
         # Handle duration < 3.0s: pad video to minimum 3 seconds
         if duration < 3.0:
             pad_needed = round(3.0 - duration, 2)
-            # Use tpad to hold the last frame
             v_filter = v_filter.replace("[vout]", f",tpad=stop_mode=clone:stop_duration={pad_needed}[vout]")
 
         cmd: List[str] = ["ffmpeg", "-y"]
@@ -216,41 +214,49 @@ class InstagramVideoNormalizer:
         # Video input
         cmd.extend(["-i", str(input_path)])
 
-        # Audio input handling
-        if not has_audio:
-            # Generate synthetic silent stereo 48kHz track
-            cmd.extend(["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"])
-            audio_map = "1:a"
+        # Audio filter and mapping
+        if has_audio:
+            filter_complex = f"{v_filter};[0:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,atrim=0:{target_duration}[aout]"
         else:
-            audio_map = "0:a"
+            # Generate synthetic silent stereo 48kHz track
+            cmd.extend(["-f", "lavfi", "-i", f"anullsrc=channel_layout=stereo:sample_rate=48000:duration={target_duration}"])
+            filter_complex = f"{v_filter};[1:a]atrim=0:{target_duration}[aout]"
 
         cmd.extend([
-            "-filter_complex", v_filter,
+            "-filter_complex", filter_complex,
             "-map", "[vout]",
-            "-map", audio_map,
-            # Video codec settings
+            "-map", "[aout]",
+            # Video codec settings (H.264 High Profile, Level 4.1, yuv420p)
             "-c:v", "libx264",
             "-preset", self.preset,
             "-profile:v", "high",
-            "-level", "4.1",
+            "-level:v", "4.1",
             "-pix_fmt", "yuv420p",
             "-r", "30",
-            # Closed GOP (2-second GOP at 30fps)
+            "-fps_mode", "cfr",
+            # Closed GOP (2-second GOP at 30fps) and zero B-frame delay
             "-g", "60",
             "-keyint_min", "60",
             "-sc_threshold", "0",
+            "-x264-params", "open-gop=0:colorprim=bt709:transfer=bt709:colormatrix=bt709",
+            "-bf", "0",
+            # Color characteristics (BT.709 SDR)
+            "-color_primaries", "bt709",
+            "-color_trc", "bt709",
+            "-colorspace", "bt709",
             # Bitrate constraints
             "-b:v", b_v,
             "-maxrate", maxrate,
             "-bufsize", bufsize,
-            # Audio codec settings
+            # Audio codec settings (AAC-LC, 128k, 48000Hz, stereo)
             "-c:a", "aac",
+            "-profile:a", "aac_low",
             "-b:a", "128k",
             "-ar", "48000",
             "-ac", "2",
             # Duration limit
             "-t", str(target_duration),
-            # Monotonic timestamps and fast-start
+            # Monotonic timestamps, zero start time, fast-start
             "-avoid_negative_ts", "make_zero",
             "-fflags", "+genpts",
             "-movflags", "+faststart",
@@ -282,21 +288,47 @@ class InstagramVideoNormalizer:
                 f"FFmpeg normalization failed (exit code {exec_res.returncode}): {exec_res.error_message}"
             )
 
-        # Post-render FFprobe verification
+        # Post-render FFprobe verification (Part 4)
         val_result = InstagramVideoValidator.validate(output_path)
         if not val_result.is_valid:
             logger.error(
                 f"Normalized video failed Instagram post-render validation: {val_result.errors}"
             )
+            if output_path.exists():
+                try:
+                    output_path.unlink()
+                except Exception:
+                    pass
             raise InstagramNormalizationError(
                 f"Rendered file failed Meta Reels validation: {val_result.summary()}",
                 errors=val_result.errors,
                 details=val_result.details,
             )
 
+        # Full decode integrity verification (Part 4)
+        decode_cmd = ["ffmpeg", "-v", "error", "-i", str(output_path), "-f", "null", "-"]
+        try:
+            decode_res = subprocess.run(decode_cmd, capture_output=True, text=True, timeout=60.0)
+            if decode_res.returncode != 0:
+                if output_path.exists():
+                    try:
+                        output_path.unlink()
+                    except Exception:
+                        pass
+                raise InstagramNormalizationError(
+                    f"Rendered video failed full decode verification (exit code {decode_res.returncode}): {decode_res.stderr[:200]}"
+                )
+        except Exception as e:
+            if output_path.exists():
+                try:
+                    output_path.unlink()
+                except Exception:
+                    pass
+            raise InstagramNormalizationError(f"Video decode verification error: {e}")
+
         logger.info(
             f"Instagram video normalized & verified successfully: {output_path.name} "
-            f"({val_result.details.get('file_size_mb')} MB, {val_result.details.get('duration_sec')}s, 30 FPS)"
+            f"({val_result.details.get('file_size_mb')} MB, {val_result.details.get('duration_sec')}s, 30 FPS CFR, SAR 1:1, BT.709)"
         )
         return output_path
 

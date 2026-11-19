@@ -26,12 +26,14 @@ from backend.app.publishers.instagram.instagram_client import (
     InstagramPermissionError, InstagramConfigError, InstagramVideoUrlError,
     InstagramProcessingFailedError, InstagramProcessingTimeoutError,
     InstagramContainerProcessingInProgress,
-    InstagramUploadFailedError, InstagramValidationError, InstagramRateLimitError as ClientIGRateLimitError
+    InstagramUploadFailedError, InstagramValidationError, InstagramRateLimitError as ClientIGRateLimitError,
+    InstagramNetworkTimeoutError
 )
 from backend.app.publishers.facebook.facebook_client import (
     facebook_client, FacebookAPIError, FacebookTokenExpiredError,
     FacebookPermissionError, FacebookConfigError, FacebookUploadFailedError,
-    FacebookRateLimitError as ClientFBRateLimitError
+    FacebookRateLimitError as ClientFBRateLimitError,
+    FacebookNetworkTimeoutError
 )
 from backend.app.publishers.quota_tracker import (
     can_publish, record_upload_success, record_platform_restriction,
@@ -750,30 +752,47 @@ class PublishingManager:
                                     idempotency_decision="MARKED_UNKNOWN" if isinstance(e, InstagramProcessingTimeoutError) else "FAILED"
                                 )
                             except InstagramUploadFailedError as e:
+                                current_stage = ig_stage[0]
                                 ig_upload.status = "failed"
-                                ig_upload.error_code = "BINARY_TRANSFER_FAILED"
+                                ig_upload.error_code = "BINARY_TRANSFER_FAILED" if current_stage == "video_transferring" else "UPLOAD_FAILED"
                                 ig_upload.error_message = getattr(e, "user_message", str(e))
                                 idempotency_manager.update_stage(db, ig_idemp_key, active_worker_id, PublishingState.FAILED)
-                                logger.error(f"Instagram binary upload failed: {e}")
+                                logger.error(f"Instagram upload failed at stage '{current_stage}': {e}")
                                 log_publishing_audit(
                                     db, platform="instagram", publishing_job_id=job.id, clip_id=clip.id,
-                                    stage=ig_stage[0], error=e, level="ERROR", attempts=ig_upload.attempts,
-                                    error_code="BINARY_TRANSFER_FAILED", user_message=getattr(e, "user_message", str(e)),
+                                    stage=current_stage, error=e, level="ERROR", attempts=ig_upload.attempts,
+                                    error_code=ig_upload.error_code, user_message=getattr(e, "user_message", str(e)),
                                     worker_id=active_worker_id, account_id=ig_account_id, idempotency_decision="FAILED"
                                 )
-                            except requests.Timeout as e:
-                                ig_upload.status = "unknown"
-                                ig_upload.error_code = "NETWORK_TIMEOUT"
-                                msg = f"Instagram network request timed out: {e}. Marked UNKNOWN to prevent blind duplicate retry."
-                                ig_upload.error_message = msg
-                                idempotency_manager.update_stage(db, ig_idemp_key, active_worker_id, PublishingState.UNKNOWN)
-                                logger.warning(msg)
-                                log_publishing_audit(
-                                    db, platform="instagram", publishing_job_id=job.id, clip_id=clip.id,
-                                    stage=ig_stage[0], error=e, level="WARNING", attempts=ig_upload.attempts,
-                                    error_code="NETWORK_TIMEOUT", user_message=msg,
-                                    worker_id=active_worker_id, account_id=ig_account_id, idempotency_decision="MARKED_UNKNOWN"
-                                )
+                            except (InstagramNetworkTimeoutError, requests.Timeout, requests.ConnectionError) as e:
+                                if ig_upload.external_post_id:
+                                    ig_upload.status = "reconciling"
+                                    ig_upload.error_code = "RECONCILING"
+                                    msg = f"Instagram container {ig_upload.external_post_id} status check timed out ({e}). Transitioned to RECONCILING."
+                                    ig_upload.error_message = msg
+                                    idempotency_manager.update_stage(
+                                        db, ig_idemp_key, active_worker_id, PublishingState.RECONCILING, external_post_id=ig_upload.external_post_id
+                                    )
+                                    logger.warning(msg)
+                                    log_publishing_audit(
+                                        db, platform="instagram", publishing_job_id=job.id, clip_id=clip.id,
+                                        stage=ig_stage[0], error=e, level="WARNING", attempts=ig_upload.attempts,
+                                        error_code="RECONCILING", user_message=msg,
+                                        worker_id=active_worker_id, account_id=ig_account_id, idempotency_decision="RECONCILING"
+                                    )
+                                else:
+                                    ig_upload.status = "unknown"
+                                    ig_upload.error_code = "NETWORK_TIMEOUT"
+                                    msg = f"Instagram network request timed out: {e}. Marked UNKNOWN to prevent blind duplicate retry."
+                                    ig_upload.error_message = msg
+                                    idempotency_manager.update_stage(db, ig_idemp_key, active_worker_id, PublishingState.UNKNOWN)
+                                    logger.warning(msg)
+                                    log_publishing_audit(
+                                        db, platform="instagram", publishing_job_id=job.id, clip_id=clip.id,
+                                        stage=ig_stage[0], error=e, level="WARNING", attempts=ig_upload.attempts,
+                                        error_code="NETWORK_TIMEOUT", user_message=msg,
+                                        worker_id=active_worker_id, account_id=ig_account_id, idempotency_decision="MARKED_UNKNOWN"
+                                    )
                             except Exception as e:
                                 raw_code = getattr(e, "code", None)
                                 code = str(raw_code) if raw_code is not None else "UPLOAD_FAILED"
@@ -970,19 +989,33 @@ class PublishingManager:
                                     error_code=str(e.code or "CONFIG_ERROR"), user_message=e.user_message,
                                     worker_id=active_worker_id, account_id=fb_account_id, idempotency_decision="FAILED_PERMANENT"
                                 )
-                            except FacebookUploadFailedError as e:
-                                fb_upload.status = "failed"
-                                fb_upload.error_code = "BINARY_TRANSFER_FAILED"
-                                fb_upload.error_message = getattr(e, "user_message", str(e))
-                                idempotency_manager.update_stage(db, fb_idemp_key, active_worker_id, PublishingState.FAILED)
-                                logger.error(f"Facebook binary upload failed: {e}")
+                            except FacebookNetworkTimeoutError as e:
+                                fb_upload.status = "unknown"
+                                fb_upload.error_code = "NETWORK_TIMEOUT"
+                                msg = f"Facebook network timeout at stage '{fb_stage[0]}': {e.user_message}"
+                                fb_upload.error_message = msg
+                                idempotency_manager.update_stage(db, fb_idemp_key, active_worker_id, PublishingState.UNKNOWN)
+                                logger.warning(msg)
                                 log_publishing_audit(
                                     db, platform="facebook", publishing_job_id=job.id, clip_id=clip.id,
-                                    stage=fb_stage[0], error=e, level="ERROR", attempts=fb_upload.attempts,
-                                    error_code="BINARY_TRANSFER_FAILED", user_message=getattr(e, "user_message", str(e)),
+                                    stage=fb_stage[0], error=e, level="WARNING", attempts=fb_upload.attempts,
+                                    error_code="NETWORK_TIMEOUT", user_message=msg,
+                                    worker_id=active_worker_id, account_id=fb_account_id, idempotency_decision="MARKED_UNKNOWN"
+                                )
+                            except FacebookUploadFailedError as e:
+                                current_stage = fb_stage[0]
+                                fb_upload.status = "failed"
+                                fb_upload.error_code = "BINARY_TRANSFER_FAILED" if current_stage == "video_transferring" else "UPLOAD_FAILED"
+                                fb_upload.error_message = getattr(e, "user_message", str(e))
+                                idempotency_manager.update_stage(db, fb_idemp_key, active_worker_id, PublishingState.FAILED)
+                                logger.error(f"Facebook upload failed at stage '{current_stage}': {e}")
+                                log_publishing_audit(
+                                    db, platform="facebook", publishing_job_id=job.id, clip_id=clip.id,
+                                    stage=current_stage, error=e, level="ERROR", attempts=fb_upload.attempts,
+                                    error_code=fb_upload.error_code, user_message=getattr(e, "user_message", str(e)),
                                     worker_id=active_worker_id, account_id=fb_account_id, idempotency_decision="FAILED"
                                 )
-                            except requests.Timeout as e:
+                            except (requests.Timeout, requests.ConnectionError) as e:
                                 fb_upload.status = "unknown"
                                 fb_upload.error_code = "NETWORK_TIMEOUT"
                                 msg = f"Facebook network request timed out: {e}. Marked UNKNOWN to prevent blind duplicate retry."

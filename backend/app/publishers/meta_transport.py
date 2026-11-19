@@ -53,12 +53,17 @@ logger = logging.getLogger("gaming_uncut.meta_transport")
 # =============================================================================
 # Configurable Defaults (Can be overridden via Environment Variables)
 # =============================================================================
-DEFAULT_CONNECT_TIMEOUT_SEC = float(os.getenv("META_CONNECT_TIMEOUT_SEC", "10.0"))
+DEFAULT_CONNECT_TIMEOUT_SEC = float(os.getenv("META_CONNECT_TIMEOUT_SEC", "20.0"))
 DEFAULT_READ_TIMEOUT_SEC = float(os.getenv("META_READ_TIMEOUT_SEC", "30.0"))
 DEFAULT_GET_RETRY_COUNT = int(os.getenv("META_GET_RETRY_COUNT", "3"))
 DEFAULT_BACKOFF_FACTOR = float(os.getenv("META_BACKOFF_FACTOR", "1.0"))
 DEFAULT_POOL_CONNECTIONS = int(os.getenv("META_POOL_CONNECTIONS", "10"))
 DEFAULT_POOL_MAXSIZE = int(os.getenv("META_POOL_MAXSIZE", "25"))
+
+
+class MetaNetworkTimeoutError(requests.RequestException, TimeoutError):
+    """Raised when an operation against Meta Graph API or rupload times out."""
+    pass
 
 
 def redact_meta_secrets(text: Any) -> str:
@@ -189,9 +194,13 @@ class MetaHTTPTransport:
                     logger.error(
                         f"Meta API GET request to {redact_meta_secrets(url)} failed after {retries} attempts ({dur:.0f}ms): {safe_msg}"
                     )
+                    if isinstance(last_exc, requests.Timeout) or "timeout" in safe_msg.lower():
+                        raise MetaNetworkTimeoutError(f"Meta API GET request timed out: {safe_msg}") from last_exc
                     raise last_exc
 
         if last_exc:
+            if isinstance(last_exc, requests.Timeout) or "timeout" in str(last_exc).lower():
+                raise MetaNetworkTimeoutError(f"Meta API GET request timed out: {last_exc}") from last_exc
             raise last_exc
         raise requests.RequestException(f"Meta GET request to {redact_meta_secrets(url)} failed without response.")
 

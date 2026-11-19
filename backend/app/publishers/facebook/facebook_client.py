@@ -20,7 +20,7 @@ from backend.app.security.vault import vault
 from backend.app.publishers.quota_tracker import FacebookRateLimitError as BaseFacebookRateLimitError
 from backend.app.database.session import SessionLocal
 from backend.app.models.schema import SystemLog
-from backend.app.publishers.meta_transport import meta_transport, redact_meta_secrets
+from backend.app.publishers.meta_transport import meta_transport, redact_meta_secrets, MetaNetworkTimeoutError
 
 logger = logging.getLogger("gaming_uncut.facebook")
 API_VERSION = "v21.0"
@@ -69,6 +69,10 @@ class FacebookConfigError(FacebookAPIError):
 
 class FacebookUploadFailedError(FacebookAPIError):
     """Raised when binary transfer or Facebook video processing fails."""
+    pass
+
+class FacebookNetworkTimeoutError(FacebookAPIError):
+    """Raised when network timeout or connection failure occurs during Facebook Graph API operations."""
     pass
 
 
@@ -290,9 +294,20 @@ class FacebookPublishClient:
                 params={"fields": "id,name,category,access_token"}
             )
             data = res.json()
+        except (requests.Timeout, requests.ConnectionError, MetaNetworkTimeoutError) as e:
+            safe_err = redact_meta_secrets(str(e))
+            raise FacebookNetworkTimeoutError(
+                f"Network error verifying Facebook Page ID '{page_id}': {safe_err}",
+                code="NETWORK_TIMEOUT",
+                user_message=f"Connection to Meta Graph API timed out while verifying Facebook Page ID '{page_id}'."
+            )
         except requests.RequestException as e:
             safe_err = redact_meta_secrets(str(e))
-            raise FacebookUploadFailedError(f"Network error verifying Facebook Page ID '{page_id}': {safe_err}")
+            raise FacebookConfigError(
+                f"Network error verifying Facebook Page ID '{page_id}': {safe_err}",
+                code=100,
+                user_message=f"Network error verifying Facebook Page ID '{page_id}': {safe_err}"
+            )
 
         if "error" in data:
             raise parse_meta_error(data, f"Verification failed for Facebook Page ID '{page_id}'", http_status=res.status_code)
@@ -330,6 +345,13 @@ class FacebookPublishClient:
                 timeout=(meta_transport.connect_timeout, 30.0)
             )
             data = res.json()
+        except (requests.Timeout, requests.ConnectionError, MetaNetworkTimeoutError) as e:
+            safe_err = redact_meta_secrets(str(e))
+            raise FacebookNetworkTimeoutError(
+                f"Network error starting Facebook Reel upload: {safe_err}",
+                code="NETWORK_TIMEOUT",
+                user_message="Connection to Meta Graph API timed out while initializing upload session."
+            )
         except requests.RequestException as e:
             safe_err = redact_meta_secrets(str(e))
             raise FacebookUploadFailedError(f"Network error starting Facebook Reel upload: {safe_err}")
@@ -438,6 +460,13 @@ class FacebookPublishClient:
                 timeout=(meta_transport.connect_timeout, 30.0)
             )
             data = res.json()
+        except (requests.Timeout, requests.ConnectionError, MetaNetworkTimeoutError) as e:
+            safe_err = redact_meta_secrets(str(e))
+            raise FacebookNetworkTimeoutError(
+                f"Network error finalizing Facebook Reel publication: {safe_err}",
+                code="NETWORK_TIMEOUT",
+                user_message="Connection to Meta Graph API timed out while finalizing Reel publication."
+            )
         except requests.RequestException as e:
             safe_err = redact_meta_secrets(str(e))
             raise FacebookUploadFailedError(f"Network error finalizing Facebook Reel publication: {safe_err}")
