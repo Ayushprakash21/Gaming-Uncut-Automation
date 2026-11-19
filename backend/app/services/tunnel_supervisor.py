@@ -36,6 +36,7 @@ NAMED_TUNNEL_NAME = "gaming-uncut-node"
 NAMED_TUNNEL_ID = "6acf38fe-7443-4798-9ec7-b67878b35da8"
 CLOUDFLARE_ACCOUNT_ID = "57ecb7a13c0e7f67e63dc5564ad2dfe6"
 PAGES_PROJECT_NAME = "gaming-uncut"
+KV_NAMESPACE_ID = "cd43c79a79d749f98a9f456997b565b9"
 WRANGLER_CONFIG_PATH = Path(os.environ.get("APPDATA", "")) / "xdg.config" / ".wrangler" / "config" / "gaming-uncut.toml"
 
 
@@ -69,14 +70,52 @@ class CloudflareTunnelSupervisor:
         logger.info("Generated new cryptographically secure INTERNAL_API_SECRET in vault.")
         return new_secret
 
+    def sync_to_kv(self, backend_url: str, secret: Optional[str] = None) -> bool:
+        """Synchronizes live backend URL and internal API secret to Cloudflare Workers KV for real-time edge routing."""
+        token = self.get_api_token()
+        if not token:
+            logger.warning("No Cloudflare token available to sync with KV.")
+            return False
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "text/plain"
+        }
+        base_url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/{KV_NAMESPACE_ID}/values"
+
+        success = True
+        try:
+            r1 = requests.put(f"{base_url}/backend_url", headers=headers, data=backend_url, timeout=5.0)
+            if r1.status_code != 200:
+                logger.warning(f"Failed to update KV backend_url: {r1.status_code} {r1.text[:100]}")
+                success = False
+            else:
+                logger.info(f"Synchronized KV backend_url -> {backend_url}")
+
+            if secret:
+                r2 = requests.put(f"{base_url}/internal_api_secret", headers=headers, data=secret, timeout=5.0)
+                if r2.status_code != 200:
+                    logger.warning(f"Failed to update KV internal_api_secret: {r2.status_code}")
+                    success = False
+                else:
+                    logger.info("Synchronized KV internal_api_secret.")
+        except Exception as e:
+            logger.error(f"Error syncing to Cloudflare KV: {e}")
+            success = False
+
+        return success
+
     def update_pages_backend_url(self, backend_url: str) -> bool:
-        """Updates Cloudflare Pages project environment variables with the live backend URL."""
+        """Updates Cloudflare Pages project environment variables and KV with the live backend URL."""
+        secret = self.get_or_create_internal_secret()
+        # 1. Update real-time KV namespace first
+        self.sync_to_kv(backend_url, secret)
+
         token = self.get_api_token()
         if not token:
             logger.warning("No Cloudflare token available to update Pages environment variables.")
             return False
 
-        secret = self.get_or_create_internal_secret()
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json"
@@ -196,6 +235,7 @@ class CloudflareTunnelSupervisor:
                 except Exception:
                     pass
                 self._process = None
+        self.sync_to_kv("offline")
         self.write_status(False, None, details="Stopped")
         logger.info("Cloudflare Tunnel Supervisor stopped.")
 

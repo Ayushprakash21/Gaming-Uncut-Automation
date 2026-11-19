@@ -73,8 +73,17 @@ class GrowthIntelligenceService:
         # Actionable Batch Recommendations based on actual data
         recommendations = self.generate_batch_recommendations(learning_data)
 
+        platform_breakdown = {
+            "youtube": total_uploads,
+            "instagram": db.query(PlatformUpload).filter_by(platform="instagram").count(),
+            "facebook": db.query(PlatformUpload).filter_by(platform="facebook").count()
+        }
+
         return {
             "total_clips": total_clips,
+            "total_clips_optimized": total_clips,
+            "average_seo_score": avg_quality_score,
+            "platform_breakdown": platform_breakdown,
             "total_youtube_uploads": total_uploads,
             "avg_hook_score": avg_hook_score,
             "avg_quality_score": avg_quality_score,
@@ -209,6 +218,11 @@ class GrowthIntelligenceService:
             "duration_breakdown": dur_summary,
             "total_analyzed_clips": len(records)
         }
+
+    def compute_continuous_learning_insights(self, db: Session) -> List[Dict[str, Any]]:
+        """Computes performance learning breakdown and returns continuous learning recommendations."""
+        learning_data = self.compute_performance_learning_breakdown(db)
+        return self.generate_batch_recommendations(learning_data)
 
     def generate_batch_recommendations(self, learning_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """

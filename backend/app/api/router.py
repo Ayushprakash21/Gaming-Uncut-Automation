@@ -2329,9 +2329,24 @@ def research_keywords_endpoint(game_name: str, event_type: str = "", db: Session
 def get_growth_intelligence(db: Session = Depends(get_db)):
     """Returns AI growth insights and historical performance patterns."""
     from backend.app.analytics.growth_intelligence import growth_intelligence_service
+    from backend.app.models.schema import SeoGrowthInsight
     summary = growth_intelligence_service.get_dashboard_summary(db)
+    db_insights = db.query(SeoGrowthInsight).all()
+    insights_list = [
+        {
+            "category": i.category,
+            "dimension": i.dimension_name,
+            "platform": i.platform,
+            "performance_score": i.performance_score,
+            "sample_size": i.sample_size,
+            "summary": i.insight_summary,
+            "recommendation": i.recommendation,
+            "is_statistically_significant": i.is_statistically_significant
+        }
+        for i in db_insights
+    ]
     return {
-        "insights": summary.get("growth_insights", []),
+        "insights": insights_list if insights_list else summary.get("batch_recommendations", []),
         "top_keywords": summary.get("top_keywords", []),
         "best_games": summary.get("best_games", [])
     }

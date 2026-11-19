@@ -14,9 +14,10 @@ import {
 interface CreateReelPageProps {
   onReelCreated: () => void
   activeMode: string
+  nodeOnline?: boolean
 }
 
-export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, activeMode }) => {
+export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, activeMode, nodeOnline = true }) => {
   // Input states
   const [url, setUrl] = useState('')
   const [gameName, setGameName] = useState('')
@@ -170,6 +171,11 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
     e.preventDefault()
     if (!url.trim()) return
 
+    if (!nodeOnline) {
+      alert('Cannot launch pipeline: The local GPU processing node is offline. Please launch "python run.py" on your Windows machine to connect.')
+      return
+    }
+
     if (!sourceAuthorized) {
       alert('Usage rights or creator authorization confirmation is required.')
       return
@@ -317,6 +323,19 @@ export const CreateReelPage: React.FC<CreateReelPageProps> = ({ onReelCreated, a
           </p>
         </div>
       </div>
+
+      {/* GPU Node Offline Warning Banner */}
+      {!nodeOnline && (
+        <div className="p-4 rounded-xl border border-amber-500/40 bg-amber-500/10 flex items-start space-x-3.5 shadow-lg">
+          <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+          <div className="text-sm">
+            <h4 className="font-bold text-amber-300">GPU Processing Node Offline</h4>
+            <p className="text-amber-200/90 mt-1 text-xs leading-relaxed">
+              The local NVENC video rendering engine on your Windows PC is not currently connected. You can configure options, but pipeline launch requires starting <code className="bg-slate-900 border border-amber-500/30 px-2 py-0.5 rounded text-amber-300 font-mono text-[11px]">python run.py</code> on your Windows host machine.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Primary Ingestion Form */}
       <form onSubmit={handleGenerate} className="bg-[#111827] border border-gaming-border rounded-2xl p-6 space-y-5 shadow-2xl">

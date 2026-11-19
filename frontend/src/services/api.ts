@@ -76,7 +76,11 @@ export async function safeFetch<T = any>(
       }
     } else if (typeof body === 'string' && body.length > 0) {
       if (body.length > 250 || body.startsWith('<!DOCTYPE') || body.startsWith('<html')) {
-        errMsg = `Server error (${res.status}): Request could not be processed.`
+        if (res.status === 530 || res.status === 502 || res.status === 503 || res.status === 504) {
+          errMsg = `GPU Processing Node is offline or unreachable (HTTP ${res.status}). Please launch 'python run.py' on your Windows PC to connect.`
+        } else {
+          errMsg = `Server error (${res.status}): Request could not be processed.`
+        }
       } else {
         errMsg = body
       }
@@ -92,9 +96,10 @@ export async function safeFetch<T = any>(
         case 422: errMsg = 'Validation Error: Invalid data submitted.'; break;
         case 429: errMsg = 'Rate Limit Exceeded: Daily or request quota limit reached.'; break;
         case 500: errMsg = 'Internal Server Error: An unexpected server error occurred.'; break;
-        case 502: errMsg = 'Bad Gateway: Upstream server error.'; break;
-        case 503: errMsg = 'Service Unavailable: Server is temporarily unavailable.'; break;
-        case 504: errMsg = 'Gateway Timeout: Server timed out processing request.'; break;
+        case 502: errMsg = 'Bad Gateway: GPU processing node is unreachable. Ensure run.py is active.'; break;
+        case 503: errMsg = 'Service Unavailable: GPU processing node is offline. Start python run.py on Windows host.'; break;
+        case 504: errMsg = 'Gateway Timeout: Processing node timed out.'; break;
+        case 530: errMsg = 'Processing node is offline (Cloudflare 530). Start python run.py on Windows host.'; break;
         default: errMsg = `Request failed with HTTP status ${res.status}.`; break;
       }
     }
@@ -110,6 +115,29 @@ export async function safeFetch<T = any>(
 
 export async function fetchOverview(): Promise<OverviewData> {
   return safeFetch<OverviewData>(`${API_BASE}/overview`)
+}
+
+export interface SystemHealthData {
+  status: string
+  node_online?: boolean
+  app?: string
+  brand?: string
+  tagline?: string
+  version?: string
+  hardware?: {
+    gpu?: string
+    nvenc_enabled?: boolean
+    target_resolution?: string
+  }
+  worker?: {
+    is_alive: boolean
+    active_jobs: number
+  }
+  recovery_status?: string
+}
+
+export async function fetchSystemHealth(): Promise<SystemHealthData> {
+  return safeFetch<SystemHealthData>(`${API_BASE}/health`)
 }
 
 export async function validateSource(url: string, game_name?: string, local_file_path?: string) {

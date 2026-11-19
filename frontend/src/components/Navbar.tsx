@@ -6,9 +6,10 @@ interface NavbarProps {
   overview: OverviewData | null
   activeMode: string
   setActiveMode: (mode: string) => void
+  nodeOnline?: boolean
 }
 
-export const Navbar: React.FC<NavbarProps> = ({ overview, activeMode, setActiveMode }) => {
+export const Navbar: React.FC<NavbarProps> = ({ overview, activeMode, setActiveMode, nodeOnline = true }) => {
   const ytConnected = overview?.platforms.youtube.connected ?? false
   const igConnected = overview?.platforms.instagram.connected ?? false
   const fbConnected = overview?.platforms.facebook.connected ?? false
@@ -34,6 +35,23 @@ export const Navbar: React.FC<NavbarProps> = ({ overview, activeMode, setActiveM
       </div>
 
       <div className="flex items-center space-x-4">
+        {/* GPU Processing Node Indicator */}
+        <div
+          className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-lg border text-xs font-semibold ${
+            nodeOnline
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+              : 'bg-red-500/10 border-red-500/30 text-red-400'
+          }`}
+          title={
+            nodeOnline
+              ? 'GPU Processing Node is online and ready (NVENC hardware acceleration enabled).'
+              : 'GPU Processing Node is offline. Please launch "python run.py" on your Windows machine.'
+          }
+        >
+          <span className={`w-2 h-2 rounded-full ${nodeOnline ? 'bg-emerald-400 animate-pulse' : 'bg-red-500'}`} />
+          <span>{nodeOnline ? 'GPU Node: Online' : 'GPU Node: Offline'}</span>
+        </div>
+
         {/* Connection Indicators */}
         <div className="hidden md:flex items-center space-x-3 bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-800 text-xs">
           <span className="flex items-center space-x-1">

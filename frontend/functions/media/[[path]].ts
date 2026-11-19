@@ -1,14 +1,66 @@
+interface KVNamespace {
+  get(key: string): Promise<string | null>;
+}
+
 interface Env {
   BACKEND_URL?: string;
+  NODE_KV?: KVNamespace;
 }
 
 export async function onRequest(context: { request: Request; env: Env }) {
   const url = new URL(context.request.url);
-  const backendTarget = (context.env?.BACKEND_URL || "https://backend.gaming-uncut.pages.dev").trim().replace(/\/+$/, "");
-  const targetUrl = new URL(url.pathname + url.search, backendTarget);
+
+  let dynamicBackend: string | null = null;
+  if (context.env?.NODE_KV) {
+    try {
+      dynamicBackend = await context.env.NODE_KV.get("backend_url");
+    } catch {
+      // Fallback
+    }
+  }
+
+  const backendTarget = (dynamicBackend || context.env?.BACKEND_URL || "").trim().replace(/\/+$/, "");
+
+  if (!backendTarget || backendTarget === "offline" || backendTarget === "https://backend.gaming-uncut.pages.dev") {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: {
+          code: "NODE_OFFLINE",
+          message: "Media source node is currently offline. Please start 'python run.py' on your Windows node.",
+        },
+      }),
+      {
+        status: 503,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
+      }
+    );
+  }
+
+  let targetUrl: URL;
+  try {
+    targetUrl = new URL(url.pathname + url.search, backendTarget);
+  } catch (err: any) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: {
+          code: "INVALID_BACKEND_URL",
+          message: `Invalid backend target: ${err?.message || String(err)}`,
+        },
+      }),
+      {
+        status: 502,
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+      }
+    );
+  }
 
   const headers = new Headers(context.request.headers);
-  headers.set("Host", new URL(backendTarget).host);
+  headers.set("Host", targetUrl.host);
 
   const init: RequestInit = {
     method: context.request.method,
@@ -18,6 +70,27 @@ export async function onRequest(context: { request: Request; env: Env }) {
 
   try {
     const response = await fetch(targetUrl.toString(), init);
+    const isCloudflareOriginError = response.status === 530 || (response.status >= 520 && response.status <= 526);
+
+    if (isCloudflareOriginError) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: {
+            code: "NODE_OFFLINE",
+            message: "Media host is currently offline or unreachable.",
+          },
+        }),
+        {
+          status: 503,
+          headers: {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+          },
+        }
+      );
+    }
+
     const responseHeaders = new Headers(response.headers);
     responseHeaders.set("Access-Control-Allow-Origin", "*");
 
@@ -37,7 +110,7 @@ export async function onRequest(context: { request: Request; env: Env }) {
         },
       }),
       {
-        status: 502,
+        status: 503,
         headers: {
           "Content-Type": "application/json",
           "Access-Control-Allow-Origin": "*",

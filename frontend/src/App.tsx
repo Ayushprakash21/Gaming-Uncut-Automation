@@ -11,20 +11,30 @@ import { ConnectionsPage } from './pages/ConnectionsPage'
 import { LogsPage } from './pages/LogsPage'
 import { SeoGrowthPage } from './pages/SeoGrowthPage'
 import { ShortsIntelligencePage } from './pages/ShortsIntelligencePage'
-import { fetchOverview } from './services/api'
+import { fetchOverview, fetchSystemHealth } from './services/api'
 import { OverviewData } from './types'
 
 export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState('create')
   const [activeMode, setActiveMode] = useState('auto')
   const [overview, setOverview] = useState<OverviewData | null>(null)
+  const [nodeOnline, setNodeOnline] = useState<boolean>(false)
 
   const loadData = async () => {
     try {
-      const data = await fetchOverview()
-      setOverview(data)
-    } catch (e) {
-      console.error('Failed to load overview:', e)
+      const health = await fetchSystemHealth()
+      const isOnline = health.status === 'healthy' || health.node_online === true
+      setNodeOnline(isOnline)
+
+      if (isOnline) {
+        const data = await fetchOverview()
+        setOverview(data)
+      } else {
+        setOverview(null)
+      }
+    } catch {
+      setNodeOnline(false)
+      setOverview(null)
     }
   }
 
@@ -36,7 +46,7 @@ export const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#0a0d14] text-slate-100">
-      <Navbar overview={overview} activeMode={activeMode} setActiveMode={setActiveMode} />
+      <Navbar overview={overview} activeMode={activeMode} setActiveMode={setActiveMode} nodeOnline={nodeOnline} />
 
       <div className="flex-1 flex overflow-hidden">
         <Sidebar
@@ -55,7 +65,7 @@ export const App: React.FC = () => {
             <OverviewPage data={overview} onNavigate={(tab) => setCurrentTab(tab)} />
           )}
           {currentTab === 'create' && (
-            <CreateReelPage onReelCreated={() => setCurrentTab('queue')} activeMode={activeMode} />
+            <CreateReelPage onReelCreated={() => setCurrentTab('queue')} activeMode={activeMode} nodeOnline={nodeOnline} />
           )}
           {currentTab === 'discovery' && (
             <DiscoveryPage onNavigate={(tab) => setCurrentTab(tab)} />

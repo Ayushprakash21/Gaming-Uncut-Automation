@@ -102,7 +102,8 @@ def main():
             except Exception:
                 continue
         try:
-            webbrowser.open(target_url)
+            if not os.environ.get("HEADLESS") and not os.environ.get("NO_BROWSER"):
+                webbrowser.open(target_url)
         except Exception:
             pass
 
